@@ -1265,11 +1265,12 @@ class DyMETrainer(Trainer):
                 opsd_mask_true=int(opsd_mask.sum().item()),
                 batch_size=prompt_ids.size(0),
             )
+            beta = self.opsd_config.get("loss", {}).get("beta", 0.5)
+            opsd_weight = self.opsd_config.get("loss", {}).get("opsd_weight", 1.0)
+            grpo_weight = self.opsd_config.get("loss", {}).get("grpo_weight", 1.0)
+            opsd_indices: list[int] = []
             if opsd_mask.any():
                 opsd_indices = opsd_mask.nonzero(as_tuple=True)[0].tolist()
-                beta = self.opsd_config.get("loss", {}).get("beta", 0.5)
-                opsd_weight = self.opsd_config.get("loss", {}).get("opsd_weight", 1.0)
-                grpo_weight = self.opsd_config.get("loss", {}).get("grpo_weight", 1.0)
                 opsd_debug.log(
                     "opsd_loss",
                     "compute_vlm_opsd_loss_masked_batch args",
@@ -1296,21 +1297,31 @@ class DyMETrainer(Trainer):
                     opsd_loss=float(opsd_loss.detach().item()),
                     combined_loss=float(loss.detach().item()),
                 )
-                opsd_debug.log_sync_point("dist", "before gather_for_metrics(opsd_loss)")
-                self._metrics[mode].setdefault("loss/opsd", []).append(
-                    self.accelerator.gather_for_metrics(opsd_loss.detach()).mean().item()
-                )
-                if opsd_debug.should_log_detail(global_step):
-                    opsd_diagnostics.log_opsd_jsd_diagnostics(
-                        global_step=global_step,
-                        model=model,
-                        inputs=inputs,
-                        opsd_indices=opsd_indices,
-                        beta=beta,
-                        tokenizer=self.processing_class.tokenizer,
-                    )
             else:
                 opsd_debug.log("opsd_loss", "opsd_mask empty on this batch, skip OPSD loss")
+
+            # Every rank must enter this collective; skipping on empty local mask deadlocks NCCL.
+            opsd_metric_value = (
+                opsd_loss_tensor.detach()
+                if opsd_loss_tensor is not None
+                else torch.zeros((), device=loss.device, dtype=loss.dtype)
+            )
+            opsd_debug.log_sync_point("dist", "before gather_for_metrics(opsd_loss)")
+            self._metrics[mode].setdefault("loss/opsd", []).append(
+                self.accelerator.gather_for_metrics(opsd_metric_value).mean().item()
+            )
+            if opsd_indices and opsd_debug.should_log_detail(global_step):
+                opsd_diagnostics.log_opsd_jsd_diagnostics(
+                    global_step=global_step,
+                    model=model,
+                    inputs=inputs,
+                    opsd_indices=opsd_indices,
+                    beta=beta,
+                    tokenizer=self.processing_class.tokenizer,
+                )
+            if self.accelerator.num_processes > 1:
+                opsd_debug.log_sync_point("dist", "wait_for_everyone after OPSD compute_loss")
+                self.accelerator.wait_for_everyone()
 
         opsd_diagnostics.log_loss_diagnostics(
             global_step=global_step,
