@@ -241,7 +241,7 @@ def main():
             f"but only {visible_gpus} CUDA device(s) are visible "
             f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}).\n"
             f"Fix: accelerate launch --num_processes {visible_gpus} ...\n"
-            f"Or: NUM_GPUS={visible_gpus} bash scripts/train_trimode.sh"
+            f"Or: bash scripts/train_local_gpus.sh  (auto-detects {visible_gpus} GPU(s))"
         )
     if local_rank >= visible_gpus:
         raise RuntimeError(

@@ -296,7 +296,13 @@ accelerate launch --config_file default_config.yaml --num_processes 2 main.py --
 accelerate launch --config_file default_config_8gpu.yaml --num_processes 8 main.py --config config/config.py --mode rl
 ```
 
-Or override explicitly: `NUM_GPUS=2 bash scripts/train_trimode.sh`
+Or override explicitly: `NUM_GPUS=4 bash scripts/train_trimode.sh`
+
+For TriMode on **all visible local GPUs** (auto-detect via `CUDA_VISIBLE_DEVICES` / `torch.cuda.device_count()`):
+
+```bash
+bash scripts/train_local_gpus.sh
+```
 
 
 ### 1. Training DyME (original)
