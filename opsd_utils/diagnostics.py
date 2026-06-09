@@ -31,6 +31,185 @@ def _preview_text(text: str, max_len: int = 320) -> str:
     return text or "<EMPTY>"
 
 
+def _generation_config_summary(generation_config: Any) -> dict[str, Any]:
+    if generation_config is None:
+        return {}
+    keys = (
+        "max_new_tokens",
+        "do_sample",
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "eos_token_id",
+        "pad_token_id",
+        "bos_token_id",
+    )
+    out: dict[str, Any] = {}
+    for k in keys:
+        if hasattr(generation_config, k):
+            v = getattr(generation_config, k)
+            out[k] = v.tolist() if isinstance(v, torch.Tensor) else v
+    return out
+
+
+def log_generate_probe(
+    *,
+    global_step: int,
+    trainer_step: Optional[int],
+    prompt_length: int,
+    prompt_completion_ids: torch.Tensor,
+    completion_ids: torch.Tensor,
+    completion_mask: torch.Tensor,
+    is_eos: torch.Tensor,
+    eos_idx: torch.Tensor,
+    completions: list[str],
+    tokenizer: Any,
+    generation_config: Any,
+    max_completion_length: int,
+    num_generations: int,
+    sample_count: int = 4,
+) -> None:
+    """Emit [OPSD-PROBE] on every (re)generate — catches 1-token / empty completions early."""
+    if not opsd_debug.should_log_probe():
+        return
+
+    opsd_debug.set_detail_step(global_step)
+    tok = tokenizer
+    eos_id = getattr(tok, "eos_token_id", None)
+    pad_id = getattr(tok, "pad_token_id", None)
+    bos_id = getattr(tok, "bos_token_id", None)
+
+    with torch.no_grad():
+        lengths = completion_mask.sum(dim=1).float()
+        has_eos = is_eos.any(dim=1)
+        raw_gen_len = completion_ids.size(1)
+
+    opsd_debug.log_probe(
+        "generate",
+        "raw generate summary",
+        trainer_step=trainer_step,
+        global_step=global_step,
+        prompt_length=prompt_length,
+        prompt_completion_shape=tuple(prompt_completion_ids.shape),
+        completion_ids_shape=tuple(completion_ids.shape),
+        raw_gen_tokens=raw_gen_len,
+        max_completion_length=max_completion_length,
+        num_generations=num_generations,
+        batch_size=completion_ids.size(0),
+        effective_tokens_mean=float(lengths.mean().item()),
+        effective_tokens_min=float(lengths.min().item()),
+        effective_tokens_max=float(lengths.max().item()),
+        zero_length_count=int((lengths == 0).sum().item()),
+        one_token_count=int((lengths == 1).sum().item()),
+        eos_terminated_rate=float(has_eos.float().mean().item()),
+        tokenizer_eos_id=eos_id,
+        tokenizer_pad_id=pad_id,
+        tokenizer_bos_id=bos_id,
+        generation_config=_generation_config_summary(generation_config),
+    )
+
+    suspicious: list[str] = []
+    n = min(sample_count, len(completions))
+    for i in range(n):
+        eff = int(lengths[i].item())
+        eidx = int(eos_idx[i].item())
+        ids_head = completion_ids[i, : min(16, completion_ids.size(1))].tolist()
+        ids_all = completion_ids[i].tolist()
+        decode_skip = completions[i]
+        decode_keep = tok.decode(completion_ids[i], skip_special_tokens=False)
+        first_tok = int(completion_ids[i, 0].item()) if completion_ids.size(1) > 0 else None
+        first_is_eos = first_tok is not None and first_tok == eos_id
+        flags: list[str] = []
+        if eff <= 0:
+            flags.append("ZERO_LEN")
+        if eff == 1:
+            flags.append("ONE_TOKEN")
+        if not (decode_skip or "").strip():
+            flags.append("EMPTY_DECODE")
+        if first_is_eos:
+            flags.append("FIRST_IS_EOS")
+        if flags:
+            suspicious.append(f"sample[{i}]:{','.join(flags)}")
+
+        opsd_debug.log_probe(
+            "generate",
+            f"sample[{i}]",
+            group=i // num_generations if num_generations else 0,
+            effective_tokens=eff,
+            eos_idx=eidx,
+            has_eos=bool(has_eos[i].item()),
+            first_token_id=first_tok,
+            first_is_eos=first_is_eos,
+            token_ids_head=ids_head,
+            token_ids_all=ids_all if len(ids_all) <= 32 else ids_head + ["..."],
+            decode_skip_special=_preview_text(decode_skip, 400),
+            decode_keep_special=_preview_text(decode_keep, 400),
+            flags=flags or None,
+        )
+
+    if suspicious:
+        opsd_debug.log_probe(
+            "generate",
+            "ALERT suspicious completions",
+            count=len(suspicious),
+            samples=suspicious,
+            hint="check eos_token_id, max_new_tokens, model.generate output, or training-time unwrap/FSDP",
+        )
+
+
+def log_routed_completion_probe(
+    *,
+    global_step: int,
+    trainer_step: Optional[int],
+    raw_completion_shape: tuple[int, ...],
+    final_completion_ids: torch.Tensor,
+    final_completion_mask: torch.Tensor,
+    opsd_mask_list: list[bool],
+    sample_count: int = 4,
+    tokenizer: Any,
+) -> None:
+    """Compare raw vs post-routing padded completion shapes (detect routing truncation)."""
+    if not opsd_debug.should_log_probe():
+        return
+
+    with torch.no_grad():
+        final_lengths = final_completion_mask.sum(dim=1).float()
+
+    opsd_debug.log_probe(
+        "route",
+        "post-routing completion shapes",
+        trainer_step=trainer_step,
+        global_step=global_step,
+        raw_completion_shape=raw_completion_shape,
+        final_completion_shape=tuple(final_completion_ids.shape),
+        final_mask_shape=tuple(final_completion_mask.shape),
+        final_effective_tokens_mean=float(final_lengths.mean().item()),
+        final_effective_tokens_min=float(final_lengths.min().item()),
+        final_effective_tokens_max=float(final_lengths.max().item()),
+        opsd_mask_true=sum(opsd_mask_list),
+        opsd_mask_false=len(opsd_mask_list) - sum(opsd_mask_list),
+    )
+
+    n = min(sample_count, final_completion_ids.size(0))
+    for i in range(n):
+        eff = int(final_lengths[i].item())
+        head = final_completion_ids[i, : min(12, final_completion_ids.size(1))].tolist()
+        text = tokenizer.decode(
+            final_completion_ids[i][final_completion_mask[i].bool()],
+            skip_special_tokens=True,
+        )
+        opsd_debug.log_probe(
+            "route",
+            f"routed_sample[{i}]",
+            opsd_mask=opsd_mask_list[i] if i < len(opsd_mask_list) else None,
+            effective_tokens=eff,
+            token_ids_head=head,
+            decode=_preview_text(text, 300),
+        )
+
+
 def jsd_token_stats(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,

@@ -19,6 +19,9 @@ try:
 except ValueError:
     _detail_every = 10
 
+_probe_raw = os.environ.get("DYME_OPSD_PROBE_ON_GENERATE", "1").strip().lower()
+_probe_on_generate = _probe_raw not in ("0", "false", "no", "off")
+
 DYME_OPSD_CONFIG = {
     **DYME_OPSD_CONFIG,
     "enabled": True,
@@ -27,6 +30,7 @@ DYME_OPSD_CONFIG = {
     "debug": {
         **DYME_OPSD_CONFIG.get("debug", {}),
         "detail_every": _detail_every,
+        "probe_on_generate": _probe_on_generate,
     },
 }
 

@@ -367,6 +367,13 @@ export DYME_OPSD_DETAIL_EVERY=0
 
 Search logs for `[OPSD-DETAIL]` (not `[OPSD-DEBUG]`).
 
+**Per-generate probe (`[OPSD-PROBE]`)** — enabled by default in `config_trimode.py`; fires on every `(re)generate` on rank 0 (no need to wait for step 10). Logs raw `completion_ids`, decode with/without special tokens, `eos_idx`, and flags `ONE_TOKEN` / `EMPTY_DECODE` / `FIRST_IS_EOS`. Disable with `DYME_OPSD_PROBE_ON_GENERATE=0` or `--no_opsd_probe_on_generate`.
+
+```bash
+export DYME_OPSD_PROBE_ON_GENERATE=1   # default in config_trimode
+grep '\[OPSD-PROBE\]' train.log
+```
+
 ### 2. Training TriMode (DyME + OPSD)
 
 Use `config/config_trimode.py` (OPSD pre-enabled) or override on the base config via CLI:
@@ -394,6 +401,7 @@ accelerate launch main.py --config config/config.py --mode rl \
 | `--opsd_enabled` | Enable OPSD / TriMode extensions. |
 | `--opsd_debug` | Verbose OPSD chain logs (`[OPSD-DEBUG]`, or env `DYME_OPSD_DEBUG=1`). |
 | `--opsd_detail_every N` | Full weak-signal bundle every N steps (`[OPSD-DETAIL]`, default 10; `0` = off). |
+| `--opsd_probe_on_generate` / `--no_opsd_probe_on_generate` | Per-generate `[OPSD-PROBE]` on rank 0 (trimode default on). |
 | `--opsd_mode MODE` | Routing mode: `trimode`, `dyme`, `opsd_only`, `replace_sft`, … |
 | `--opsd_providers LIST` | Comma-separated providers, e.g. `text,visual_facts`. |
 

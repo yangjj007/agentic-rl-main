@@ -103,6 +103,9 @@ DYME_OPSD_CONFIG = {
     "debug": {
         # Full weak-signal diagnostic bundle every N global steps (rank 0). 0 = off.
         "detail_every": 10,
+        # Lightweight [OPSD-PROBE] on every (re)generate (rank 0). Independent of OPSD-DEBUG.
+        "probe_on_generate": False,
+        "probe_sample_count": 4,
     },
 }
 

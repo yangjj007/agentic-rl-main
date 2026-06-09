@@ -167,6 +167,15 @@ def main():
              "(default 10; config opsd.debug.detail_every or env DYME_OPSD_DETAIL_EVERY)",
     )
     parser.add_argument(
+        '--opsd_probe_on_generate', dest='opsd_probe_on_generate', action='store_true',
+        help="Emit [OPSD-PROBE] on every (re)generate on rank 0 (config_trimode default on)",
+    )
+    parser.add_argument(
+        '--no_opsd_probe_on_generate', dest='opsd_probe_on_generate', action='store_false',
+        help="Disable per-generate [OPSD-PROBE] logs",
+    )
+    parser.set_defaults(opsd_probe_on_generate=None)
+    parser.add_argument(
         '--wandb', dest='wandb', action='store_true',
         help="Force enable Weights & Biases logging",
     )
@@ -195,12 +204,21 @@ def main():
         opsd_config["mode"] = args.opsd_mode
     if args.opsd_providers is not None:
         opsd_config["privileged_providers"] = [p.strip() for p in args.opsd_providers.split(",") if p.strip()]
-    detail_every = opsd_config.get("debug", {}).get("detail_every", 10)
+    debug_cfg = opsd_config.setdefault("debug", {})
+    detail_every = debug_cfg.get("detail_every", 10)
     if args.opsd_detail_every is not None:
         detail_every = max(0, args.opsd_detail_every)
-        opsd_config.setdefault("debug", {})["detail_every"] = detail_every
+        debug_cfg["detail_every"] = detail_every
+    probe_on_generate = debug_cfg.get("probe_on_generate", False)
+    if args.opsd_probe_on_generate is not None:
+        probe_on_generate = args.opsd_probe_on_generate
+        debug_cfg["probe_on_generate"] = probe_on_generate
 
-    debug_enabled = opsd_debug.configure(enabled=args.opsd_debug or None, detail_every=detail_every)
+    debug_enabled = opsd_debug.configure(
+        enabled=args.opsd_debug or None,
+        detail_every=detail_every,
+        probe_on_generate=probe_on_generate,
+    )
     if debug_enabled:
         opsd_debug.log_config("main", "resolved OPSD config", opsd_config)
         opsd_debug.log("main", "training entry", mode=mode, config_path=args.config)

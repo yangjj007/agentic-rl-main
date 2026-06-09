@@ -415,11 +415,15 @@ class DyMETrainer(Trainer):
         self.model_accepts_loss_kwargs = False
         self.processing_func = processing_func
 
-        detail_every = self.opsd_config.get("debug", {}).get("detail_every", 10)
+        debug_cfg = self.opsd_config.get("debug", {})
+        detail_every = debug_cfg.get("detail_every", 10)
+        probe_on_generate = debug_cfg.get("probe_on_generate", False)
+        self._opsd_probe_sample_count = int(debug_cfg.get("probe_sample_count", 4))
         opsd_debug.configure(
             rank=self.accelerator.process_index,
             world_size=self.accelerator.num_processes,
             detail_every=detail_every,
+            probe_on_generate=probe_on_generate,
         )
         opsd_debug.log_config("init", "DyMETrainer OPSD config loaded", self.opsd_config)
         if self.accelerator.is_main_process and detail_every > 0:
@@ -581,6 +585,13 @@ class DyMETrainer(Trainer):
                 buffered_inputs_is_none=self._buffered_inputs is None,
             )
             if will_generate:
+                opsd_debug.log_probe(
+                    "prepare_inputs",
+                    "will_generate=True, calling _generate_and_score_completions",
+                    trainer_step=self._step,
+                    global_step=getattr(self.state, "global_step", None),
+                    generate_every=generate_every,
+                )
                 # self._buffered_inputs=None can occur when resuming from a checkpoint
                 accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)
                 self._buffered_inputs = split_tensor_dict(
@@ -669,6 +680,24 @@ class DyMETrainer(Trainer):
             completion_mask = completion_mask * (~truncated_completions).unsqueeze(1).int()
 
         completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+
+        global_step_for_probe = getattr(self.state, "global_step", self._step)
+        opsd_diagnostics.log_generate_probe(
+            global_step=global_step_for_probe,
+            trainer_step=self._step,
+            prompt_length=prompt_length,
+            prompt_completion_ids=prompt_completion_ids,
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            is_eos=is_eos,
+            eos_idx=eos_idx,
+            completions=completions,
+            tokenizer=self.processing_class.tokenizer,
+            generation_config=self.generation_config,
+            max_completion_length=self.max_completion_length,
+            num_generations=self.num_generations,
+            sample_count=self._opsd_probe_sample_count,
+        )
 
         batch_size = len(completion_ids)
         images = [x['image'] for x in inputs]
@@ -879,6 +908,7 @@ class DyMETrainer(Trainer):
             has_correct=has_correct.tolist() if hasattr(has_correct, "tolist") else has_correct,
         )
 
+        raw_completion_shape = tuple(completion_ids.shape)
         opsd_diagnostics.log_generation_diagnostics(
             global_step=global_step,
             completions=completions,
@@ -896,6 +926,17 @@ class DyMETrainer(Trainer):
         completion_ids = completion_ids.to(device)
         completion_mask = completion_mask.to(device)
         completion_advantange = completion_advantange.to(device)
+
+        opsd_diagnostics.log_routed_completion_probe(
+            global_step=global_step,
+            trainer_step=self._step,
+            raw_completion_shape=raw_completion_shape,
+            final_completion_ids=completion_ids,
+            final_completion_mask=completion_mask,
+            opsd_mask_list=opsd_mask_list,
+            sample_count=self._opsd_probe_sample_count,
+            tokenizer=self.processing_class.tokenizer,
+        )
 
         opsd_diagnostics.log_routing_diagnostics(
             global_step=global_step,

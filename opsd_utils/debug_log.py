@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 _DEBUG_ENABLED = False
 _DETAIL_EVERY = 10
+_PROBE_ON_GENERATE = False
 _RANK = 0
 _WORLD_SIZE = 1
 _STEP_LABEL = "init"
@@ -33,15 +34,23 @@ def _env_detail_every() -> int:
         return 10
 
 
+def _env_probe_on_generate() -> Optional[bool]:
+    raw = os.environ.get("DYME_OPSD_PROBE_ON_GENERATE", "").strip().lower()
+    if not raw:
+        return None
+    return raw in ("1", "true", "yes", "on")
+
+
 def configure(
     *,
     enabled: Optional[bool] = None,
     detail_every: Optional[int] = None,
+    probe_on_generate: Optional[bool] = None,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
 ) -> bool:
     """Configure global OPSD debug logging. Returns whether debug is enabled."""
-    global _DEBUG_ENABLED, _DETAIL_EVERY, _RANK, _WORLD_SIZE
+    global _DEBUG_ENABLED, _DETAIL_EVERY, _PROBE_ON_GENERATE, _RANK, _WORLD_SIZE
     if enabled is None:
         enabled = _env_debug_enabled()
     _DEBUG_ENABLED = bool(enabled)
@@ -49,6 +58,11 @@ def configure(
         _DETAIL_EVERY = max(0, int(detail_every))
     elif _env_detail_every() != 10 or os.environ.get("DYME_OPSD_DETAIL_EVERY"):
         _DETAIL_EVERY = _env_detail_every()
+    env_probe = _env_probe_on_generate()
+    if probe_on_generate is not None:
+        _PROBE_ON_GENERATE = bool(probe_on_generate)
+    elif env_probe is not None:
+        _PROBE_ON_GENERATE = env_probe
     if rank is not None:
         _RANK = rank
     if world_size is not None:
@@ -58,6 +72,15 @@ def configure(
 
 def detail_every() -> int:
     return _DETAIL_EVERY
+
+
+def probe_on_generate() -> bool:
+    return _PROBE_ON_GENERATE
+
+
+def should_log_probe() -> bool:
+    """True when lightweight per-generate probe should run (rank 0 only)."""
+    return _PROBE_ON_GENERATE and _RANK == 0
 
 
 def should_log_detail(global_step: Optional[int]) -> bool:
@@ -158,6 +181,25 @@ def log_detail(section: str, msg: str, global_step: Optional[int] = None, **fiel
     if fields:
         extra = " | " + " | ".join(f"{k}={_fmt(v, max_len=800)}" for k, v in fields.items())
     print(f"{_detail_prefix(step, section)} {msg}{extra}", flush=True)
+
+
+def _probe_prefix(section: str) -> str:
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    step = _DETAIL_STEP if _DETAIL_STEP is not None else "?"
+    return (
+        f"[OPSD-PROBE][{ts}][rank={_RANK}/{_WORLD_SIZE}]"
+        f"[global_step={step}][{_STEP_LABEL}][{section}]"
+    )
+
+
+def log_probe(section: str, msg: str, **fields: Any) -> None:
+    """Lightweight per-generate diagnostic (rank 0). Independent of OPSD-DEBUG verbosity."""
+    if not should_log_probe():
+        return
+    extra = ""
+    if fields:
+        extra = " | " + " | ".join(f"{k}={_fmt(v, max_len=1200)}" for k, v in fields.items())
+    print(f"{_probe_prefix(section)} {msg}{extra}", flush=True)
 
 
 def log_config(stage: str, title: str, config: dict[str, Any]) -> None:
