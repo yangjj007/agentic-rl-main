@@ -13,9 +13,7 @@ machine_rank: 0
 main_training_function: main
 mixed_precision: bf16
 num_machines: 1
-# Default process count for accelerate. Launch scripts override this via
-# `--num_processes $(detect_num_gpus)` so it matches visible GPUs on the node.
-num_processes: 2
+num_processes: 8
 rdzv_backend: static
 same_network: true
 tpu_env: []

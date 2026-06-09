@@ -286,13 +286,18 @@ A small subset of demo images for verifying the data loading pipeline may be pro
 
 All training scripts are launched using `accelerate`. Pass `--config` as a **Python config file path** (recommended) or a shorthand alias (`norm`, `trimode`, `llavacot`, `low`, `aok`).
 
-```bash
-# file path (recommended, same style for all experiments)
-accelerate launch main.py --config config/config.py --mode rl
+**Important:** `num_processes` must match the number of visible GPUs on your node. If you launch 8 processes on a 2-GPU machine, DeepSpeed fails with `CUDA error: invalid device ordinal`. Helper scripts auto-detect GPU count; for manual launch always pass `--num_processes`:
 
-# shorthand alias
-accelerate launch main.py --config norm --mode rl
+```bash
+# 2-GPU node example
+accelerate launch --config_file default_config.yaml --num_processes 2 main.py --config config/config.py --mode rl
+
+# 8-GPU node example
+accelerate launch --config_file default_config_8gpu.yaml --num_processes 8 main.py --config config/config.py --mode rl
 ```
+
+Or override explicitly: `NUM_GPUS=2 bash scripts/train_trimode.sh`
+
 
 ### 1. Training DyME (original)
 

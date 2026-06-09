@@ -179,6 +179,18 @@ def main():
             device=str(accelerator.device),
         )
 
+    visible_gpus = torch.cuda.device_count()
+    if visible_gpus == 0:
+        raise RuntimeError("No CUDA devices are visible to this process.")
+    if accelerator.num_processes > visible_gpus:
+        raise RuntimeError(
+            f"GPU/process mismatch: launched {accelerator.num_processes} distributed processes "
+            f"but only {visible_gpus} CUDA device(s) are visible. "
+            f"Use `--num_processes {visible_gpus}` with accelerate launch, or set "
+            f"`NUM_GPUS={visible_gpus}` when running scripts/train_trimode.sh. "
+            f"For 8-GPU nodes, use ACCELERATE_CONFIG=default_config_8gpu.yaml."
+        )
+
     # 3. Initialize Model and Processor
     model, processor = load_model_and_processor(model_config)
 
