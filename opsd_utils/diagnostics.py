@@ -4,9 +4,12 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from opsd_utils import debug_log as opsd_debug
+
+PAREN_TOKEN_ID = 340
 
 
 def _tensor_stats(t: torch.Tensor, name: str) -> dict[str, Any]:
@@ -54,6 +57,272 @@ def _generation_config_summary(generation_config: Any) -> dict[str, Any]:
     return out
 
 
+def _last_valid_prompt_positions(prompt_mask: torch.Tensor) -> torch.Tensor:
+    """Return index of last valid (non-pad) prompt token per row; supports left padding."""
+    with torch.no_grad():
+        seq_len = prompt_mask.size(1)
+        positions = torch.arange(seq_len, device=prompt_mask.device).expand_as(prompt_mask)
+        masked = torch.where(prompt_mask.bool(), positions, torch.full_like(positions, -1))
+        return masked.max(dim=1).values
+
+
+def _detect_repeat_loop(token_ids: list[int], min_repeats: int = 4, ngram: int = 3) -> bool:
+    if len(token_ids) < ngram * min_repeats:
+        return False
+    for start in range(min(8, len(token_ids) - ngram * min_repeats + 1)):
+        gram = token_ids[start : start + ngram]
+        repeats = 1
+        pos = start + ngram
+        while pos + ngram <= len(token_ids) and token_ids[pos : pos + ngram] == gram:
+            repeats += 1
+            pos += ngram
+        if repeats >= min_repeats:
+            return True
+    return False
+
+
+def _count_paren_then_eos(
+    completion_ids: torch.Tensor,
+    completion_mask: torch.Tensor,
+    eos_id: Optional[int],
+) -> int:
+    if eos_id is None or completion_ids.size(0) == 0:
+        return 0
+    count = 0
+    with torch.no_grad():
+        lengths = completion_mask.sum(dim=1)
+        for i in range(completion_ids.size(0)):
+            eff = int(lengths[i].item())
+            if eff <= 0:
+                continue
+            first = int(completion_ids[i, 0].item())
+            if first != PAREN_TOKEN_ID:
+                continue
+            if eff <= 2:
+                count += 1
+            elif eff >= 2 and int(completion_ids[i, 1].item()) == eos_id:
+                count += 1
+    return count
+
+
+def summarize_generate_probe_stats(
+    completion_ids: torch.Tensor,
+    completion_mask: torch.Tensor,
+    is_eos: torch.Tensor,
+    eos_id: Optional[int],
+) -> dict[str, Any]:
+    with torch.no_grad():
+        lengths = completion_mask.sum(dim=1).float()
+        has_eos = is_eos.any(dim=1)
+    paren_then_eos = _count_paren_then_eos(completion_ids, completion_mask, eos_id)
+    repeat_loop = 0
+    for i in range(completion_ids.size(0)):
+        eff = int(lengths[i].item())
+        if eff <= 0:
+            continue
+        ids = completion_ids[i, :eff].tolist()
+        if _detect_repeat_loop(ids):
+            repeat_loop += 1
+    return {
+        "effective_tokens_mean": float(lengths.mean().item()),
+        "one_token_count": int((lengths == 1).sum().item()),
+        "paren_then_eos_count": paren_then_eos,
+        "repeat_loop_count": repeat_loop,
+        "eos_terminated_rate": float(has_eos.float().mean().item()),
+    }
+
+
+def log_generate_context(
+    *,
+    global_step: int,
+    trainer_step: Optional[int],
+    generate_call_index: int,
+    model: Any,
+    model_wrapped: Any,
+    gradient_checkpointing: bool,
+    generation_config: Any,
+    is_fsdp_enabled: bool,
+    generate_runs_under_no_grad: bool,
+) -> None:
+    if not opsd_debug.should_log_gendbg() or not opsd_debug.probe_log_model_context():
+        return
+
+    opsd_debug.set_detail_step(global_step)
+    dropout_in_train = sum(
+        1 for m in model.modules() if isinstance(m, nn.Dropout) and m.training
+    )
+    opsd_debug.log_gendbg(
+        "context",
+        "generate model context",
+        generate_call_index=generate_call_index,
+        trainer_step=trainer_step,
+        global_step=global_step,
+        model_training=bool(getattr(model, "training", None)),
+        model_wrapped_training=bool(getattr(model_wrapped, "training", None)),
+        gradient_checkpointing=gradient_checkpointing,
+        generation_use_cache=getattr(generation_config, "use_cache", None),
+        is_fsdp_enabled=is_fsdp_enabled,
+        generate_runs_under_no_grad=generate_runs_under_no_grad,
+        dropout_modules_in_train=dropout_in_train,
+        generation_config=_generation_config_summary(generation_config),
+    )
+
+
+def log_prompt_tail_probe(
+    *,
+    global_step: int,
+    trainer_step: Optional[int],
+    generate_call_index: int,
+    prompt_ids: torch.Tensor,
+    prompt_mask: torch.Tensor,
+    tokenizer: Any,
+    sample_count: int = 4,
+    tail_tokens: Optional[int] = None,
+) -> None:
+    if not opsd_debug.should_log_gendbg():
+        return
+
+    opsd_debug.set_detail_step(global_step)
+    n_tail = tail_tokens if tail_tokens is not None else opsd_debug.probe_prompt_tail_tokens()
+    last_pos = _last_valid_prompt_positions(prompt_mask)
+    n = min(sample_count, prompt_ids.size(0))
+
+    for i in range(n):
+        end = int(last_pos[i].item()) + 1
+        start = max(0, end - n_tail)
+        tail_ids = prompt_ids[i, start:end].tolist()
+        eff_len = int(prompt_mask[i].sum().item())
+        tail_decode = tokenizer.decode(tail_ids, skip_special_tokens=False)
+        opsd_debug.log_gendbg(
+            "prompt_tail",
+            f"sample[{i}]",
+            generate_call_index=generate_call_index,
+            trainer_step=trainer_step,
+            prompt_effective_len=eff_len,
+            last_valid_idx=end - 1,
+            prompt_tail_token_ids=tail_ids,
+            prompt_tail_decode=_preview_text(tail_decode, 400),
+        )
+
+
+def log_first_token_logits_probe(
+    *,
+    global_step: int,
+    trainer_step: Optional[int],
+    generate_call_index: int,
+    unwrapped_model: Any,
+    prompt_inputs_generate: dict[str, Any],
+    prompt_mask: torch.Tensor,
+    tokenizer: Any,
+    sample_count: int = 4,
+) -> dict[int, int]:
+    """Forward once before generate; return greedy next-token id per sample index."""
+    greedy_by_sample: dict[int, int] = {}
+    if not opsd_debug.should_log_gendbg() or not opsd_debug.probe_first_token_logits():
+        return greedy_by_sample
+
+    opsd_debug.set_detail_step(global_step)
+    eos_id = getattr(tokenizer, "eos_token_id", None)
+    forward_inputs = {k: v for k, v in prompt_inputs_generate.items() if k != "labels"}
+
+    try:
+        with torch.no_grad():
+            outputs = unwrapped_model(**forward_inputs, use_cache=False)
+            logits = outputs.logits
+            last_pos = _last_valid_prompt_positions(prompt_mask)
+            n = min(sample_count, logits.size(0))
+            for i in range(n):
+                pos = int(last_pos[i].item())
+                next_logits = logits[i, pos, :].float()
+                probs = F.softmax(next_logits, dim=-1)
+                greedy_id = int(next_logits.argmax().item())
+                greedy_by_sample[i] = greedy_id
+                entropy = float(-(probs * (probs + 1e-12).log()).sum().item())
+                fields: dict[str, Any] = {
+                    "generate_call_index": generate_call_index,
+                    "trainer_step": trainer_step,
+                    "last_prompt_idx": pos,
+                    "greedy_token_id": greedy_id,
+                    "p_greedy": float(probs[greedy_id].item()),
+                    "entropy": entropy,
+                }
+                if eos_id is not None:
+                    fields["p_eos"] = float(probs[eos_id].item())
+                if PAREN_TOKEN_ID < probs.size(0):
+                    fields["p_token_340"] = float(probs[PAREN_TOKEN_ID].item())
+                topk = torch.topk(probs, k=min(5, probs.size(0)))
+                fields["top5"] = [
+                    (int(tid), float(p)) for tid, p in zip(topk.indices.tolist(), topk.values.tolist())
+                ]
+                opsd_debug.log_gendbg("first_token_logits", f"sample[{i}]", **fields)
+    except Exception as exc:
+        opsd_debug.log_gendbg(
+            "first_token_logits",
+            "FAILED forward for first-token logits",
+            generate_call_index=generate_call_index,
+            error=repr(exc),
+        )
+    return greedy_by_sample
+
+
+def log_first_token_logits_match(
+    *,
+    generate_call_index: int,
+    completion_ids: torch.Tensor,
+    greedy_by_sample: dict[int, int],
+    sample_count: int = 4,
+) -> None:
+    """Compare pre-generate greedy next token vs actual first generated token."""
+    if not opsd_debug.should_log_gendbg() or not opsd_debug.probe_first_token_logits():
+        return
+
+    n = min(sample_count, completion_ids.size(0))
+    for i in range(n):
+        if i not in greedy_by_sample or completion_ids.size(1) == 0:
+            continue
+        greedy_id = greedy_by_sample[i]
+        actual_id = int(completion_ids[i, 0].item())
+        opsd_debug.log_gendbg(
+            "first_token_match",
+            f"sample[{i}]",
+            generate_call_index=generate_call_index,
+            greedy_token_id=greedy_id,
+            actual_first_token=actual_id,
+            greedy_matches_actual=(greedy_id == actual_id),
+        )
+
+
+def log_generate_delta(
+    *,
+    generate_call_index: int,
+    current_stats: dict[str, Any],
+    previous_stats: Optional[dict[str, Any]],
+) -> None:
+    if not opsd_debug.should_log_gendbg():
+        return
+
+    fields: dict[str, Any] = {
+        "generate_call_index": generate_call_index,
+        "current": current_stats,
+    }
+    if previous_stats is not None:
+        prev_idx = previous_stats.get("generate_call_index", generate_call_index - 1)
+        fields["prev_generate_call_index"] = prev_idx
+        for key in (
+            "effective_tokens_mean",
+            "one_token_count",
+            "paren_then_eos_count",
+            "repeat_loop_count",
+            "eos_terminated_rate",
+        ):
+            cur = current_stats.get(key)
+            prev = previous_stats.get(key)
+            if cur is not None and prev is not None:
+                if isinstance(cur, (int, float)) and isinstance(prev, (int, float)):
+                    fields[f"delta_{key}"] = cur - prev
+    opsd_debug.log_gendbg("delta", "generate stats vs previous regenerate", **fields)
+
+
 def log_generate_probe(
     *,
     global_step: int,
@@ -70,10 +339,15 @@ def log_generate_probe(
     max_completion_length: int,
     num_generations: int,
     sample_count: int = 4,
-) -> None:
+    generate_call_index: Optional[int] = None,
+) -> dict[str, Any]:
     """Emit [OPSD-PROBE] on every (re)generate — catches 1-token / empty completions early."""
+    stats = summarize_generate_probe_stats(completion_ids, completion_mask, is_eos, getattr(tokenizer, "eos_token_id", None))
+    if generate_call_index is not None:
+        stats["generate_call_index"] = generate_call_index
+
     if not opsd_debug.should_log_probe():
-        return
+        return stats
 
     opsd_debug.set_detail_step(global_step)
     tok = tokenizer
@@ -91,6 +365,7 @@ def log_generate_probe(
         "raw generate summary",
         trainer_step=trainer_step,
         global_step=global_step,
+        generate_call_index=generate_call_index,
         prompt_length=prompt_length,
         prompt_completion_shape=tuple(prompt_completion_ids.shape),
         completion_ids_shape=tuple(completion_ids.shape),
@@ -98,12 +373,14 @@ def log_generate_probe(
         max_completion_length=max_completion_length,
         num_generations=num_generations,
         batch_size=completion_ids.size(0),
-        effective_tokens_mean=float(lengths.mean().item()),
+        effective_tokens_mean=stats["effective_tokens_mean"],
         effective_tokens_min=float(lengths.min().item()),
         effective_tokens_max=float(lengths.max().item()),
         zero_length_count=int((lengths == 0).sum().item()),
-        one_token_count=int((lengths == 1).sum().item()),
-        eos_terminated_rate=float(has_eos.float().mean().item()),
+        one_token_count=stats["one_token_count"],
+        paren_then_eos_count=stats["paren_then_eos_count"],
+        repeat_loop_count=stats["repeat_loop_count"],
+        eos_terminated_rate=stats["eos_terminated_rate"],
         tokenizer_eos_id=eos_id,
         tokenizer_pad_id=pad_id,
         tokenizer_bos_id=bos_id,
@@ -122,6 +399,7 @@ def log_generate_probe(
         first_tok = int(completion_ids[i, 0].item()) if completion_ids.size(1) > 0 else None
         first_is_eos = first_tok is not None and first_tok == eos_id
         flags: list[str] = []
+        patterns: list[str] = []
         if eff <= 0:
             flags.append("ZERO_LEN")
         if eff == 1:
@@ -130,6 +408,10 @@ def log_generate_probe(
             flags.append("EMPTY_DECODE")
         if first_is_eos:
             flags.append("FIRST_IS_EOS")
+        if eff <= 2 and first_tok == PAREN_TOKEN_ID:
+            patterns.append("PAREN_THEN_EOS")
+        if eff > 0 and _detect_repeat_loop(completion_ids[i, :eff].tolist()):
+            patterns.append("REPEAT_LOOP")
         if flags:
             suspicious.append(f"sample[{i}]:{','.join(flags)}")
 
@@ -147,6 +429,7 @@ def log_generate_probe(
             decode_skip_special=_preview_text(decode_skip, 400),
             decode_keep_special=_preview_text(decode_keep, 400),
             flags=flags or None,
+            patterns=patterns or None,
         )
 
     if suspicious:
@@ -157,6 +440,44 @@ def log_generate_probe(
             samples=suspicious,
             hint="check eos_token_id, max_new_tokens, model.generate output, or training-time unwrap/FSDP",
         )
+
+    return stats
+
+
+def log_cross_rank_generate_summary(
+    *,
+    accelerator: Any,
+    one_token_count: int,
+    effective_tokens_mean: float,
+    generate_call_index: int,
+) -> None:
+    """Gather per-rank generate stats; all ranks must call, log on rank 0 only."""
+    if not opsd_debug.probe_on_generate():
+        return
+
+    device = accelerator.device
+    local = torch.tensor(
+        [float(one_token_count), effective_tokens_mean],
+        dtype=torch.float32,
+        device=device,
+    )
+    gathered = accelerator.gather_for_metrics(local)
+    if not opsd_debug.should_log_gendbg():
+        return
+
+    if gathered.dim() == 1:
+        gathered = gathered.unsqueeze(0)
+    one_tokens = gathered[:, 0].tolist()
+    means = gathered[:, 1].tolist()
+    opsd_debug.log_gendbg(
+        "cross_rank",
+        "generate summary across ranks",
+        generate_call_index=generate_call_index,
+        world_size=len(one_tokens),
+        one_token_count_per_rank=one_tokens,
+        effective_tokens_mean_per_rank=means,
+        one_token_count_total=int(sum(one_tokens)),
+    )
 
 
 def log_routed_completion_probe(

@@ -11,6 +11,9 @@ from typing import Any, Optional
 _DEBUG_ENABLED = False
 _DETAIL_EVERY = 10
 _PROBE_ON_GENERATE = False
+_PROBE_FIRST_TOKEN_LOGITS = True
+_PROBE_PROMPT_TAIL_TOKENS = 16
+_PROBE_LOG_MODEL_CONTEXT = True
 _RANK = 0
 _WORLD_SIZE = 1
 _STEP_LABEL = "init"
@@ -41,16 +44,45 @@ def _env_probe_on_generate() -> Optional[bool]:
     return raw in ("1", "true", "yes", "on")
 
 
+def _env_probe_first_token_logits() -> Optional[bool]:
+    raw = os.environ.get("DYME_OPSD_PROBE_FIRST_TOKEN_LOGITS", "").strip().lower()
+    if not raw:
+        return None
+    return raw in ("1", "true", "yes", "on")
+
+
+def _env_probe_prompt_tail_tokens() -> Optional[int]:
+    raw = os.environ.get("DYME_OPSD_PROBE_PROMPT_TAIL_TOKENS", "").strip()
+    if not raw:
+        return None
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 16
+
+
+def _env_probe_log_model_context() -> Optional[bool]:
+    raw = os.environ.get("DYME_OPSD_PROBE_LOG_MODEL_CONTEXT", "").strip().lower()
+    if not raw:
+        return None
+    return raw in ("1", "true", "yes", "on")
+
+
 def configure(
     *,
     enabled: Optional[bool] = None,
     detail_every: Optional[int] = None,
     probe_on_generate: Optional[bool] = None,
+    probe_first_token_logits: Optional[bool] = None,
+    probe_prompt_tail_tokens: Optional[int] = None,
+    probe_log_model_context: Optional[bool] = None,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
 ) -> bool:
     """Configure global OPSD debug logging. Returns whether debug is enabled."""
-    global _DEBUG_ENABLED, _DETAIL_EVERY, _PROBE_ON_GENERATE, _RANK, _WORLD_SIZE
+    global _DEBUG_ENABLED, _DETAIL_EVERY, _PROBE_ON_GENERATE
+    global _PROBE_FIRST_TOKEN_LOGITS, _PROBE_PROMPT_TAIL_TOKENS, _PROBE_LOG_MODEL_CONTEXT
+    global _RANK, _WORLD_SIZE
     if enabled is None:
         enabled = _env_debug_enabled()
     _DEBUG_ENABLED = bool(enabled)
@@ -63,6 +95,21 @@ def configure(
         _PROBE_ON_GENERATE = bool(probe_on_generate)
     elif env_probe is not None:
         _PROBE_ON_GENERATE = env_probe
+    env_first_logits = _env_probe_first_token_logits()
+    if probe_first_token_logits is not None:
+        _PROBE_FIRST_TOKEN_LOGITS = bool(probe_first_token_logits)
+    elif env_first_logits is not None:
+        _PROBE_FIRST_TOKEN_LOGITS = env_first_logits
+    env_tail = _env_probe_prompt_tail_tokens()
+    if probe_prompt_tail_tokens is not None:
+        _PROBE_PROMPT_TAIL_TOKENS = max(1, int(probe_prompt_tail_tokens))
+    elif env_tail is not None:
+        _PROBE_PROMPT_TAIL_TOKENS = env_tail
+    env_model_ctx = _env_probe_log_model_context()
+    if probe_log_model_context is not None:
+        _PROBE_LOG_MODEL_CONTEXT = bool(probe_log_model_context)
+    elif env_model_ctx is not None:
+        _PROBE_LOG_MODEL_CONTEXT = env_model_ctx
     if rank is not None:
         _RANK = rank
     if world_size is not None:
@@ -76,6 +123,18 @@ def detail_every() -> int:
 
 def probe_on_generate() -> bool:
     return _PROBE_ON_GENERATE
+
+
+def probe_first_token_logits() -> bool:
+    return _PROBE_FIRST_TOKEN_LOGITS
+
+
+def probe_prompt_tail_tokens() -> int:
+    return _PROBE_PROMPT_TAIL_TOKENS
+
+
+def probe_log_model_context() -> bool:
+    return _PROBE_LOG_MODEL_CONTEXT
 
 
 def should_log_probe() -> bool:
@@ -200,6 +259,30 @@ def log_probe(section: str, msg: str, **fields: Any) -> None:
     if fields:
         extra = " | " + " | ".join(f"{k}={_fmt(v, max_len=1200)}" for k, v in fields.items())
     print(f"{_probe_prefix(section)} {msg}{extra}", flush=True)
+
+
+def _gendbg_prefix(section: str) -> str:
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    step = _DETAIL_STEP if _DETAIL_STEP is not None else "?"
+    return (
+        f"[OPSD-GENDBG][{ts}][rank={_RANK}/{_WORLD_SIZE}]"
+        f"[global_step={step}][{_STEP_LABEL}][{section}]"
+    )
+
+
+def should_log_gendbg() -> bool:
+    """True when deep generate diagnostics should run (rank 0 only)."""
+    return _PROBE_ON_GENERATE and _RANK == 0
+
+
+def log_gendbg(section: str, msg: str, **fields: Any) -> None:
+    """Deep per-generate diagnostic (rank 0). Uses [OPSD-GENDBG] prefix."""
+    if not should_log_gendbg():
+        return
+    extra = ""
+    if fields:
+        extra = " | " + " | ".join(f"{k}={_fmt(v, max_len=1200)}" for k, v in fields.items())
+    print(f"{_gendbg_prefix(section)} {msg}{extra}", flush=True)
 
 
 def log_config(stage: str, title: str, config: dict[str, Any]) -> None:

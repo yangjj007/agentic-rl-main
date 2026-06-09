@@ -367,11 +367,29 @@ export DYME_OPSD_DETAIL_EVERY=0
 
 Search logs for `[OPSD-DETAIL]` (not `[OPSD-DEBUG]`).
 
-**Per-generate probe (`[OPSD-PROBE]`)** — enabled by default in `config_trimode.py`; fires on every `(re)generate` on rank 0 (no need to wait for step 10). Logs raw `completion_ids`, decode with/without special tokens, `eos_idx`, and flags `ONE_TOKEN` / `EMPTY_DECODE` / `FIRST_IS_EOS`. Disable with `DYME_OPSD_PROBE_ON_GENERATE=0` or `--no_opsd_probe_on_generate`.
+**Per-generate probe (`[OPSD-PROBE]`)** — enabled by default in `config_trimode.py`; fires on every `(re)generate` on rank 0 (no need to wait for step 10). Logs raw `completion_ids`, decode with/without special tokens, `eos_idx`, flags `ONE_TOKEN` / `EMPTY_DECODE` / `FIRST_IS_EOS`, and patterns `PAREN_THEN_EOS` / `REPEAT_LOOP`. Disable with `DYME_OPSD_PROBE_ON_GENERATE=0` or `--no_opsd_probe_on_generate`.
+
+**Deep generate debug (`[OPSD-GENDBG]`)** — runs alongside `[OPSD-PROBE]` when probe is enabled. Before each `model.generate`, logs model training context, prompt tail tokens/decode, and first-token logits (`p_eos`, `p_token_340`, `entropy`, `top5`). After generate, logs greedy-vs-actual first token, delta vs previous regenerate, and cross-rank summary.
 
 ```bash
 export DYME_OPSD_PROBE_ON_GENERATE=1   # default in config_trimode
-grep '\[OPSD-PROBE\]' train.log
+grep -E '\[OPSD-(PROBE|GENDBG)\]' train.log
+```
+
+| Observation in logs | Likely root cause |
+|---------------------|-------------------|
+| `p_eos` very high + `greedy_token_id==eos` | Weight collapse / train-mode distribution |
+| `prompt_tail_decode` ends with unclosed template + high `p_token_340` | Prompt / chat template issue |
+| `greedy_matches_actual=False` with low `p_eos` | Sampling noise (temperature / top_p) |
+| Large `one_token_count` gap across ranks in `cross_rank` | Data sharding / batch composition |
+| `delta_one_token_count` spikes at `generate_call_index>=2` | Weight drift after optimizer step |
+
+Optional env overrides:
+
+```bash
+export DYME_OPSD_PROBE_FIRST_TOKEN_LOGITS=0   # skip extra forward before generate
+export DYME_OPSD_PROBE_PROMPT_TAIL_TOKENS=24
+export DYME_OPSD_PROBE_LOG_MODEL_CONTEXT=0
 ```
 
 ### 2. Training TriMode (DyME + OPSD)

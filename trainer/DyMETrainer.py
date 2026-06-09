@@ -419,11 +419,16 @@ class DyMETrainer(Trainer):
         detail_every = debug_cfg.get("detail_every", 10)
         probe_on_generate = debug_cfg.get("probe_on_generate", False)
         self._opsd_probe_sample_count = int(debug_cfg.get("probe_sample_count", 4))
+        self._generate_call_index = 0
+        self._last_generate_probe_stats = None
         opsd_debug.configure(
             rank=self.accelerator.process_index,
             world_size=self.accelerator.num_processes,
             detail_every=detail_every,
             probe_on_generate=probe_on_generate,
+            probe_first_token_logits=debug_cfg.get("probe_first_token_logits", True),
+            probe_prompt_tail_tokens=debug_cfg.get("probe_prompt_tail_tokens", 16),
+            probe_log_model_context=debug_cfg.get("probe_log_model_context", True),
         )
         opsd_debug.log_config("init", "DyMETrainer OPSD config loaded", self.opsd_config)
         if self.accelerator.is_main_process and detail_every > 0:
@@ -649,6 +654,9 @@ class DyMETrainer(Trainer):
         pixel_values = prompt_inputs_generate["pixel_values"]
         image_sizes = prompt_inputs_generate["image_sizes"]
 
+        global_step_for_probe = getattr(self.state, "global_step", self._step)
+        generate_call_index = self._generate_call_index
+
         # Regular generation path
         with opsd_debug.timed("generate", "model.generate"):
             with unwrap_model_for_generation(
@@ -659,8 +667,45 @@ class DyMETrainer(Trainer):
                     if self.is_fsdp_enabled
                     else nullcontext()
                 ):
-                    prompt_completion_ids = unwrapped_model.generate(**prompt_inputs_generate, generation_config=self.generation_config)
-
+                    opsd_diagnostics.log_generate_context(
+                        global_step=global_step_for_probe,
+                        trainer_step=self._step,
+                        generate_call_index=generate_call_index,
+                        model=unwrapped_model,
+                        model_wrapped=self.model_wrapped,
+                        gradient_checkpointing=bool(self.args.gradient_checkpointing),
+                        generation_config=self.generation_config,
+                        is_fsdp_enabled=self.is_fsdp_enabled,
+                        generate_runs_under_no_grad=False,
+                    )
+                    opsd_diagnostics.log_prompt_tail_probe(
+                        global_step=global_step_for_probe,
+                        trainer_step=self._step,
+                        generate_call_index=generate_call_index,
+                        prompt_ids=prompt_ids,
+                        prompt_mask=prompt_mask,
+                        tokenizer=self.processing_class.tokenizer,
+                        sample_count=self._opsd_probe_sample_count,
+                    )
+                    greedy_by_sample = opsd_diagnostics.log_first_token_logits_probe(
+                        global_step=global_step_for_probe,
+                        trainer_step=self._step,
+                        generate_call_index=generate_call_index,
+                        unwrapped_model=unwrapped_model,
+                        prompt_inputs_generate=prompt_inputs_generate,
+                        prompt_mask=prompt_mask,
+                        tokenizer=self.processing_class.tokenizer,
+                        sample_count=self._opsd_probe_sample_count,
+                    )
+                    prompt_completion_ids = unwrapped_model.generate(
+                        **prompt_inputs_generate, generation_config=self.generation_config
+                    )
+                    opsd_diagnostics.log_first_token_logits_match(
+                        generate_call_index=generate_call_index,
+                        completion_ids=prompt_completion_ids[:, prompt_ids.size(1) :],
+                        greedy_by_sample=greedy_by_sample,
+                        sample_count=self._opsd_probe_sample_count,
+                    )
 
             # Compute prompt length and extract completion ids
             prompt_length = prompt_ids.size(1)
@@ -681,8 +726,7 @@ class DyMETrainer(Trainer):
 
         completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
-        global_step_for_probe = getattr(self.state, "global_step", self._step)
-        opsd_diagnostics.log_generate_probe(
+        probe_stats = opsd_diagnostics.log_generate_probe(
             global_step=global_step_for_probe,
             trainer_step=self._step,
             prompt_length=prompt_length,
@@ -697,7 +741,21 @@ class DyMETrainer(Trainer):
             max_completion_length=self.max_completion_length,
             num_generations=self.num_generations,
             sample_count=self._opsd_probe_sample_count,
+            generate_call_index=generate_call_index,
         )
+        opsd_diagnostics.log_generate_delta(
+            generate_call_index=generate_call_index,
+            current_stats=probe_stats,
+            previous_stats=self._last_generate_probe_stats,
+        )
+        opsd_diagnostics.log_cross_rank_generate_summary(
+            accelerator=self.accelerator,
+            one_token_count=probe_stats.get("one_token_count", 0),
+            effective_tokens_mean=probe_stats.get("effective_tokens_mean", 0.0),
+            generate_call_index=generate_call_index,
+        )
+        self._last_generate_probe_stats = probe_stats
+        self._generate_call_index += 1
 
         batch_size = len(completion_ids)
         images = [x['image'] for x in inputs]

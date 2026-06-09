@@ -176,6 +176,11 @@ def main():
     )
     parser.set_defaults(opsd_probe_on_generate=None)
     parser.add_argument(
+        '--no_opsd_probe_first_token_logits', dest='opsd_probe_first_token_logits', action='store_false',
+        help="Disable pre-generate first-token logits probe ([OPSD-GENDBG])",
+    )
+    parser.set_defaults(opsd_probe_first_token_logits=None)
+    parser.add_argument(
         '--wandb', dest='wandb', action='store_true',
         help="Force enable Weights & Biases logging",
     )
@@ -213,11 +218,18 @@ def main():
     if args.opsd_probe_on_generate is not None:
         probe_on_generate = args.opsd_probe_on_generate
         debug_cfg["probe_on_generate"] = probe_on_generate
+    probe_first_token_logits = debug_cfg.get("probe_first_token_logits", True)
+    if args.opsd_probe_first_token_logits is not None:
+        probe_first_token_logits = args.opsd_probe_first_token_logits
+        debug_cfg["probe_first_token_logits"] = probe_first_token_logits
 
     debug_enabled = opsd_debug.configure(
         enabled=args.opsd_debug or None,
         detail_every=detail_every,
         probe_on_generate=probe_on_generate,
+        probe_first_token_logits=probe_first_token_logits,
+        probe_prompt_tail_tokens=debug_cfg.get("probe_prompt_tail_tokens", 16),
+        probe_log_model_context=debug_cfg.get("probe_log_model_context", True),
     )
     if debug_enabled:
         opsd_debug.log_config("main", "resolved OPSD config", opsd_config)
@@ -246,6 +258,10 @@ def main():
     opsd_debug.configure(
         enabled=debug_enabled,
         detail_every=detail_every,
+        probe_on_generate=probe_on_generate,
+        probe_first_token_logits=probe_first_token_logits,
+        probe_prompt_tail_tokens=debug_cfg.get("probe_prompt_tail_tokens", 16),
+        probe_log_model_context=debug_cfg.get("probe_log_model_context", True),
         rank=accelerator.process_index,
         world_size=accelerator.num_processes,
     )

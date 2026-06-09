@@ -22,6 +22,18 @@ except ValueError:
 _probe_raw = os.environ.get("DYME_OPSD_PROBE_ON_GENERATE", "1").strip().lower()
 _probe_on_generate = _probe_raw not in ("0", "false", "no", "off")
 
+_first_logits_raw = os.environ.get("DYME_OPSD_PROBE_FIRST_TOKEN_LOGITS", "1").strip().lower()
+_probe_first_token_logits = _first_logits_raw not in ("0", "false", "no", "off")
+
+_tail_raw = os.environ.get("DYME_OPSD_PROBE_PROMPT_TAIL_TOKENS", "16").strip()
+try:
+    _probe_prompt_tail_tokens = max(1, int(_tail_raw))
+except ValueError:
+    _probe_prompt_tail_tokens = 16
+
+_model_ctx_raw = os.environ.get("DYME_OPSD_PROBE_LOG_MODEL_CONTEXT", "1").strip().lower()
+_probe_log_model_context = _model_ctx_raw not in ("0", "false", "no", "off")
+
 DYME_OPSD_CONFIG = {
     **DYME_OPSD_CONFIG,
     "enabled": True,
@@ -31,6 +43,9 @@ DYME_OPSD_CONFIG = {
         **DYME_OPSD_CONFIG.get("debug", {}),
         "detail_every": _detail_every,
         "probe_on_generate": _probe_on_generate,
+        "probe_first_token_logits": _probe_first_token_logits,
+        "probe_prompt_tail_tokens": _probe_prompt_tail_tokens,
+        "probe_log_model_context": _probe_log_model_context,
     },
 }
 

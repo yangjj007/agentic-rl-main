@@ -106,6 +106,10 @@ DYME_OPSD_CONFIG = {
         # Lightweight [OPSD-PROBE] on every (re)generate (rank 0). Independent of OPSD-DEBUG.
         "probe_on_generate": False,
         "probe_sample_count": 4,
+        # Deep generate diagnostics ([OPSD-GENDBG]) — prompt tail, first-token logits, model context.
+        "probe_first_token_logits": True,
+        "probe_prompt_tail_tokens": 16,
+        "probe_log_model_context": True,
     },
 }
 
