@@ -27,6 +27,7 @@ DyME/
 ├── eval/                 # Evaluation scripts for different benchmarks
 ├── reward_utils/         # Reward function implementations for RLVR
 ├── config/               # Modular configuration files for experiments
+├── opsd_utils/           # Privileged-context OPSD / TriMode extensions for DyMETrainer
 ├── default_config.yaml   # Default training and environment configurations
 ├── main.py               # Entry point for DyME training
 ├── main_*.py             # Additional experimental variants (e.g., 7B, LLM-only)
@@ -55,6 +56,40 @@ This section defines critical variables for reward computation and response pars
 * `end_flag`: used to mark the end of generation.
 
 These delimiters are essential for stable parsing, reward assignment, and evaluation consistency.
+
+### `DYME_OPSD_CONFIG` (OPSD / TriMode)
+
+`config/config.py` defines `DYME_OPSD_CONFIG`, merged into `CONFIG["opsd"]`. When `enabled=False` (default), training follows the original DyME behavior. Set `enabled=True` or pass CLI flags to activate privileged-context **Self-OPSD** inside `DyMETrainer`.
+
+| Field | Description |
+| --- | --- |
+| `enabled` | Master switch. `False` → original DyME only. |
+| `mode` | Routing mode (see table below). |
+| `privileged_providers` | Teacher context sources: `text`, `visual_facts`, `crop`, `hybrid`. |
+| `gate.correct_threshold` | Reward threshold to count a rollout as correct. |
+| `gate.teacher_recoverable` | Recoverability gate: `privileged_available` (default) or `logprob_gain`. |
+| `loss.beta` | JSD temperature for OPSD distillation. |
+| `loss.opsd_weight` / `grpo_weight` / `sft_weight` | Per-mode loss weights. |
+
+**Routing modes (`mode`):**
+
+| Mode | Behavior |
+| --- | --- |
+| `dyme` | Original DyME: any correct rollout → GRPO; all wrong → SFT. |
+| `trimode` | Any correct → GRPO; all wrong + recoverable → OPSD; all wrong + not recoverable → SFT. |
+| `opsd_only` | All prompts use OPSD. |
+| `replace_sft` | Any correct → GRPO; all wrong → OPSD (no SFT). |
+| `opsd_on_wrong` | Same as `trimode`, explicit naming for ablations. |
+| `grpo_opsd_joint` | Alias of `trimode` routing logic. |
+
+**Privileged providers** (under `opsd_utils/privileged/`):
+
+* `text` — uses the `hint` field in training samples.
+* `visual_facts` — uses `visual_fact` / `visual_facts` JSON in samples (see A-OKVQA example).
+* `crop` — reserved stub for region crops.
+* `hybrid` — combines multiple providers.
+
+For ChartQA visual-facts preprocessing, see `scripts/build_visual_facts_chartqa.py`.
 
 
 
@@ -101,11 +136,38 @@ Preprocessed text splits are provided under the `data/` directory.
 
 ### Image Data
 
-Due to storage constraints, image datasets are not included in this repository. Please manually place the required image files (e.g., **A-OKVQA** and **ChartQA**) under:
+Due to storage constraints, image datasets are not included in this repository. Download scripts write images under `data/images/` by default:
 
 ```text
 data/images/
+├── chartqa/
+│   ├── images/     # train_000000.png, val_000000.png, test_000000.png, ...
+│   └── json/       # train.json, val.json, test.json (from download.py)
+└── aokvqa/
+    ├── images/     # train_0000000.png, ...
+    └── json/       # train.json, validation.json, test.json (from download.py)
 ```
+
+**ChartQA** (images only, no API required):
+
+```bash
+python data_utils/chart/download.py
+```
+
+**A-OKVQA** (images only by default; set `FETCH_VISUAL_FACTS=1` only if local VLM APIs are running on ports 23333–23340):
+
+```bash
+python data_utils/aokvqa/download.py
+```
+
+If you already downloaded ChartQA to `chartqa_output/` at the project root, move it into the canonical layout:
+
+```bash
+mkdir -p data/images
+mv chartqa_output data/images/chartqa
+```
+
+Preprocessed text annotations with hints live separately under `data/chartqa/` and `data/aokvqa/`. Image paths inside those JSON files are resolved automatically at load time (legacy prefixes like `/chartqa_output/` map to `data/images/chartqa/`).
 
 ### Demo Samples
 
@@ -222,17 +284,66 @@ A small subset of demo images for verifying the data loading pipeline may be pro
 
 ## Training
 
-All training scripts are launched using `accelerate`. The codebase separates the proposed **DyME** framework from standard baseline settings for easier reproduction.
-
-### 1. Training DyME
-
-To train the model with the proposed **DyME** framework, run:
+All training scripts are launched using `accelerate`. Pass `--config` as a **Python config file path** (recommended) or a shorthand alias (`norm`, `trimode`, `llavacot`, `low`, `aok`).
 
 ```bash
-accelerate launch main.py --config config/config.py
+# file path (recommended, same style for all experiments)
+accelerate launch main.py --config config/config.py --mode rl
+
+# shorthand alias
+accelerate launch main.py --config norm --mode rl
 ```
 
-### 2. Reproducing Baselines
+### 1. Training DyME (original)
+
+Default config keeps OPSD disabled (`DYME_OPSD_CONFIG.enabled=False`):
+
+```bash
+accelerate launch main.py --config config/config.py --mode rl
+```
+
+### 2. Training TriMode (DyME + OPSD)
+
+Use `config/config_trimode.py` (OPSD pre-enabled) or override on the base config via CLI:
+
+```bash
+accelerate launch main.py \
+  --config config/config_trimode.py \
+  --mode rl \
+  --opsd_enabled \
+  --opsd_mode trimode \
+  --opsd_providers text,visual_facts
+```
+
+Equivalent one-liner with base config + CLI only:
+
+```bash
+accelerate launch main.py --config config/config.py --mode rl \
+  --opsd_enabled --opsd_mode trimode --opsd_providers text,visual_facts
+```
+
+**CLI OPSD flags** (override `CONFIG["opsd"]`):
+
+| Flag | Description |
+| --- | --- |
+| `--opsd_enabled` | Enable OPSD / TriMode extensions. |
+| `--opsd_mode MODE` | Routing mode: `trimode`, `dyme`, `opsd_only`, `replace_sft`, … |
+| `--opsd_providers LIST` | Comma-separated providers, e.g. `text,visual_facts`. |
+
+**Helper scripts** (under `scripts/`):
+
+```bash
+# TriMode on ChartQA
+bash scripts/train_trimode.sh
+
+# Ablation matrix: MODE=dyme|trimode|replace_sft|opsd_only|...
+MODE=trimode DYME_OPSD_PROVIDERS=text,visual_facts bash scripts/train_baselines.sh
+
+# Post-training eval (set CHECKPOINT_DIR)
+CHECKPOINT_DIR=./outputs/trimode-chartqa/final_checkpoint bash scripts/run_eval_ablation.sh
+```
+
+### 3. Reproducing Baselines
 
 To reproduce baseline settings such as standard SFT or RL training, use `main_rebuttal.py` and specify the desired mode through `--mode`.
 
@@ -248,7 +359,7 @@ accelerate launch main_rebuttal.py --config config/config.py --mode sft
 accelerate launch main_rebuttal.py --config config/config.py --mode grpo
 ```
 
-### 3. Additional Experimental Variants
+### 4. Additional Experimental Variants
 
 For specific experimental settings such as different model scales or architecture-specific ablations, please use the corresponding scripts:
 

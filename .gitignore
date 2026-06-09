@@ -1,9 +1,126 @@
-# Default ignored files
-/shelf/
-/workspace.xml
-# Editor-based HTTP Client requests
-/httpRequests/
-# Datasource local storage ignored files
-/dataSources/
-/dataSources.local.xml
-.idea
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env/
+
+# Secrets & local config
+.env.*
+*.pem
+secrets.yaml
+credentials.json
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Type checkers
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# IDE & editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ML training outputs & checkpoints
+outputs/
+checkpoints/
+runs/
+wandb/
+lightning_logs/
+tensorboard/
+tb_logs/
+deepspeed_logs/
+mlruns/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Large downloaded image datasets (JSON metadata in data/ is kept)
+data/images/
+chartqa_output/
+aokvqa_output/
+
+# HuggingFace / model caches
+.cache/
+huggingface/
+hf_cache/
+transformers_cache/
+
+# Logs
+*.log
+logs/
+nohup.out
+
+# Compiled extensions / flash-attn build
+*.o
+*.a
+*.dll
+*.dylib
+
+# Cursor IDE
+.cursor/
+
+# Local experiment artifacts
+*.tmp
+*.bak
+*.orig

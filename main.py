@@ -21,9 +21,9 @@ from datasets import Dataset, load_dataset
 from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 from trl import GRPOConfig
 
-from config import CONFIG
+from config.loader import load_config
 from data_utils.commom_util import collate_fn, define_task_data_func
-from DyMETrainer import DyMETrainer
+from trainer.DyMETrainer import DyMETrainer
 from reward_utils.checker import RewardCalculator, RewardCalculatorLocal
 from reward_utils.refiner import ContextRefiner, ContextRefinerLocal
 
@@ -111,33 +111,45 @@ def main():
     parser = argparse.ArgumentParser(description="Train a Llava model using either SFT or GRPO.")
 
     parser.add_argument(
-        '--config', type=str, default='norm',
-        help="config file to use: 'norm' or 'llavacot'..."
+        '--config', type=str, default='config/config.py',
+        help="Python config path (e.g. config/config.py, config/config_trimode.py) "
+             "or shorthand alias: norm | trimode | llavacot | low | aok",
     )
     parser.add_argument(
         '--mode', type=str, default='rl',
     )
+    parser.add_argument(
+        '--opsd_mode', type=str, default=None,
+        help="OPSD routing mode: dyme | trimode | opsd_only | replace_sft | opsd_on_wrong | grpo_opsd_joint",
+    )
+    parser.add_argument(
+        '--opsd_providers', type=str, default=None,
+        help="Comma-separated privileged providers: text,visual_facts,crop,hybrid",
+    )
+    parser.add_argument(
+        '--opsd_enabled', action='store_true',
+        help="Enable OPSD / TriMode training extensions",
+    )
 
     args = parser.parse_args()
-    config_select = args.config
     mode = args.mode
 
-    if config_select == 'norm':
-        from config import CONFIG
-    elif config_select == 'llavacot':
-        from config_llavacot import CONFIG
-    elif config_select == 'low':
-        from config_low import CONFIG
-    elif config_select == 'aok':
-        from config_aok import CONFIG
-
     # 1. Load Configurations
+    CONFIG = load_config(args.config)
     model_config = CONFIG['model']
     training_config = CONFIG['training']
     rl_config = CONFIG['rl']
     client_config = CONFIG['client']
     dataset_config = CONFIG['dataset']
     task = training_config['task']
+    opsd_config = dict(CONFIG.get('opsd', {"enabled": False, "mode": "dyme"}))
+    if args.opsd_enabled:
+        opsd_config["enabled"] = True
+    if args.opsd_mode is not None:
+        opsd_config["enabled"] = True
+        opsd_config["mode"] = args.opsd_mode
+    if args.opsd_providers is not None:
+        opsd_config["privileged_providers"] = [p.strip() for p in args.opsd_providers.split(",") if p.strip()]
 
     # 2. Setup Environment
     accelerator = setup_accelerator_and_wandb(bf16=training_config['dyme_args']['bf16'])
@@ -171,6 +183,7 @@ def main():
         processing_func=collate_fn_with_processor,
         task_name=task,
         end_flag=rl_config['end_flag'],
+        opsd_config=opsd_config,
     )
 
     # 8. Start Training

@@ -10,6 +10,8 @@ from tqdm import tqdm
 from openai import OpenAI, BadRequestError
 import time
 
+from data_utils.paths import AOKVQA_DIR
+
 # Ensure PIL can handle large images
 Image.MAX_IMAGE_PIXELS = None
 
@@ -185,10 +187,16 @@ def process_example_worker(example_with_index, split, image_output_dir, api_port
         return None  # The main process will filter out None
 
 
-def save_aokvqa_with_facts(base_output_dir="/aokvqa_output"):
+def save_aokvqa_with_facts(base_output_dir=None, fetch_visual_facts=None):
     """
-    Load A-OKVQA, save images with multiprocessing, and obtain visual_facts for the training split.
+    Load A-OKVQA, save images with multiprocessing, and optionally obtain visual_facts for the training split.
+
+    Set env FETCH_VISUAL_FACTS=1 to call local MLLM APIs; default is images-only download.
     """
+    if base_output_dir is None:
+        base_output_dir = AOKVQA_DIR
+    if fetch_visual_facts is None:
+        fetch_visual_facts = os.environ.get("FETCH_VISUAL_FACTS", "0") == "1"
 
     # 1. Define output directories
     base_dir_abs = os.path.abspath(base_output_dir)
@@ -222,14 +230,12 @@ def save_aokvqa_with_facts(base_output_dir="/aokvqa_output"):
     # 5. Iterate over each split
     for split in dataset.keys():
 
-        fetch_facts = (split == 'train')
+        fetch_facts = fetch_visual_facts and (split == 'train')
 
         if fetch_facts:
             print(f"\n--- Processing split {split} (will call MLLM API) ---")
         else:
-            print(f"\n--- ------------------- ---")
-            print(f"--- Processing split {split} (only saving images, visual_fact=None) ---")
-            print(f"--- ------------------- ---")
+            print(f"\n--- Processing split {split} (images only, visual_fact=None) ---")
 
         metadata_list = []
 
@@ -270,5 +276,4 @@ def save_aokvqa_with_facts(base_output_dir="/aokvqa_output"):
 if __name__ == "__main__":
     multiprocessing.set_start_method("spawn", force=True)
 
-    # Change to your desired output directory
-    save_aokvqa_with_facts(base_output_dir="/path/to/data/aokvqa")
+    save_aokvqa_with_facts()

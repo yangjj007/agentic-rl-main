@@ -6,7 +6,9 @@ import os
 from copy import deepcopy
 from tqdm import tqdm
 import sys
-sys.path.append('/path/to/code/DyME')
+
+from data_utils.paths import CHARTQA_JSON_DIR, PROJECT_ROOT
+sys.path.append(PROJECT_ROOT)
 from client_utils.openai_api import OpenAIClient
 from data_utils.chart.prompts import prompt_refine
 from data_utils.commom_util import prompt_ic
@@ -99,8 +101,8 @@ def process_item_worker(item):
 def main():
     # Configuration that contains port and server count information
     from config import CLIENT_CONFIG
-    input_filename = '/path/to/chartqa_output/json/train_new.json'
-    output_filename = '/path/to/chartqa_output/json/train_new_prerefine.json'
+    input_filename = os.path.join(CHARTQA_JSON_DIR, 'train.json')
+    output_filename = os.path.join(CHARTQA_JSON_DIR, 'train_new_prerefine.json')
 
     NUM_PROCESSES = 64
     print(f"Using {NUM_PROCESSES} processes and distributing requests to {CLIENT_CONFIG['num_server']} servers...")

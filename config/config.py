@@ -1,6 +1,8 @@
 import os
 import torch
 
+from data_utils.paths import OUTPUTS_DIR, project_path
+
 # ====== Model Configuration ======
 MODEL_CONFIG = {
     "pretrained_model_path": "llava-hf/llava-onevision-qwen2-0.5b-ov-hf",  # two-stage grpo
@@ -15,7 +17,7 @@ TRAINING_CONFIG = {
     "num_client": 8,  # 并发客户端数量，通常与 GPU 数量相同
     # RL阶段的参数 (根据原脚本的rl_args)
     "dyme_args": {
-        "output_dir": '/path/to/dyme-k-8',
+        "output_dir": os.path.join(OUTPUTS_DIR, "dyme-k-8"),
         "logging_steps": 1,
         "num_generations": 8,  # RL 阶段可以生成多个响应进行比较
         "max_completion_length": 300,
@@ -35,7 +37,7 @@ TRAINING_CONFIG = {
         "seed": 42,
     },
     "sft_args": {
-        "output_dir": '/path/to/sft-chart-llava_cot',
+        "output_dir": os.path.join(OUTPUTS_DIR, "sft-chart-llava_cot"),
         "logging_steps": 1,
         "per_device_train_batch_size": 2,
         "gradient_accumulation_steps": 4,
@@ -53,7 +55,7 @@ TRAINING_CONFIG = {
         "remove_unused_columns": False
     },
     "grpo_args":{
-        "output_dir": '/path/to/grpo-chart-llava-beta',
+        "output_dir": os.path.join(OUTPUTS_DIR, "grpo-chart-llava-beta"),
         "logging_steps": 1,
         "num_generations": 4,  # RL 阶段可以生成多个响应进行比较
         "max_completion_length": 576,
@@ -81,6 +83,25 @@ RL_CONFIG = {
     "end_flag": "<|im_end|>"
 }
 
+# OPSD / TriMode training (disabled by default -> original DyME behavior)
+DYME_OPSD_CONFIG = {
+    "enabled": False,
+    "mode": "dyme",
+    "privileged_providers": ["text"],
+    "gate": {
+        "correct_threshold": 0.5,
+        "teacher_recoverable": "privileged_available",
+        "recoverable_tau": 0.5,
+        "use_edge_mask": False,
+    },
+    "loss": {
+        "beta": 0.5,
+        "opsd_weight": 1.0,
+        "grpo_weight": 1.0,
+        "sft_weight": 1.0,
+    },
+}
+
 # ====== Client Configuration for Reward Calculation ======
 CLIENT_CONFIG = {
     "client_type": "openai",  # 客户端主机地址
@@ -94,7 +115,7 @@ CLIENT_CONFIG = {
 
 # ====== Dataset Configuration ======
 DATASET_CONFIG = {
-    "train_dataset": "/path/to/data/chartqa_output/json/train_new_prerefine.json",
+    "train_dataset": project_path("data/chartqa/train_medium.json"),
     # 训练数据路径
     "eval_dataset": "HuggingFaceM4/ChartQA",  # 验证数据路径
 }
@@ -104,6 +125,7 @@ CONFIG = {
     "model": MODEL_CONFIG,
     "training": TRAINING_CONFIG,
     "rl": RL_CONFIG,
+    "opsd": DYME_OPSD_CONFIG,
     "client": CLIENT_CONFIG,
     "dataset": DATASET_CONFIG,
 }

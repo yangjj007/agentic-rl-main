@@ -1,6 +1,8 @@
 import os
 import torch
 
+from data_utils.paths import project_path
+
 
 MODEL_CONFIG = {
     "pretrained_model_path": "llava-hf/llava-onevision-qwen2-0.5b-ov-hf", 
@@ -92,7 +94,7 @@ CLIENT_CONFIG = {
 
 # ====== Dataset Configuration ======
 DATASET_CONFIG = {
-    "train_dataset": "/path/to/data/aokvqa/json/train_cleaned.json",
+    "train_dataset": project_path("data/aokvqa/train.json"),
     "eval_dataset": "HuggingFaceM4/A-OKVQA", 
 }
 

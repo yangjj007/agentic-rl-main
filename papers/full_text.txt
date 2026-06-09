@@ -1,0 +1,1211 @@
+
+--- PAGE 1 ---
+PublishedasaconferencepaperatICLR2026
+EMPOWERING SMALL VLMS TO THINK WITH DY-
+NAMIC MEMORIZATION AND EXPLORATION
+JiazhenLiu ,YuchuanDeng ,andLongChen∗
+TheHongKongUniversityofScienceandTechnology
+https://github.com/HKUST-LongGroup/DyME
+ABSTRACT
+Small-scaleVision–LanguageModels(SVLMs)areexceptionallywell-suitedfor
+proprietarytasks. Equippingthemwiththinkingcapabilitiesisacriticalstepto
+enhance their performance and reliability in these specific domains. However,
+existingtrainingparadigms,includingSupervisedFine-Tuning(SFT)andRein-
+forcementLearningwithVerifiableReward(RLVR),imposesubstantialdemands
+onthebaseVLM,exceedingthecapacityofSVLMs. Consequently,directlyap-
+plyingtheseparadigmstoSVLMsfailstoinstillthedesiredthinkingabilities. A
+natural solution is to combine SFT and RLVR, leveraging their complementar-
+ity to reduce the dependence on model capacity. Yet the core challenge lies in
+managingtheinherenttrade-off: excessiverelianceonSFTcanforcethemodel
+tomemorizepseudothinkingtraces,whileover-emphasizingRLVRcanleadto
+unstableexploration(i.e.,advantagecollapse). Toaddressthis,weproposeDyME,
+anoveltrainingparadigmthatDynamicallyselectsbetweenMemorization(via
+SFT) and Exploration (via RLVR) at each optimization step. By ensuring that
+every update contributes to the trade-off, DyME serves as a robust, standalone
+strategythatstabilizesSVLMlearning. Complementingthisparadigm,wefurther
+introduceasynergisticVisualSupervisionmechanism(comprisingavisualchecker
+andrefiner)designedtoinjectdynamicallyenhanced,image-groundedguidance
+duringoptimization. Extensiveexperimentsacrossdiversedomainsdemonstrate
+that DyME consistently achieves this balance, and thus delivers substantial per-
+formance improvements on specialized tasks. These results establish DyME as
+apracticalandeffectivesolutionforempoweringSVLMswithreliablethinking
+capabilities.
+1 INTRODUCTION
+EquippingVision–LanguageModels(VLMs)withthinkingcapabilitiesisapivotalstepthatmoves
+thembeyondrecognitiontowardreasoning. Recentstudieshaveadvancedthisgoalthroughspe-
+cializedtraining,achievingstrongresultsonaspectrumofvisualtasks,fromrecognition-intensive
+applicationslikegrounding(Laietal.,2025;Liu&Chen,2025;Pengetal.,2025;Liuetal.,2025c;a)
+toreasoning-intensivechallengessuchaschartunderstanding(Zhangetal.,2025a;Xiaetal.,2024)
+andgeometricproblemsolving(Shenetal.,2025;Chenetal.,2025b;Xiaetal.,2025). Whilethis
+progressissignificant,thesuccessoftheseapproachesiscontingentuponthebaseVLMpossessing
+strongfoundationalcapabilities,namely,sufficientcapacityandrobustinstructionadherence(Yang
+etal.,2025a). Inpractice,onlyahandfulofVLMsmeettheseprerequisites,presentingasignificant
+challengeforSmall-scaleVLMs(SVLMs)whichstruggletodevelopthinkingcapabilitiesunder
+existingtrainingparadigms.
+Tocontextualizethislimitation,webrieflyreviewthetwodominantparadigms,bothofwhichare
+primarilytailoredforLarge-scaleVLMs(LVLMs). 1)SupervisedFine-Tuning(SFT)onChain-of-
+Thought(CoT)data(Xuetal.,2024;Lietal.,2024b;Xiaetal.,2025;Gaoetal.,2025): VLMsare
+supervisedtomemorizepredefinedthinkingpatternsfromlarge-scaleCoTannotations. SinceCoT
+dataareoftenverboseandcontainmuchvision-irrelevantcontent,modelsmustpossesssufficient
+capacity to absorb long textual content without compromising visual grounding (Marafioti et al.,
+∗Correspondingauthor(longchen@ust.hk)
+1
+6202
+beF
+72
+]VC.sc[
+2v16032.6052:viXra
+--- PAGE 2 ---
+PublishedasaconferencepaperatICLR2026
+After CoT SFT training During RLVR training
+(Input Image)
+Rapid Decline in Brazilians' Which year shows a greater divergence of opinions about Brazil's Which year has the most divergent
+Assessment of Economy economy, 2010 or 2012? Output the thinking process and then give opinions about Brazil's economy? Output
+the final answer in <answer> </answer> tag. the thinking process and then give the
+final answer in <answer> </answer> tag.
+We locate 2010 and 2012. To answer the question, we To answer the question, we examine the
+Then, extract 2010 has 62 first locate the relevant years chart and compare the value differences
+and 36, 2012 has 65 and in the chart. Then, we extract for each year. In 2015, the values are 87
+35. Comparing 62 − 36 = 26 the values for each year. and 13, showing the most significant
+< 65 − 35 = 30, the year with Compare the differences, the divergence. <answer>2015</answer>
+greater divergence is 2012. year with greater divergence is
+<answer>2012</answer> 2010. <answer>2010</answer> 2015 has the greatest divergence.
+Large-scale VLM
+LVLMs: vision preserved SVLMs: vision compromised SVLMs poorly follow instructions
+Small-scale VLM
+Grounded thinking traces Pseudo thinking traces (fail) Advantage collapsing (fail)
+a) SFT and RL paradigms fail to enable SVLMs to think.
+Two-stage training DyME training
+Extent
+1. Locate the year; Constrained
+2. Extract the value; exploration RL RL
+3. Get the answer. RL safe to
+<answer>2012</answer> explore
+(hard to achieve) (single step)
+SFT . t < . h . a e g n c r s h o w a u e r n r t d > .. e 2 . d A 0 1 v f 2 t a e < l r u / t a e h n i f n s r w o k m i e n r g > , RL c T ap h a in b k il i i n ti g e s Switcher Switcher c T ap h a in b k il i i n ti g es
+(numerous steps)
+2012 has the greatest div- need to
+e (n rg o e f n o c r e m . at answer) RL A d co v l a la n p ta s g e e memorize SFT SFT
+b) Two-stage training vs. DyME
+Figure1: TrainingparadigmsforenablingVLMthinking. TheLVLMisQwen2.5-VL-32B(Bai
+etal.,2025)andtheSVLMisSmolVLM-500M(Marafiotietal.,2025). (a)Existingparadigmsare
+effectiveforLVLMsbutunsuitableforSVLMs. (b)Thetwo-stagetrainingparadigm(SFT→RL)
+facesachallengingtrade-off. OurproposedDyMEdynamicallybalancesthistrade-off.
+2025). This capability gap is illustrated in Fig. 1a: After SFT, LVLMs can generate grounded
+thinkingtraceswithaccurateintermediatevalues(ingreen),whileSVLMscannot. 2)Reinforcement
+LearningwithVerifiableReward(RLVR)(Zhangetal.,2025a;Chenetal.,2025b;Pengetal.,
+2025;Shenetal.,2025): ontheotherhand,promotesexplorationofthinkingpatternsratherthan
+imitations. Inthisparadigm,VLMsareinstructedtogenerateathoughtprocessfollowedbyastrictly
+formattedanswer(e.g.,enclosedintags). Thisformatenablesverifiablerewardstoreinforcecorrect
+generationsandpenalizeincorrectones. Owingtoitsrelianceoninstructionadherence,thisapproach
+ispracticalprimarilyforstrongVLMsthatcanreliablygeneratestructuredoutputs.
+Consequently,bothestablishedparadigmsareinadequate
+forinstillingthinkinginSVLMs. Theextremelylimited
+Baseline
+capacity(e.g.,under1Bparameters)ofSVLMsrenders Baseline +CoT SFT
++RLVR
+the SFT paradigm ineffective, as a high volume of tex- +Two-stage
++CoT SFT +Ours
+tual information in CoT data can overwhelm the capac-
+ity(Marafiotietal.,2025;Chenetal.,2025a). Moreover, +RLVR
+the limited instruction adherence of SVLMs frequently
++Two-stage
+resultsinunverifiableoutputs(Chuetal.,2025;Guoetal.,
+2025),precipitatingadvantagecollapseduringRLVR.We +Ours
+quantitatively verify these limitations (cf., Fig. 2): both
+35 40 45 50 55 60 65 70 75
+SFTandRLVRparadigmsindeedimpairtheperformance.
+Figure2: PerformanceofSmolVLM-
+Considering that SVLMs offer high efficiency and are 500M (Marafioti et al., 2025) on
+crucialfordeploymentonedgedevices(Marafiotietal., ChartQA (Masry et al., 2022). Ex-
+2025), enabling them to think addresses a strong prac- istingparadigmsdegradeperformance,
+tical demand. Thinking enhances the reliability and whereasDyMEyieldsimprovements.
+performance of vision tasks (Zhang et al., 2025a), and
+task-specificSVLMsprovideacompellingalternativeto
+LVLMsinresource-constrainedsettings. Thismotivatesthedevelopmentofanewtrainingparadigm
+thatempowersSVLMswiththinkingcapabilities,atleastforspecializedtasks.
+2
+--- PAGE 3 ---
+PublishedasaconferencepaperatICLR2026
+ApromisingsolutionistofuseSFTandRLVR,asawell-calibratedtrade-offcanlowerthehigh
+demandsonthebasemodel(DeepSeek,Inc.,2025;Yanetal.,2025): SFTencouragesthemodelto
+memorizeverifiablethinkingpatternstopreventadvantagecollapse,whileRLforcesexplorationto
+preventrigidtemplatesfromoverwhelmingthemodel’scapacity. Thecentralchallenge,however,is
+thatSVLMsstruggletoachievethisbalance. Existinghybridmethods,liketwo-stagetraining(Chen
+etal.,2025a;Chuetal.,2025)orannealedSFTlosses1(Zhangetal.,2025b),relyonastatictrade-off
+governedbyhyperparameterssetempirically. Thisrigidityisthecriticalflawbecausetheminimal
+capacityofSVLMsmeansthewindowforasuccessfulstaticbalanceisincrediblynarrow,making
+failurealmostinevitable(cf. Fig. 1b). Ourrepeatedtrialswithtwo-stagetrainingconfirmedthisissue,
+withperformanceoftenfallingbelowthebaseline(cf. Fig. 2).
+SVLMs therefore require a more intelligent paradigm to navigate this trade-off. To this end, we
+proposeDyME(DynamicMemorize–Explore),whichintegratesSFTandRLVRthroughadynamic
+switchingmechanism. AsillustratedinFig.1b,DyMEassessesthemodel’sgenerationateachstep
+andadaptsitstrainingmodeaccordingly. Whenthemodelfailstofollowinstructions,itswitchestoa
+memorizationmode(SFT)toguaranteestableoptimizationsignals. Conversely,forvalidgenerations,
+itengagesanexplorationmode(RLVR)toencouragediverseandgroundedthinking.Thisstate-driven
+approachensuresmemorizationandexplorationarealwayscomplementary,dynamicallymaintaining
+thedelicatetrade-off. Whilethisdynamicswitchingaloneguaranteestrainingstability,wefurther
+maximizethemodel’spotentialbyincorporatingasynergisticVisualSupervisionmechanism. This
+modulefacilitatesanadaptiveinteraction: theCoTground-truthguidesthescoringofexploration
+(viaavisualchecker),whilesuccessfulexplorationtracesdynamicallyrefinetheCoTground-truth
+(viaavisualrefiner).
+TheaforementioneddesignmakesDyMEahighlyeffectiveparadigmforempoweringthinkingin
+SVLMsforspecifictasks. Wevalidatethisacrossthreediversedomains,rangingfromrecognition-
+intensivetasks(medicalVQA)toreasoning-intensivechallenges(chartunderstandingandgeometric
+problemsolving). Remarkably, usingonlyafewthousandtrainingsamples, DyMEachievessub-
+stantial performance gains, enabling it to match or even surpass several LVLMs. Our primary
+contributionsareasfollows:
+1. We propose DyME, the first training paradigm that equips SVLMs with thinking capabilities,
+substantiallyreducingrelianceonthebaseVLM’sinitialcapacity.
+2. Throughdynamicswitchingandsynergisticsupervision,DyMEalleviatespseudothinkingtraces
+andadvantagecollapseinSVLMs,yieldingimage-groundedthinkingandconsistentperformance
+improvements.
+3. WedemonstratetheeffectivenessandpracticalityofDyMEacrossthreediversedomains,each
+consistentlyshowingsubstantialperformancegainswithonlyafewthousandtrainingsamples.
+2 RELATED WORK
+Vision-LanguageModels. ModernVLMs,suchasLLaVA(Liuetal.,2024a)andQwen-VL(Bai
+etal.,2023),havedemonstratedremarkablecapabilitiesacrossawidearrayofvisiontasks. How-
+ever,theirsubstantialparametercountsandcomputationaldemandsrestricttheiruseinresource-
+constrained environments like edge devices. This has motivated a growing interest in SVLMs
+designedforefficiency(Zhouetal.,2024;Marafiotietal.,2025;Korrapati,2024). Althoughworks
+likeTinyLLaVA(Zhouetal.,2024)andSmolVLM(Marafiotietal.,2025)haveshownthatcarefully
+designedSVLMscanachievecompetitiveperformance, theyexhibitacriticalweakness. Recent
+studieshighlightthattheirperformancedegradessignificantlyontasksrequiringcomplex,multi-step
+instructionfollowing,indicatingagapintheircompositionalunderstandingandgeneralreasoning
+abilities(Albalaketal.,2022;Ghoshetal.,2024;Liuetal.,2025b).
+Empowering Thinking Capabilities in VLMs. Recent advances in LLM thinking (e.g., GPT-
+o1(OpenAI,2024),DeepSeek-R1(Guoetal.,2025))havemotivatedeffortstoequipVLMswith
+similarcapabilitiesviadedicatedtrainingparadigms.
+SFTonCoTdata (Xu et al., 2024; Xia et al., 2024; 2025; Gao et al., 2025; Yang et al., 2025b).
+Thisparadigmleverageslarge-scaleCoTsupervisiontoteachmodelstomemorizeandgeneralize
+thinkingpatterns. Multimodal-CoT(Zhangetal.,2023)wasanearlyattemptusingfusedvisual–text
+1Seethesupplementarymaterialforfurthercomparison.
+3
+--- PAGE 4 ---
+PublishedasaconferencepaperatICLR2026
+inputs,butitssmallscaledatalimitedgenuinethinking. Subsequentworkshighlighttheroleofscale:
+G-LLaVA(Gaoetal.,2025)constructs170Kgeometry-specificCoTsamples;ChartVLM(Xiaetal.,
+2024)compilesalargechartcorpus;andLLaVA-CoT(Xuetal.,2024)aswellasR1-OneVision(Yang
+etal.,2025b)curatediverse,structuredCoTdatathroughlarge-scalepromptengineering. These
+approachesfacelonginputs,requiringlargeVLMsthatcanprocessrichtextualinformationwhile
+preservingvisualgrounding(Marafiotietal.,2025;Zhaietal.,2023).
+RLwithVerifiableReward(RLVR)(Zhangetal.,2025a;Chenetal.,2025b;Pengetal.,2025;Shen
+et al., 2025; Liu et al., 2025c). RLVR adopts a distinct paradigm that elicits thinking through
+autonomousexplorationwithminimalexternalsupervision. ThepopularlyusedalgorithmisGroup
+RelativePolicyOptimization(GRPO),introducedbyDeepSeek-Math(Shaoetal.,2024), which
+exploitsmodels’abilitytoproducestructuredoutputsthatseparatethinkingfromfinalanswers. It
+leverages rule-verifiable data to optimize high-scoring generations, while light SFT is employed
+forcold-startwhentheoutputstructureisunclear. ThisparadigmhasbeenextendedtoVLMsin
+severalworks. R1-V(Chenetal.,2025b)appliesGRPOtoVLMs,enablingthinkingintaskssuchas
+countingandgeometry. LMM-R1(Pengetal.,2025)introducesatwo-stagepipelinethattransfers
+textualthinkingintomultimodallearning. VisualRFT(Liuetal.,2025c)andR1-VL(Zhangetal.,
+2025a)incorporatevision-specificrewardstoguidefine-grained,visuallygroundedoptimization.
+SinceGRPOdependsonmodels’initialstructuredthinkingability,thesemethodstypicallybuildon
+strongVLMs,suchastheQwen-VLseries(Baietal.,2025).
+HybridTrainingParadigms(Chuetal.,2025;Yanetal.,2025;Zhangetal.,2025b). Toharnessthe
+complementarystrengthsofSFTandRL,researchershavealsoinvestigatedhybridparadigms. A
+commonapproachisatwo-stagetrainingprocess(Chuetal.,2025)thatfirstusesSFTtoteachthe
+modelthedesiredoutputformat,followedbyRLforexploration. Althoughintuitive,thismethodis
+highlysensitivetotheamountofSFT,aparameterthatisparticularlychallengingtotuneforSVLMs,
+asthesesmallermodelscaneasilybecometrappedinsuboptimalstates. Alternativestrategiesattempt
+tocontinuouslyblendSFTwithRL,forinstance, byincorporatingSFTasanannealedauxiliary
+loss(Zhangetal.,2025b)orbymanagingitsinfluencewithanempiricalshapingfunction(Yanetal.,
+2025). However,allthesestrategiesultimatelyrelyonanempiricallydeterminedbalancebetween
+thetwoparadigms. ThisrigidityrepresentsacriticalflawwhenappliedtoSVLMs. Theabsenceof
+adaptivecontrolovertheSFTweightrendersthesemethodsbrittleandunreliable.
+Thus,existingparadigmsarenotdirectlytransferabletoSVLMsduetotheirinherentlimitations
+inmodelcapacityandinstruction-followingability. Thishighlightstheneedforanoveltraining
+paradigmthatimposesminimalrequirementsonthebaseVLM.
+3 APPROACH
+3.1 PRELIMINARIES
+Wefirstbrieflyrecapthetwotrainingparadigms(SFTandRLVR)thatunderlieourmethod. Let
+D ={(x ,y )}N bethetrainingset,wherexdenotestheinput(e.g. animage-instructionpair)and
+i i i=1
+ythedesiredoutput. Themodeldefinesaconditionaldistributionp (y |x)withparametersθ.
+θ
+Supervised Fine-Tuning (SFT). For each training pair (x,y) in D, SFT updates the model by
+minimizingthenegativelog-likelihood(cross-entropy)ofthedesiredoutputyundertheconditional
+distributionp (y |x):
+θ
+L (θ)=−E (cid:2) logp (y |x) (cid:3) . (1)
+SFT (x,y)∼D θ
+Thisteacher-forcinglossallowsmodelstomemorizeextensivetrainingexamples,compellingthe
+modeltoabsorbthisknowledge.
+GroupRelativePolicyOptimization(GRPO).GRPOisanRLalgorithmthatexploresopen-ended
+generationbycomparingcandidateoutputswithinagroup. Foreachinputx,thepolicyp samplesa
+θ
+set{y˜k}K ;arewardfunctionr (y˜k)iscomputedbasedonthecorrectnessoftheoutputanswer,
+k=1 a
+andeachsample’sadvantageAismeasuredrelativetotheothergroupmembers:
+(cid:118)
+A(y˜k) = r a (y˜ σ k) + − ε r¯ a, r¯ a = K 1 (cid:88) K r a (y˜j), σ= (cid:117) (cid:117) (cid:116) K 1 (cid:88) K (r a (y˜j)−r¯)2, (2)
+j=1 j=1
+4
+--- PAGE 5 ---
+PublishedasaconferencepaperatICLR2026
+where ε is a small constant for numerical stability. The policy then updates its parameters by
+minimizingthefollowingloss,regularisedbyaKLconstraint:
+L (θ)=−E E (cid:104) min (cid:0) r (x,y˜)A(y˜),clip (cid:0) r (x,y˜);1−ϵ,1+ϵ (cid:1) A(y˜) (cid:1)(cid:105)
+GRPO x∼D y˜∼pθ θ θ
++βD (cid:2) p (·|x)∥p (·|x) (cid:3) , where r (x,y˜) = p θ (y˜|x) . (3)
+KL θ ref θ p (y˜|x)
+old
+TheclipandKLtermsworktogethertokeepeachupdateclosetosaferegionsoftheparameterspace:
+theclipgatelimitsstepsizearoundtherolloutpolicyp ,whiletheKLterm(βD )tethersthe
+old KL
+policytothereferencep (typicallytheinitialmodel).
+ref
+GradientCompatibilityofSFTandGRPO.Below,werevealthattheoptimizationobjectivesof
+SFTandGRPOareformallyequivalent,withtheformertargetingtheground-truthdatadistribution
+andthelatteraninternalone.
+ThegradientoftheSFTlossisstraightforward:
+∇ L (θ)=−E [∇ logp (y |x)]. (4)
+θ SFT (x,y)∼D θ θ
+Similarly,theGRPOgradient(ignoringclippingandanyKL-penalty)canbewrittenas
+∇ L (θ)=−E (cid:2) r (x,y˜)A(y˜)∇ logp (y˜|x) (cid:3) . (5)
+θ GRPO x∼D, θ θ θ
+y˜∼pold(·|x)
+ThiscomparisonshowsthattheSFTgradientisaspecialcaseoftheGRPOgradient,obtainedwhen
+theground-truthsampleisusedwithunitadvantage. Thisequivalenceenablesaunifiedlossthat
+balancesexternalimitation(SFT)withinternalrefinement(GRPO).Achievingthisfusionrequires
+dynamicallyweightingthetwosignals(§3.2)andensuringstylisticconsistencybetweenexternal
+ground-truthandself-generatedoutputs(§3.3).
+3.2 DYNAMICMEMORIZE–EXPLORE(DYME)
+Torealizethiscomplementarity,weproposetheDynamicMemorize–Explore(DyME)paradigm,
+whichadaptivelyswitchesbetweenSFTandGRPOateachtrainingstep. Inthefollowing,wefirst
+outlinetheoverallpipelineandthenelaborateontheoptimizationproceduresforeachmode.
+Overall.AsshowninFig.3a,eachtrainingstepbeginswithaninputx=(I,q),whereIistheimage
+andq isaninstruction. ThepolicySVLMp generatesK responses{y˜k}K . Eachresponseis
+θ k=1
+parsedintoathinkingtraceandafinalanswer,whichisthenverifiedforcorrectnessusingpredefined
+rules. Theverificationresultsfallintotwocategories: eitherallresponsesareincorrect(including
+those that fail to parse), or at least one is correct. The decision rule: if at least one response is
+correct, themodelproceedswithGRPO-basedexploration; otherwise, itfallsbacktoSFT-based
+memorization. Formally,thetrainingmodeisswitchedas:
+(cid:26) GRPO, if max r (y˜k)=1,
+mode(x)= k a (6)
+SFT, otherwise,
+where r (y˜k) ∈ {0,1} indicates whether y˜k passes rule-based verification. Though simple, this
+a
+decisionruleishighlyeffective. Whenallresponsesareincorrect,theanswerrewardsareessentially
+allzeroandthenormalizedadvantagesbecomedominatedbynoise,makingGRPOupdatesfora
+smallSVLMunstable. Inthisregime,fallingbacktoSFTprovidesalow-variance,ground-truth
+guidedgradient. Conversely,theappearanceofatleastonecorrectresponseindicatesthatthecurrent
+policy has already discovered a feasible solution for this input, so GRPO can safely exploit the
+relativeadvantagestodriveexploration.
+GRPOMode. DyMEintroducesakeyrefinementtotheoriginalGRPO:beyondtheanswerreward
+r ,itincorporatesanauxiliaryrewardr forthinkingtraces. Thisrewardiscomputedbyevaluating
+a t
+thegeneratedtracesagainstexpectedthinkingpatterns(e.g.,viatoken-levelF1scoreground-truth
+comparison),promotingstructuredthinking.
+Giventheserewards,weupdatethepolicyusingamodifiedGRPOobjective. Unlikethestandard
+formulation(Eqs.2&3),weomittheKLpenaltyandclippingterms,asthedynamicintegrationof
+5
+--- PAGE 6 ---
+PublishedasaconferencepaperatICLR2026
+GiveGni vveinsu vails ufaacl tfsacts
+AnyA cnoyr rceocrtr ect FromFr tohme ftihgeu frieg, uthree, vthaelu veasl rueepsr reespernetseedn bteyd by
+GRPGORPO
+resproenspseosn?ses? the tthhree eth breaers b caarns cbaen d biree cdtilrye cotblys eorbvseedr.ved.
+TakiTnagk tihnegi rt hmeiera mn eyaienl dysie alnd so avne roavllerall
+q q SwiStcwhietrcher or or averaavgeer aogf ea popf raopxpirmoaxtiemlya t8e.l3y, 8w.3h,i cwhhich
+SVLSMVLM provpirdoevsi ad ecso an cciosne csiusme smuamrym oafr yt hoef the
+distrdibisutrtiiobnu trieofnl ercetfeledc itnVe dtih siuenV actihlhs ueaC racth.lh eaCcrkth.eerc:k 0er: 0
+I I SFTSFT
+OveOravlelr pailpl epliipneeline VisuVails uRaelf Rineefriner
+pip pip
+AnsAwnesrw Reerw Raerwdard
+GTGT VisuVails uRaelf Rineefriner To aTnosw aners wtheer qthuee sqtuioens,t i.o..n, ,s .t.e.,p s1t eisp 1to is to
+(0, 1(,0 1, ,1 0, )1, 0) extraecxtt rtahcet vthaelu veasl fuoers Lfoart vLiaat, vPiao,r tPuogratlu,gal,
+anda Rnodm Raonmiaa:n 3i.a0:, 38..09,, 8a.n9d, a 1n3d.0 1,3.0,
+respreecstpiveecltyiv. eSltye.p S 2te ips 2to i sc atolc cualalcteu ltahtee the
+VisuVails uCahl eCckheercker
+averaavgeer aogf et hoefs teh veaselu veasl:u (e3s.:0 (+3 .80. 9+ +8.9 +
+Add Athdidn kthiningk rienwg arredward logiltosgits 13.01) 3/. 03) = / 83. 3=. 8T.3h.e Trehfeorreef,o trhee, athvee raavgeer aisge is
+(0, 1(+0, 1, +1+, 1, +0), 0) 8.3. 8.3.
+VisuVails uCahl eCckheerc:k 1er.0: 1.0
+GRGPOR PmOo dmeode SFT S FmTo dmeode
+(a)ThepipelineforDyME. (b)Visualrefinerandchecker.
+Figure3: WorkflowandmodulecomponentsofDyME.Ateachtrainingstep,DyMEdynamically
+switchesbetweenmemorization(viaSFT)andexploration(viaGRPO)modesbasedonitsgenerations.
+Visualsupervisionisintroducedthroughthevisualrefinerandvisualchecker. Therefinerenhances
+the targets for memorization by incorporating richer visual elements (green), while the checker
+rewardsthethinkingcontextgeneratedbasedontheirvisualrelevance.
+SFTalreadystabilizestraining. Thisavoidsoverlyconservativeupdatesandyieldsacleanergradient
+form,enablingsmootheralignmentbetweenSFTandGRPO:
+L˜ (θ)=−E E [r (x,y˜)A(y˜)], (7)
+GRPO x∼D y˜∼pθ(·|x) θ
+where A(y˜k) is the group-normalized advantage calculated from the combined answer (r ) and
+a
+thinking(r )rewards,andr (x,y˜k)= pθ(y˜|x) istheimportancesamplingratio.
+t θ pold(y˜|x)
+SFTMode.WhentrainingfallsbacktoSFT,themodelisoptimizedtowardtheground-truthresponse
+yusingthestandardsupervisedloss(Eq.1). Thisensuresthatwheneverthemodelfailstoexplore
+effectively,itreceivesastable,ground-truth-guidedgradientupdatetocorrectitsbehavior.
+DyMEObjective. Thefinallossdynamicallycombinesthetwoobjectivesbasedonresponsecorrect-
+ness:
+(cid:20) (cid:21) (cid:18) (cid:20) (cid:21)(cid:19)
+L (θ)=1 maxr (y˜k)=1 ·L˜ (θ)+ 1−1 maxr (y˜k)=1 ·L (θ), (8)
+DyME a GRPO a SFT
+k k
+where1[·]istheindicatorfunction,returning1iftheconditionholds,0otherwise.
+3.3 VISIONSUPERVISION
+DyME with Visual Supervision. While the aforementioned Pure DyME (using standard r and
+t
+staticground-truth)alreadyguaranteestrainingstabilitythroughitsdynamicswitchingmechanism,
+wecanfurtherexploitthisdynamicnaturetomaximizeperformance. Specifically,theswitching
+mechanismallowsustotailorthesupervisionsignalsateachoptimizationstep: refiningthereward
+duringexplorationandenhancingtheground-truthduringmemorization. Tothisend,weintroducea
+checker–refinerframework(cf. Fig.3b),whichconstitutestheFullDyME.
+Thisframeworkreorganizestheground-truthtoadheretoapredefinedstructure,cruciallytransform-
+ingitintoagroundedthinkingtrace. Therefinerrestructurestheexternalground-truthintostructured,
+visuallygroundedresponses,whilethecheckerevaluatesself-generatedoutputsfortheirstructural
+organizationandcoverageofvisualcontent. Werefertotheresultingsupervisionsignalscollectively
+asvisionsupervision. TheimplementationiscarriedoutviaLLM-basedpromptengineering.
+VisualFactsI arecentraltorealizingvisionsupervision. Theyaredefinedasfine-grainedvisual
+c
+componentsextractedfromeachimage,includingobjects,attributes,andstates. Theseelementsplay
+6
+--- PAGE 7 ---
+PublishedasaconferencepaperatICLR2026
+adualrole: theyprovideevidenceforevaluatinggenerationsagainsttheimageandserveasbuilding
+blocksforconstructingcompleteground-truthresponses.
+VisualChecker.Thevisualcheckerevaluatesresponsesalongtwodimensions:(i)whethertheoutput
+containssufficientcorrectvisualelementscomparedtoI ,and(ii)whetheritalignsstylisticallywith
+c
+providedexamples.TheseexamplesmaybemanuallydefinedorextractedfromtheSFTground-truth.
+VisualRefiner. TherefinerproducesvisuallygroundedresponsesforSFTbyleveragingthemodel’s
+validatedexplorations. High-scoringtracesidentifiedbythevisualcheckerarestoredinadynamic
+examplepool. AnLLMthendrawsfromthispooltogenerateground-truthresponses,integrating
+structuraltemplateswithvisualfactsfromI andreferencingthecollectedexamples.
+c
+Inessence,theacquisitionofVisualFacts,theevaluationbytheVisualChecker,andthesynthesisby
+theVisualRefinerareallimplementedviastructuredpromptengineeringusingQwen2.5-14B.Please
+refertotheSupplementaryMaterialsforthefullpromptsusedinourpipeline.
+4 EXPERIMENTS
+TorigorouslyevaluateDyME,westructureourexperimentsintotwoparts: (1)AlgorithmicVal-
+idation, where we evaluate “Pure DyME” in a controlled setting using offline data to isolate the
+contributionofourdynamicswitchingmechanism;and(2)SystemEffectiveness,whereweevaluate
+thefullDyMEpipeline(withVisualSupervision)acrossdiversedomainstodemonstrateitspractical
+capabilityinempoweringSVLMs.
+4.1 PARTI:ALGORITHMICVALIDATION(PUREDYME)
+Setup.SinceSVLMslackintrinsicreasoningcapabilitiesandcannotautonomouslydiscovercomplex
+reasoningpaths,pre-constructedCoTdataisamandatoryprerequisiteforalltrainingparadigms. We
+thereforeevaluatedallmethodsonChartQA(Masryetal.,2022)usingLLaVA-OV-S(Lietal.,2024a),
+the0.5Bvariant,withthreepre-constructedCoTdatasetsofvaryingqualities: Low(Undesigned)
+containing unstructured traces (∼80 words); Medium (Standard) consisting of semi-structured
+traces(∼89words)fromQwen2.5-14B;andHigh(Premium)comprisinghighlystructuredtraces
+(∼142words)fromGPT-4o. Followingestablishedprotocols(Liuetal.,2023;Masryetal.,2022),
+wereportrelaxedcorrectness,whichallowsa5%tolerancefornumericalanswers.
+Wepresentathreefoldevaluationtovalidatedatarobustness,designoptimality,andgeneralization:
+(1)RobustnesstoDataQuality. Table1(a)demonstratedDyME’ssuperiority. OnLowqualitydata,
+PureDyME(61.9%)significantlyoutperformstheunstableTwo-stagebaseline(57.6%). Remarkably,
+using only Medium data, it surpasses the SFT baseline trained on premium High (GPT-4o) data
+(61.6%). ThisconfirmsthatDyMEactsasarobuststudent,effectivelymaximizingdataefficiency.
+(2)OptimalityofBinarySwitching. Tovalidateourbinarydesign,wecompareditagainstthree
+alternativeswitchingheuristicsinTable1(b): (i)RewardThresholding,whichswitchestoRLonly
+if the batch average reward exceeds a threshold t; (ii) SFT Annealing, which applies a weighted
+SFTlossalongsideRLateverystep;and(iii)SFTBudget,whichperformsfocusedSFTupdateson
+accumulatedfailurecases(hardmining).
+Results: RewardThresholdingprovesbrittle,collapsingatsuboptimalthresholds(t=0.5,52.4%).
+SFTAnnealingincursaheavycomputationaltax(+25%)duetotheauxiliarySFTgradientcalculation.
+SFTBudgetyieldsinferiorresults(59.6%)asoverwhelmingthemodelwithconcentratedfailures
+destabilizeslearning. Incontrast,DyME’sbinaryswitchisparameter-free,efficient,andempirically
+optimal(64.9%).
+(3) Mechanism Generality. Going beyond the primary setup, while DyME is primarily tailored
+forSVLMs, weverifytheuniversalityofitscoreswitchingmechanism(seeSupplementary). In
+thetext-onlydomain,itbooststhesmall-scaleQwen2.5-0.5BonGSM8K(Cobbeetal.,2021)to
+55.3%(+5.8%overGRPO),confirmingDyMEisaneffectiveparadigmforempoweringthinkingin
+small-parametermodelsregardlessofmodality. Moreover,theparadigmscaleseffectively: onthe
+strongerQwen2.5-VL-7B,itfurtherimprovesChartQAperformanceto89.6%(+2.3%).
+7
+--- PAGE 8 ---
+PublishedasaconferencepaperatICLR2026
+Table1: AlgorithmicValidationofPureDyME.(a)DyMEoutperformsSFTandTwo-stagevariants
+(w/andw/oKLpenalty)acrossalldataqualities. (b)Thebinaryswitchismorerobustandefficient
+thansoftorhard-miningalternatives(evaluatedonMediumdata).
+(a)RobustnessacrossDataQuality (b)SwitchingStrategyAblation
+Method Low Medium High Strategy Hyperparam. Acc. Cost
+SFT 50.5 57.8 61.6 RewardThreshold t=0.5/0.8/0.9 52.4/64.1/63.4 None
+Two-stage 57.6 59.9 54.5 SFTAnnealing Cosine 64.0 +25%
+Two-stage(w/KL) 55.4 60.8 62.7 SFTBudget HardMining 59.6 Budget-dep.
+PureDyME 61.9 64.9 68.5 BinarySwitch(Ours) – 64.9 Baseline
+4.2 PARTII:SYSTEMEFFECTIVENESS(FULLDYME)
+Havingvalidatedthealgorithmiccore,wenowevaluatetheFullDyMEpipeline,augmentedwith
+VisualSupervision,acrossthreediversedomains:MedicalVQA,ChartUnderstanding,andGeometry.
+Eachfollowedtheevaluationprotocolsofpriorwork(Zongetal.,2024).
+Setup & Source of I . Unlike Part I, here we activate the Visual Supervision module to enable
+c
+the full online loop. Crucially, to demonstrate DyME’s capability to bootstrap from raw signals,
+we utilize the “Undesigned” CoT data (defined in §4.1) derived from SLAKE (Liu et al., 2021),
+ChartQA(Masryetal.,2022),andGeo170K(Gaoetal.,2025)asthecommontrainingsourcefor
+all methods. Acquiring the necessary visual facts (I ) is a fully automated process: we leverage
+c
+standarddomaintools(e.g.,BiomedGPT(Zhangetal.,2024a)formedical,DePlot(Liuetal.,2023)
+forcharts)orpromptgeneralistLLMs(e.g.,Qwen2.5(Team,2024))toparseimagesintostructured
+textualdescriptions. Theautomatedpipelineandpromptsareincludedinthesupplementary.
+EvaluationProtocol. Weusedofficialtrain-testsplitsforSLAKE(Accuracy/Recall)andChartQA
+(Relaxedcorrectness). ForGeometry, sinceGeo170K(Gaoetal.,2025)providesnotestset, we
+evaluatedAccuracyonMathVerse(Zhangetal.,2024b),consistentwithZongetal.(2024).
+4.2.1 MAINRESULTS
+DyMEvs. ExistingTrainingParadigms. Thecomprehen-
+siveresultsinTable2showthatDyMEconsistentlydeliv-
+erssubstantialgains. Notably,aftertrainingwithDyME,
+SmolVLM improves from 49.9 to 55.6 (+5.7), LLaVA-
+OV-S from 50.7 to 55.4 (+4.7), and InternVL2-S from
+56.3to58.1(+1.8). Incontrast,existingparadigmstend
+todegradeperformance(e.g.,SFTlowersSmolVLMto
+44.1),validatingouranalysisthatSFTyieldspseudothink-
+ingtracesandGRPOfacesadvantagecollapse(cf. Fig.4).
+DyME effectively mitigates these issues. It promotes
+grounded traces that are concise yet informative (cf.
+Fig.5),aligningwellwiththelimitedcapacityofSVLMs.
+Importantly,DyMEplacesminimaldemandsonthebase
+Figure 4: Training rewards. GRPO
+model: evenSmolVLM(0.5B)achievessubstantialgains,
+andtwo-stagetrainingsufferfromsevere
+anditstilldeliversimprovements(+2.6%)onextensively
+advantagecollapse.
+pretrainedmodelslikeInternVL2-S.Wefurthercorrobo-
+ratedthesefindingsthroughmanualinspection,asdetailed
+intheSupplementaryMaterial.
+MatchingtheEfficacyofGPT-4oSupervisionwithOpen-SourceModels. Comparingresults
+between Part I and Part II reveals a crucial finding: LLaVA-OV-S trained with the full DyME
+pipeline(usingtheaccessibleQwen2.5-14B)achieves67.5%(Table2). Thiseffectivelymatchesthe
+performanceofPureDyMEtrainedonexpensiveGPT-4odata(68.5%,cf. Table1). Thisprovesthat
+fullDyMEallowsopen-sourcesupervisiontoachievetrainingoutcomescomparabletothosederived
+fromtop-tierproprietarymodels,eliminatingtheneedforexpensivedataannotation.
+DyME-trainedSVLMsCanBeCompetitivewithLVLMs. Weensuredfairnessbyexposingall
+baselinestoourtrainingdata. AsshowninTable2,SVLMstrainedwithDyMEcansurpassstronger
+8
+--- PAGE 9 ---
+PublishedasaconferencepaperatICLR2026
+Table2: Comparisonsacrossthreedomains: medicalVQA,chartunderstanding,andgeometry
+solving.TheevaluationfollowstheVLMEvalKitframework(Duanetal.,2024).ForSVLMs,existing
+trainingparadigmsdegradetheirperformance,whereasDyMEconsistentlybringsimprovements. The
+bestperformanceachievedbyeachSVLMishighlightedinbold,withtherelativeimprovementalso
+indicated. Notably,afterbeingtrainedwithDyME,SVLMsachieveperformancecomparabletothat
+ofMoVA(underlined).
+Model ViT LLM Medical Chart Geometry Avg.
+LVLMs
+LLaVA-Med(Lietal.,2023) CLIP-ViT-L/14 Vicuna-7B 64.3 – – –
+Cambrian-1(Tongetal.,2024) Hybrid-3B Llama3-8B – 72.6 22.0 –
+LLaVA-1.5(Liuetal.,2024a) CLIP-ViT-L/14 Vicuna-7B 69.4 17.8 – –
+LLaVA-1.6(Liuetal.,2024b) CLIP-ViT-L/14 Vicuna-7B 78.2 49.2 13.4 47.0
+MoVA(Zongetal.,2024) Hybrid-3B Vicuna-7B 74.5 68.3 19.7 54.2
+LLaVA-OV-L(Lietal.,2024a) SigLIP-SO400M Qwen2-7B 75.7 80.9 24.5 60.4
+InternVL2-L(Chenetal.,2024) InternViT-300M InternLM2.5-7B 80.2 82.1 37.3 66.5
+SVLMs
+SmolVLM(Marafiotietal.,2025) SigLIP-93M SmolLM2-360M 72.1 63.2 14.6 49.9
++CoTSFT SigLIP-93M SmolLM2-360M 60.1 57.7 14.5 44.1
++GRPO SigLIP-93M SmolLM2-360M 61.1 53.8 17.1 44.0
++Two-stage SigLIP-93M SmolLM2-360M 59.4 60.1 16.7 45.4
++DyME SigLIP-93M SmolLM2-360M 78.1 69.7 18.9 55.6
+(+6.0%) (+6.5%) (+4.3%) (+5.7%)
+LLaVA-OV-S(Lietal.,2024a) SigLIP-400M Qwen2-0.5B 74.9 61.4 15.9 50.7
++Two-stage SigLIP-400M Qwen2-0.5B 74.5 52.9 16.5 48.0
++DyME SigLIP-400M Qwen2-0.5B 78.3 67.5 20.4 55.4
+(+3.4%) (+6.1%) (+4.5%) (+4.7%)
+InternVL2-S(Chenetal.,2024) InternViT-300M Qwen2-0.5B 78.3 71.9 18.7 56.3
++Two-stage InternViT-300M Qwen2-0.5B 73.6 55.7 17.1 48.8
++DyME InternViT-300M Qwen2-0.5B 80.0 74.5 19.8 58.1
+(+1.7%) (+2.6%) (+1.1%) (+1.8%)
+LVLMslikeMoVA(54.2)onthesespecializeddomains,withSmolVLMreaching55.6andLLaVA-
+OV-S55.4. Asaresult,DyME-trainedSVLMsbecomereliableoptionsfortask-specificapplications
+onresource-constrainededgedevices.
+4.2.2 ABLATIONSTUDY
+Todissectthesourceofthesegains,weconductedanablationstudytoanalyzethecontributionof
+DyME’sfourcorecomponentswithinthefullpipeline: thememorizationmode,explorationmode,
+visualrefiner,andvisualchecker. Table3showstheperformanceimpact.
+DynamicSwitchingMechanism. Theresults
+confirmthatMemorizationandExplorationare Table3: Ablationstudy. Model: LLaVA-OV-S.
+symbiotic. Disabling memorization causes a
+catastrophicdrop(55.4→43.9),effectivelyre-
+DyMEVariant Medical Chart Geometry Average
+vertingtounconstrained,unstableexploration.
+DyME(full) 78.3 67.5 20.4 55.4
+Conversely, removing exploration (50.4) re- w/omemorization 63.2 53.4 15.0 43.9(20.6%↓)
+strictsthemodeltothestaticimitationofsub-
+w/oexploration 75.5 61.3 14.5 50.4(9.0%↓)
+w/ovisualrefiner 75.6 62.3 16.8 51.6(6.9%↓)
+optimaldata. AsshowninFig.4,theirdynamic w/ovisualchecker 76.9 64.3 17.1 52.8(4.7%↓)
+interplay prevents the advantage collapse ob-
+servedinbaselines,ensuringoptimizationstabilitythroughoutthelearningprocess.
+Visual Supervision. Removing the visual checker and refiner drops performance by 4.7% and
+6.9%,respectively. Thisvalidatesthepivotalroleofvisualsupervisioninbootstrappingfromnoisy,
+undesigneddata. GiventhelimitedcapacityofSVLMs,theyareeasilypronetohallucinationwhen
+trainedonlow-qualitytraces. Thevisualcomponentsactasadynamicdenoiser,ensuringthatraw,
+imperfectdataisfilteredandrefinedintogroundedvisualfacts(I )beforeoptimization,thusenabling
+c
+robustlearningevenfromweaksupervision.
+9
+--- PAGE 10 ---
+PublishedasaconferencepaperatICLR2026
+What is the difference between The difference between the Given AB // CD, angle 1 = 50.0,
+the values of 2017 and 2016? values of 2017 and 2016 is then what the degree of angle 2? Angle 2 is equal to angle 3,
+(Input Image) 19000. angle 2 is also 50 degrees.
+(Original)
+Extraction: Extraction:
+data is value 36700 for 2017 AB is parallel to CD,
+and 29000 for 2016 angle 1 = 50°.
+Calculation: Calculation:
+36700 - 29000 = 7700 angle 2 = 180° - angle 1
+Conclusion: = 180° - 50° = 130°.
+The difference between the Conclusion:
+2017 and 2016 values is 7700.(DyME) The degree of angle 2 is 130°.
+Answer: 7700 Answer: 130°
+Figure 5: Showcases on chart understanding and geometry solving. We use LLaVA-OV-S
+todemonstratetheresults. TheSVLMoriginallyproduceshallucinatedanswers(red), whilethe
+DyME-trainedmodelgeneratesstructuredthinkingtraces(green)thatincorporategroundedvalues,
+effectivelyimprovingtheperformance.
+4.3 TRAININGEFFICIENCY&DISCUSSION
+Weanalyzethecomputationalefficiencyandperformancetrade-offsassociatedwithdifferentconfig-
+urationsofDyME.ThecomparativeresultsaredetailedinTable4.
+Computational Efficiency vs. Data Cost. The frame-
+work offers two distinct operating regimes catering to Table4: Cost-BenefitAnalysis. Time
+different resource profiles. Pure DyME represents the measuredinsec/step. Runon8xH800.
+high-efficiency regime: when offline CoT data is pre-
+constructed,itmaintainstrainingthroughputcomparable
+Method Ext.Model Time Acc.
+tostandardGRPO(∼14s/step)whiledeliveringsuperior
+GRPO(Baseline) Qwen2.5-14B† 14.8s 60.8
+performance. Incontrast,FullDyME(withVisualSupervi- PureDyME Qwen2.5-14B† 14.0s 64.9
+sion)prioritizesdataautonomy. Whiletheonlineinterac- PureDyME GPT-4o† 19.1s 68.5
+tionintroducesacomputationaloverhead(∼1.6×training FullDyME Qwen2.5-7B 21.2s 66.8
+FullDyME Qwen2.5-14B 23.4s 67.5
+time),itenablesthemodeltobootstraphigh-performance †Usedforofflinedataconstructiononly.
+reasoningsolelyfromopen-sourcemodels,bypassingthe
+dependencyonexpensive,proprietarydataannotation(e.g.,GPT-4o).
+Sensitivity to External Model Capacity. For Full DyME, we further examine the impact of the
+externalhelper’ssizeonsystemperformance. AsshowninTable4, replacingtheQwen2.5-14B
+helperwiththesmaller7Bvariantresultsinanegligibleperformancevariation(67.5%→66.8%).
+Thisindicatesthatourstructuredpromptengineeringeffectivelydecomposescomplexreasoning
+tasks, allowing even smaller external models to provide sufficient guidance for SVLMs without
+necessitatingheavy-weightmodels.
+ApplicabilityofVisualSupervision. TheeffectivenessoftheVisualSupervisionmodulerelieson
+theexplicitextractionofVisualFacts(I ). Thisprocesscreatesspecificapplicabilityboundaries. For
+c
+domainsinvolvingabstractsemantics(e.g.,ironyinmemes)orunstructuredperception(e.g.,dense
+crowds),convertingholisticvisualsignalsintodiscretetextmayresultininformationloss. Insuch
+scenarios,revertingtothePureDyMEparadigmservesasamorerobustalternative.
+5 CONCLUSION
+Inthiswork,weintroducedDyME,anoveltrainingparadigmdesignedtoempowerthinkingcapa-
+bilitieswithinSVLMs. Atitscore,DyMEcombinesmemorization(viaSFT)modeandexploration
+(viaRLVR)modethroughadynamicswitchingmechanism. Ourexperimentsdemonstratethatthis
+approachnotonlyresolvesthecriticaltrade-offbetweenthesetwomodesbutalsoyieldssubstantial
+performance gains on a wide spectrum of vision tasks, from recognition-intensive to reasoning-
+intensivescenarios. ThesuccessofDyMEisattributedtoitscarefullydesignedcomponents: the
+dynamicswitchingmechanismaddressespseudothinkingtracesandadvantagecollapse,whilethe
+visualcheckerandrefinerprovidecoordinated,high-qualityvisualsupervision. Itimposesminimal
+requirementsonthebaseVLM,makingitbroadlyapplicabletoawiderangeofmodels,including
+extremelylightweightSVLMs. Therefore,DyMEservesasthepracticalsolutionforempowering
+SVLMstothink.
+10
+--- PAGE 11 ---
+PublishedasaconferencepaperatICLR2026
+ACKNOWLEDGMENT
+ThisworkwassupportedbytheHongKongSARRGCGeneralResearchFund(16219025),National
+NaturalScienceFoundationofChinaYoungScholarFundCategoryB(62522216),NationalNatural
+ScienceFoundationofChinaYoungScholarFundCategoryC(62402408),andHongKongSAR
+RGCEarlyCareerScheme(26208924).
+REFERENCES
+Alon Albalak, Akshat Shrivastava, Chinnadhurai Sankar, Adithya Sagar, and Mike Ross. Data-
+efficiencywithasinglegpu: Anexplorationoftransfermethodsforsmalllanguagemodels. arXiv
+preprintarXiv:2210.03871,2022.
+JinzeBai,ShuaiBai,ShushengYang,ShijieWang,SinanTan,PengWang,JunyangLin,ChangZhou,
+andJingrenZhou. Qwen-VL:Aversatilevision-languagemodelforunderstanding,localization,
+textreading,andbeyond. arXivpreprintarXiv:2308.12966,2023.
+ShuaiBai,KeqinChen,XuejingLiu,JialinWang,WenbinGe,SiboSong,KaiDang,PengWang,
+ShijieWang,JunTang,HumenZhong,YuanzhiZhu,MingkunYang,ZhaohaiLi,JianqiangWan,
+PengfeiWang,WeiDing,ZherenFu,YihengXu,JiaboYe,XiZhang,TianbaoXie,ZesenCheng,
+HangZhang,ZhiboYang,HaiyangXu,andJunyangLin. Qwen2.5-VLtechnicalreport. arXiv
+preprintarXiv:2502.13923,2025.
+HardyChen,HaoqinTu,FaliWang,HuiLiu,XianfengTang,XinyaDu,YuyinZhou,andCihangXie.
+SFTorRL?anearlyinvestigationintotrainingR1-likereasoninglargevision-languagemodels.
+arXivpreprintarXiv:2504.11468,2025a.
+LiangChen,LeiLi,HaozheZhao,YifanSong,andVinci. R1-V:Reinforcingsupergeneralization
+abilityinvision-languagemodelswithlessthan$3. https://github.com/Deep-Agent/
+R1-V,2025b. Accessed: 2025-02-02.
+ZheChen,WeiyunWang,YueCao,YangzhouLiu,ZhangweiGao,ErfeiCui,JinguoZhu,Shenglong
+Ye,HaoTian,ZhaoyangLiu,etal. Expandingperformanceboundariesofopen-sourcemultimodal
+modelswithmodel,data,andtest-timescaling. arXivpreprintarXiv:2412.05271,2024.
+TianzheChu,YuexiangZhai,JihanYang,ShengbangTong,SainingXie,DaleSchuurmans,QuocV
+Le,SergeyLevine,andYiMa.SFTmemorizes,RLgeneralizes:Acomparativestudyoffoundation
+modelpost-training. arXivpreprintarXiv:2501.17161,2025.
+Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser,
+MatthiasPlappert,JerryTworek,JacobHilton,ReiichiroNakano,etal. Trainingverifierstosolve
+mathwordproblems. arXivpreprintarXiv:2110.14168,2021.
+DeepSeek, Inc. DeepSeek-R1 Release. https://api-docs.deepseek.com/news/
+news250120,January2025. Accessed: Jun.21,2025.
+HaodongDuan,JunmingYang,YuxuanQiao,XinyuFang,LinChen,YuanLiu,XiaoyiDong,Yuhang
+Zang,PanZhang,JiaqiWang,etal. VLMEvalKit: Anopen-sourcetoolkitforevaluatinglarge
+multi-modalitymodels. InACMMM,2024.
+Jiahui Gao, Renjie Pi, Jipeng Zhang, Jiacheng Ye, Wanjun Zhong, Yufei Wang, Lanqing Hong,
+JianhuaHan,HangXu,ZhenguoLi,etal. G-LLaVA:Solvinggeometricproblemwithmulti-modal
+largelanguagemodel. InICLR,2025.
+AkashGhosh, ArkadeepAcharya, SriparnaSaha, VinijaJain, andAmanChadha. Exploringthe
+frontierofvision-languagemodels:Asurveyofcurrentmethodologiesandfuturedirections. arXiv
+preprintarXiv:2404.07214,2024.
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu,
+ShirongMa,PeiyiWang,XiaoBi,etal. Deepseek-R1: IncentivizingreasoningcapabilityinLLMs
+viareinforcementlearning. arXivpreprintarXiv:2501.12948,2025.
+VikKorrapati. Moondream. https://moondream.ai/,2024. Accessed: 2025-03-27.
+11
+--- PAGE 12 ---
+PublishedasaconferencepaperatICLR2026
+Yuxiang Lai, Jike Zhong, Ming Li, Shitian Zhao, and Xiaofeng Yang. Med-R1: Reinforce-
+ment learning for generalizable medical reasoning in vision-language models. arXiv preprint
+arXiv:2503.13939,2025.
+BoLi,YuanhanZhang,DongGuo,RenruiZhang,FengLi,HaoZhang,KaichenZhang,Yanwei
+Li,ZiweiLiu,andChunyuanLi. LLaVA-OneVision: Easyvisualtasktransfer. arXivpreprint
+arXiv:2408.03326,2024a.
+Chunyuan Li, Cliff Wong, Sheng Zhang, Naoto Usuyama, Haotian Liu, Jianwei Yang, Tristan
+Naumann,HoifungPoon,andJianfengGao. LLaVA-Med: Trainingalargelanguage-and-vision
+assistantforbiomedicineinoneday. AdvancesinNeuralInformationProcessingSystems,36:
+28541–28564,2023.
+Zhuowan Li, Bhavan Jasani, Peng Tang, and Shabnam Ghadar. Synthesize step-by-step: Tools
+templatesandLLMsasdatageneratorsforreasoning-basedchartVQA. InCVPR,2024b.
+BoLiu,Li-MingZhan,LiXu,LinMa,YanYang,andXiao-MingWu. SLAKE:Asemantically-
+labeledknowledge-enhanceddatasetformedicalvisualquestionanswering. InISBI,2021.
+FangyuLiu,JulianEisenschlos,FrancescoPiccinno,SyrineKrichene,ChenxiPang,KentonLee,
+MandarJoshi,WenhuChen,NigelCollier,andYaseminAltun. DePlot: One-shotvisuallanguage
+reasoningbyplot-to-tabletranslation. InFindingsoftheACL,2023.
+HaotianLiu,ChunyuanLi,YuhengLi,andYongJaeLee. Improvedbaselineswithvisualinstruction
+tuning. InCVPR,2024a.
+Haotian Liu, Chunyuan Li, Yuheng Li, Bo Li, Yuanhan Zhang, Sheng Shen, and Yong Jae Lee.
+LLaVA-NeXT:Improvedreasoning,OCR,andworldknowledge,January2024b. URLhttps:
+//llava-vl.github.io/blog/2024-01-30-llava-next/.
+JiazhenLiuandLongChen. Segmentationasaplug-and-playcapabilityforfrozenmultimodalllms.
+arXivpreprintarXiv:2510.16785,2025.
+JiazhenLiu,MingkuanFeng,andLongChen. Better,stronger,faster: Tacklingthetrilemmainmllm-
+basedsegmentationwithsimultaneoustextualmaskprediction. arXivpreprintarXiv:2512.00395,
+2025a.
+JiazhenLiu,YuhanFu,RuobingXie,RunquanXie,XingwuSun,FengzongLian,ZhanhuiKang,
+andXirongLi. PhD:Achatgpt-promptedvisualhallucinationevaluationdataset. InCVPR,2025b.
+ZiyuLiu,ZeyiSun,YuhangZang,XiaoyiDong,YuhangCao,HaodongDuan,DahuaLin,andJiaqi
+Wang. Visual-RFT:Visualreinforcementfine-tuning. arXivpreprintarXiv:2503.01785,2025c.
+Andre´sMarafioti,OrrZohar,MiquelFarre´,MerveNoyan,ElieBakouch,PedroCuenca,CyrilZakka,
+Loubna Ben Allal, Anton Lozhkov, Nouamane Tazi, et al. SmolVLM: Redefining small and
+efficientmultimodalmodels. arXivpreprintarXiv:2504.05299,2025.
+AhmedMasry,DoXuanLong,JiaQingTan,ShafiqJoty,andEnamulHoque.ChartQA:Abenchmark
+for question answering about charts with visual and logical reasoning. In Smaranda Muresan,
+PreslavNakov,andAlineVillavicencio(eds.),FindingsoftheACL,May2022.
+OpenAI. IntroducingOpenAIo1. https://openai.com/o1/,December2024. Accessed: Jun.
+21,2025.
+Yingzhe Peng, Gongrui Zhang, Miaosen Zhang, Zhiyuan You, Jie Liu, Qipeng Zhu, Kai Yang,
+XingzhongXu,XinGeng,andXuYang. LMM-R1: Empowering3BLMMswithstrongreasoning
+abilitiesthroughtwo-stagerule-basedrl. arXivpreprintarXiv:2503.07536,2025.
+Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang,
+Mingchuan Zhang, YK Li, Y Wu, et al. DeepSeekMath: Pushing the limits of mathematical
+reasoninginopenlanguagemodels. arXivpreprintarXiv:2402.03300,2024.
+HaozhanShen,PengLiu,JingchengLi,ChunxinFang,YiboMa,JiajiaLiao,QiaoliShen,Zilun
+Zhang,KangjiaZhao,QianqianZhang,RuochenXu,andTianchengZhao. VLM-R1: Astable
+andgeneralizableR1-stylelargevision-languagemodel. arXivpreprintarXiv:2504.07615,2025.
+12
+--- PAGE 13 ---
+PublishedasaconferencepaperatICLR2026
+QwenTeam. Qwen2.5: Apartyoffoundationmodels,September2024. URLhttps://qwenlm.
+github.io/blog/qwen2.5/.
+PeterTong,EllisBrown,PenghaoWu,SanghyunWoo,AdithyaJairamVedagiriIYER,SaiCharitha
+Akula,ShushengYang,JihanYang,ManojMiddepogu,ZitengWang,etal. Cambrian-1: Afully
+open,vision-centricexplorationofmultimodalLLMs. AdvancesinNeuralInformationProcessing
+Systems,37:87310–87356,2024.
+RenqiuXia,BoZhang,HanchengYe,XiangchaoYan,QiLiu,HongbinZhou,ZijunChen,PengYe,
+MinDou,BotianShi,etal. ChartX&ChartVLM:Aversatilebenchmarkandfoundationmodel
+forcomplicatedchartreasoning. arXivpreprintarXiv:2402.12185,2024.
+RenqiuXia,MingshengLi,HanchengYe,WenjieWu,HongbinZhou,JiakangYuan,TianshuoPeng,
+XinyuCai,XiangchaoYan,BinWang,etal. GeoX:Geometricproblemsolvingthroughunified
+formalizedvision-languagepre-training. InICLR,2025.
+Guowei Xu, Peng Jin, Hao Li, Yibing Song, Lichao Sun, and Li Yuan. LLaVA-CoT: Let vision
+languagemodelsreasonstep-by-step. arXivpreprintarXiv:2411.10440,2024.
+Jianhao Yan, Yafu Li, Zican Hu, Zhi Wang, Ganqu Cui, Xiaoye Qu, Yu Cheng, and Yue Zhang.
+Learningtoreasonunderoff-policyguidance. arXivpreprintarXiv:2504.14945,2025.
+LeleYang,MuxiDiao,KongmingLiang,andZhanyuMa. GRPOforLLaVA. https://github.
+com/PRIS-CV/GRPO-for-Llava,2025a.
+YiYang,XiaoxuanHe,HongkunPan,XiyanJiang,YanDeng,XingtaoYang,HaoyuLu,Dacheng
+Yin, Fengyun Rao, Minfeng Zhu, et al. R1-OneVision: Advancing generalized multimodal
+reasoningthroughcross-modalformalization. arXivpreprintarXiv:2503.10615,2025b.
+YuexiangZhai,ShengbangTong,XiaoLi,MuCai,QingQu,YongJaeLee,andYiMa. Investigating
+thecatastrophicforgettinginmultimodallargelanguagemodelfine-tuning. InCPAL,2023.
+JingyiZhang,JiaxingHuang,HuanjinYao,ShunyuLiu,XikunZhang,ShijianLu,andDachengTao.
+R1-VL:Learningtoreasonwithmultimodallargelanguagemodelsviastep-wisegrouprelative
+policyoptimization. arXivpreprintarXiv:2503.12937,2025a.
+KaiZhang,RongZhou,EashanAdhikarla,ZhilingYan,YixinLiu,JunYu,ZhengliangLiu,Xun
+Chen,BrianDDavison,HuiRen,etal. Ageneralistvision–languagefoundationmodelfordiverse
+biomedicaltasks. NatureMedicine,pp.1–13,2024a.
+RenruiZhang,DongzhiJiang,YichiZhang,HaokunLin,ZiyuGuo,PengshuoQiu,AojunZhou,
+PanLu,Kai-WeiChang,PengGao,etal. MathVerse: Doesyourmulti-modalllmtrulyseethe
+diagramsinvisualmathproblems? 2024b.
+WenhaoZhang,YuexiangXie,YuchangSun,YanxiChen,GuoyinWang,YaliangLi,BolinDing,
+andJingrenZhou. On-policyRLmeetsoff-policyexperts: Harmonizingsupervisedfine-tuning
+andreinforcementlearningviadynamicweighting. arXivpreprintarXiv:2508.11408,2025b.
+ZhuoshengZhang,AstonZhang,MuLi,HaiZhao,GeorgeKarypis,andAlexSmola. Multimodal
+chain-of-thoughtreasoninginlanguagemodels. arXivpreprintarXiv:2302.00923,2023.
+Baichuan Zhou, Ying Hu, Xi Weng, Junlong Jia, Jie Luo, Xien Liu, Ji Wu, and Lei
+Huang. TinyLLaVA: A framework of small-scale large multimodal models. arXiv preprint
+arXiv:2402.14289,2024.
+ZhuofanZong,BingqiMa,DazhongShen,GuangluSong,HaoShao,DongzhiJiang,HongshengLi,
+andYuLiu. MoVA:Adaptingmixtureofvisionexpertstomultimodalcontext. InNeurIPS,2024.
+13
+--- PAGE 14 ---
+PublishedasaconferencepaperatICLR2026
+Empowering Small VLMs to Think with Dynamic Memorization
+and Exploration
+SupplementaryMaterial
+Inthesupplementarymaterials,wereport:
+• LLMinstructionsusedforconstructingvisionsupervision(§S1);
+• Detailedexperimentalsetupandadditionalexperimentalresults(§S2);
+• ShowcasesofSVLMstrainedviaDyMEperformingonmedicalVQA,chartunderstanding,
+andgeometryproblemsolving(§S3);
+S1 LLM INSTRUCTIONS FOR VISION SUPERVISION
+TheinstructionsforconstructingI ,thevisualrefiner,andthevisualcheckerarelistedasfollows.
+c
+S1.1 INSTRUCTIONSFOREXTRACTINGVISUALELEMENTS
+I isprimarilyderivedfromtwosources: groundtruthcaptions,andtheoutputsfromspecialized
+c
+toolssuchasthechart-parsingmodelDeplot. PromptS1isemployedtoextractvisualelementsfrom
+captions.
+1 You are a helpful assistant that analyzes images and provides visual
+facts.
+2 Your response MUST be a single, valid JSON object.
+3 The JSON object should contain:
+4 1. "description": A detailed and accurate description of the image.
+5 2. "objects": A list of key objects, including their name, attributes,
+and approximate position in the image.
+6
+7 Example format:
+8 {
+9 "description": "A person riding a bicycle on a city street.... (
+detailed description here)",
+10 "objects": [
+11 {"name": "person", "attributes": ["wearing helmet", "blue shirt"], "
+position": "center"},
+12 {"name": "bicycle", "attributes": ["red", "mountain bike"], "position
+": "center"},
+13 {"name": "street", "attributes": ["asphalt", "wet"], "position": "
+bottom"}
+14 ]
+15
+16 Analyze the attached image and provide the visual facts in the required
+JSON format.
+17 For context, the user will be asked this question about the image (do not
+answer the question, just use it for context):
+18 "{question}"
+19 }
+PromptS1: AutomatedVisualFactExtraction
+S1.2 INSTRUCTIONSFORVISUALREFINER
+ThevisualrefinerprimarilytakesthinkingtemplatesfromatemplatepoolandI asinputtoconstruct
+c
+thegroundtruthforSFT.
+1 Given:
+2 <IC>: the data of an image
+3 <Q>: a question
+1
+--- PAGE 15 ---
+PublishedasaconferencepaperatICLR2026
+4 <A>: a reference answer
+5 <T>: a writing template
+6
+7 Goal:
+8 Transform the visual information in <IC> into a textualized data
+description and incorporate it into a smooth, natural explanation
+that reasons why the correct answer to <Q> is <A>, using the format
+and tone defined by <T>.
+9
+10 Example:
+11 <IC>: [
+12 {"object": "bar", "attributes": ["˜120k", "Q4"], "label": "Product A"},
+13 {"object": "bar", "attributes": ["˜150k", "Q4"], "label": "Product B"},
+14 {"object": "bar", "attributes": ["˜90k", "Q4"], "label": "Product C"},
+15 {"title": "Quarterly Revenue"}
+16 ]
+17 <Q>: Which product has the highest revenue in Q4?
+18 <A>: product b
+19 <T>:
+20 [Extraction] Extract the relevant data points from <IC> that are
+needed to answer <Q>.
+21 [Calculation] Analyze and compare the extracted data to determine the
+correct result.
+22 [Conclusion] Based on the analysis, state why <A> is the correct
+answer to <Q>.
+23
+24 <Output>:
+25 [Extraction] The image shows a chart comparing three items-Product A,
+Product B, and Product C-in Q4. The bar heights indicate their
+revenues: Product A at about 120k, Product B at about 150k, and
+Product C at about 90k.
+26 [Calculation] Comparing these values, Product B’s revenue (150k) is
+greater than both Product A’s (120k) and Product C’s (90k).
+27 [Conclusion] Since Product B has the highest revenue among the three,
+the correct answer to the question "Which product has the
+highest revenue in Q4?" is product b.
+28
+29 Now, according to the requirements and the examples above, convert my
+input into the target reasoning text. Please give me the result
+directly without any explanation or description.
+30
+31 <IC>: %s
+32 <Q>: %s
+33 <A>: %s
+34 <T>: %s
+35 <Output>:
+PromptS2: Ground-truthconstructionforChartUnderstandingSFT
+Promptsfortheotherdomainsfollowasimilardesign.
+S1.3 INSTRUCTIONSFORVISUALCHECKER
+Thevisualcheckerisprimarilyresponsibleforscoringthethinkingtraceofresponsesgeneratedin
+theGRPOprocess. Itevaluatesthesetraceswithreferencetoexemplars,basedontheirfluencyand
+thedegreetowhichthementionedvisualelementsalignwithI . Promptsfortheotherdomains
+c
+followasimilardesign.
+1 Given
+2 <IC>: the data of an image
+3 <Q>: a question
+4 <A>: a reference answer
+5 <R>: a reasoning text
+6
+2
+--- PAGE 16 ---
+PublishedasaconferencepaperatICLR2026
+7 Goal:
+8 Assess whether <R> correctly and reasonably uses visible data in <IC> to
+justify that the correct answer to <Q> is <A>. Rate the quality as
+low / medium / high according to:
+9 (a) low: Does not use data from <IC> at all, or the language is not
+fluent/natural, or it fails to indicate the answer to <Q> is <A>.
+10 (b) medium: Uses data from <IC> and is written fluently, but the
+reasoning is overly brief or insufficiently clear.
+11 (c) high: Uses data from <IC> and is written fluently; the reasoning
+progresses step by step with depth, each step is correct and
+reasonable; the data from <IC> appears exactly where it should;
+overall, the reasoning text provides very strong support that the
+answer to <Q> is <A>.
+12
+13 Example:
+14 <IC>: [
+15 {"object": "bar", "attributes": ["˜120k", "Q4"], "label": "Product A"},
+16 {"object": "bar", "attributes": ["˜150k", "Q4"], "label": "Product B"},
+17 {"object": "bar", "attributes": ["˜90k", "Q4"], "label": "Product C"},
+18 {"title": "Quarterly Revenue"}
+19 ]
+20 <Q>: Which product has the highest revenue in Q4?
+21 <A>: product b
+22 <R>:
+23 [Extraction] Reads Q4 bar heights: A ˜120k, B ˜150k, C ˜90k.
+24 [Calculation] Compares values: B > A and B > C.
+25 [Conclusion] Therefore, Product B is highest, matching the answer "
+product b".
+26
+27 <Output>: medium
+28
+29 According to the requirements and examples above, score the input into
+three categories. Please give me the result directly without any
+explanation or description.
+30
+31 <IC>: %s
+32 <Q>: %s
+33 <A>: %s
+34 <R>: %s
+35 <Output>:
+PromptS3: ScoringgenerationsduringGRPOforChartUnderstanding
+S2 EXPERIMENTAL DETAILS AND EXTRA RESULTS
+S2.1 TRAININGANDTESTSETTING
+First,weprovidethestatisticalinformationforthetrainingandtestingphasesofourexperiments
+intheTab. S1. Thetrainingdatasetforeachdomainconsistsofonlyafewthousandsamples. In
+addition,Fig.S1visualizesacomparisonbetweentheground-truthresponsesproducedbytherefiner
+andtheoriginalground-truth,showingthattherefinedversionsarenoticeablymorestructuredand
+placegreateremphasisonintermediatevalues.
+TableS1: Trainingandtestingsetup. DyMEempowersthinkingcapabilitiesbasedonsmalltraining
+sets.
+Domain Trainingset #Trainingsamples SourceofI Testset
+c
+MedicalVQA SLAKE-Train 4,919 BiomedGPT SLAKE-Test
+ChartUnderstanding ChartQA-Train 4,576 DePlot ChartQA-Test
+GeometrySolving Geo170K 6,417 Collected MathVerse
+3
+--- PAGE 17 ---
+PublishedasaconferencepaperatICLR2026
+Medical(SLAKE). Chart(ChartQA). Math(Geo170k).
+Q:Ifangle1is35◦,whatisangle
+2? Choices: A:55◦, B:135◦, C:
+Q: What is the sum of making 145◦,D:155◦.
+progress,losingground,andsame w/orefiner:
+Q: What is the MR weighting in in2011? Sinceangle1is35degree,angle
+thisimage? w/orefiner: 2 is 180 - 35 = 145 degree us-
+w/orefiner: Toanswerthequestion,wefirstlo- ing a supplementary relationship.
+Basedonsignalvariationstypical catetherelevantpartofthechart ChooseC.
+of this image, the most plausible for 2011, then extract the values w/refiner:
+answerisT2. forthethreeseriesandsumthem Extraction:TwoparallellinesCD
+w/refiner: uptoobtain99. andABwithatransversal;angle1
+Analysis: On T2, fluid is bright; w/refiner: is35degree,andangle2isonthe
+bone/airandfastflowaredark. Extraction: Read 2011 values: sameside.
+Extraction: In this axial slice, Making progress = 45, Losing Calculation:Same-sideinterioran-
+intraluminalfluidisbright;vessels ground=29,Same=25. glesaresupplementary,soangle2
+lowsignal;ribs/walldark. Calculation:45+29+25=99. =180-35=145degree.
+Conclusion:PatternmatchesT2. Conclusion:Thesumis99. Conclusion:Answer:C.
+FigureS1: Comparisonofground-truthresponsesbeforeandafterrefinement. Comparedto
+theoriginalground-truth,therefinerinjectsrichervisualelementsandenforcesamorestructured
+organization,therebyreducingthelearningburdenforSVLMs.
+S2.2 EXTRARESULTS
+Wealsoreportadditionalexperimentalcontent,includingthediscussionontrainingstrategiesand
+dataorganizationformats,aswellasacomparativeanalysiswithothersimilarmethodsthatintegrate
+SFTandRL.
+Specifically, (1) we first demonstrate the importance of
+constructing vision supervision, which proves essential Table S2: Two-stage training on
+fortrainingSVLMstoproducegroundedthinkingtraces. ChartQA. Rel-corr denotes the
+(2)Wethenexaminetheimpactofstructuredversusopen- relaxed-correctnessmetric. I indicates
+c
+endedoutputformatsonthinkingperformance. (3)Fur- whetheranexplicitimage-contentfield
+thermore,tovalidateourearlierobservationthatSVLMs issupervised(✓yes;✗no).
+arepronetoconvergingtolocaloptima,wepresentperfor-
+manceacrossdifferenttrainingepochs,showingthatSFT
+Model I Rel-corr
+c
+training saturates after only one epoch. (4) We provide
+SmolVLM ✓ 64.32
+adetailedcomparisonwithalternativemethodsthatinte- SmolVLM ✗ 60.09
+grateSFTandRL.(5)Finally,weextendourevaluation LLaVA-OV-S ✓ 63.62
+tostrongerbasemodelsandpuretextualdomains,and(6) LLaVA-OV-S ✗ 52.90
+validatethequalityofgeneratedthinkingtracesthrough
+humanevaluation.
+(1)Intermediatevaluesmatter. AsshowninTableS2,wereporttheeffectofapplyingtwo-stage
+trainingwithvisualsupervisiononSmolVLMandLLaVA-OV-S.Incorporatingvisualsupervision
+significantlyimprovesthebestperformanceachievedduringtraining,despitecertaininstabilities,
+thereby validating itscritical role forSVLMs. Thiseffect isfurther illustrated inFig. S1, where
+visualsupervisioncompelsSVLMstogenerateintermediatereasoningenrichedwithvisualelements,
+whichmakeaclearcontributiontothefinalanswer.
+(2)StructuredthinkingalleviatesthelearningburdenofSVLMs. TableS3reportstheperfor-
+mancegapbetweentrainingwithstructuredthinkingground-truthandwithunconstrainedground-
+4
+--- PAGE 18 ---
+PublishedasaconferencepaperatICLR2026
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+0 500 1000 1500 2000 2500
+Steps
+ycilop-ffO
+fo
+noitroporP
+DyME
+CHORD-
+LUFFY
+FigureS2: Relativeoff-policyinfluenceduringtraining. Eachcurveisnormalizedtoitsinitial
+valueforcomparability. DyMEmeasuresSFT/(SFT+RL)(rawinlightertone,Gaussian-smoothed
+indarkertone),CHORD-µtrackstheglobalweightµ(t),andLUFFYadoptsapolicy-shapingproxy
+E[f(π (a))]withf(x)= x . Allmethodsrevealtheshiftfromoff-policyguidancetoon-policy
+θ x+γ
+optimization,albeitwithdistinctdecaydynamics.
+TableS3: Effectoftemplatedoutputacrossmodelsandtasks. ✓denotesfixed-templateoutput,
+whereas✗denotesfree-formgeneration.
+Model Template Chart Medical
+SmolVLM ✓ 60.10 59.38
+SmolVLM ✗ 59.24 56.13
+LLaVA-OV-S ✓ 52.87 74.52
+LLaVA-OV-S ✗ 50.86 72.64
+truth. Whileopen-endedexplorationisoftenbeneficialforLVLMs,thelimitedcapacityofSVLMs
+makesunconstrainedexplorationlesseffective,asittendstobeaimlessandincreasesthelearning
+burden. GiventhatSVLMsaredesignedfortask-specificratherthangeneral-purposescenarios,em-
+ployingtailoredthinkingtemplatesforeachtaskprovesmoresuitableandyieldsbetterperformance.
+Forinstance,SmolVLMachieves60.10vs.59.24onChartQAand59.38vs.56.13onMedicalVQA,
+withLLaVA-OV-Sexhibitingsimilargains.
+(3)ComparisonbetweenannealedSFTlossandDyME.
+AsshowninFig.S2, wecomparetherelativeSFT(off- Table S4: SVLM performance satu-
+policy)influenceacrosstrainingstepsforthreeapproaches: rates after a single training epoch.
+DyME,CHORD(Zhangetal.,2025b),andLUFFY(Yan
+Scoreisdomain-specific: chartdomain
+etal.,2025). ForDyMEandCHORD,thecurvesrepresent usesRel-corr,whilethemedicaldo-
+thenormalizedweightoftheSFTlossateachstep,while mainusestheaverageofaccuracyand
+forLUFFYthecurvereflectsthetrajectoryofSFTgradi- recallvalues.
+entshapingasafunctionofpredictionprobability(which
+generally correlates with training steps). These curves
+Model Domain Epoch Score
+highlightthedynamicnatureofDyME.Becauseoftheex-
+1 60.70
+tremelylimitedcapacityofSVLMs,theirlearningpatterns
+LLaVA-OV-S Chart 5 60.44
+canshiftsignificantlyevenbetweenadjacentsteps,leading 10 60.12
+torapidforgettingofpreviouslyacquiredmodes. Unlike
+1 60.22
+CHORD, which relies on a smooth annealing schedule Chart 5 63.21
+thatdecaysquicklyandisill-suitedtosuchsmallmodels, SmolVLM 10 62.22
+DyMEassignsweightsdirectlybasedonmodeloutputs. 1 71.73
+Medical 5 71.80
+Thisproducesahighlydynamicandirregulardecay,bet- 10 72.05
+ter accommodating the instability of SVLMs. LUFFY
+adopts a shaping function f(x) = x (γ=0.1), which
+x+γ
+alsoinducesadynamicdecaywithprobabilitybutremainsheuristicandmaynotalignwellwith
+thelocal-optimumtendencyofSVLMs. Overall,DyMEisexplicitlytailoredforSVLMs,whereas
+5
+--- PAGE 19 ---
+PublishedasaconferencepaperatICLR2026
+TableS5: Detailedlearningtrajectoriesdemonstratingrigoroustuning. Wereporttheperfor-
+manceacrossmultiplesettingstoshowtheirfulllearningtrajectories. Two-stagebaselinesinclude
+variantswithandwithoutKLpenaltiestoensureoptimalperformanceiscaptured.
+DataQuality Method Performanceacrossepochs(1,3,5,10) Bestperf.
+DyME(ours,pure) Reportfinalscoredirectly 61.9
+SFT 43.1 → 47.9 → 50.0 → 50.5 50.5
+Low
+Two-stage 57.6 → 52.7 → 50.8 → 50.7 57.6
+Two-stage(w/KL) 54.2 → 55.4 → 52.6 → 54.2 55.4
+DyME(ours,pure) Reportfinalscoredirectly 64.9
+SFT 53.6 → 56.5 → 57.8 → 56.4 57.8
+Medium
+Two-stage 59.9 → 52.8 → 53.0 → 53.1 59.9
+Two-stage(w/KL) 59.0 → 60.6 → 60.6 → 60.8 60.8
+DyME(ours,pure) Reportfinalscoredirectly 68.5
+SFT 58.2 → 59.1 → 61.0 → 61.6 61.6
+High
+Two-stage 51.6 → 54.0 → 54.5 → 54.4 54.5
+Two-stage(w/KL) 61.7 → 60.9 → 62.7 → 61.8 62.7
+CHORDandLUFFYmaybemoreappropriateforstrongerbasemodels,reflectingcomplementary
+strengths.
+(4)SVLMsconvergerapidly.TableS4showsthatSVLMsconvergeextremelyquickly:performance
+afteronlyoneepochiscomparableto,orevenexceeds,thataftertenepochs(e.g.,LLaVA-OV-S
+achieves 60.70 vs. 60.12 on the Chart domain). This indicates that the very limited capacity of
+SVLMsmakesthempronetooverfittingtolocaloptima. Italsosubstantiatesourearlierclaimthat
+suchrapidconvergenceleavesonlyanarrowwindowforbalancingSFTandRL,makingitdifficultto
+achievethetrade-offthroughempiricalhyperparametertuning. Consequently,staticfusionmethods
+areunsuitableforSVLMs.
+To ensure a rigorous comparison, we further report the full learning trajectories of baselines in
+Table S5. We evaluated the Two-stage baseline (with and without KL penalty) and SFT across
+multipleepochs(1,3,5,10)tocapturetheirpeakperformance. Theresultsconfirmthatevenwith
+optimalstopping,thebaselinesconsistentlyunderperformDyME,whichachievessuperiorresultsina
+singletrainingrunwithouttheneedforepochselection.
+(5)Generalityacrosscomplexreasoningandpuretext. TodemonstratethescalabilityofDyME,
+we applied it to two new domains without modifying the core algorithm: Physical Reasoning
+(A-OKVQA)andPureTextReasoning(GSM8K).
+• PhysicalReasoning(A-OKVQA):Weaddressedthechallengeofopen-endedvisualreasoning
+bytestingonA-OKVQA.WeusedQwen2.5-VL-7BtoautomaticallygenerateVisualFactsusing
+the prompt defined in §S1 (e.g., “man, wearing a light blue and white shirt...”). As shown in
+TableS6,DyMEachievedamassivegainof+18.8%(54.2%→73.0%),provingthatthemethod
+scaleseffortlesslytotasksrequiringworldknowledgeandcommonsense.
+• PureTextReasoning(GSM8K):Inpuretextdomains,the“VisualFact”extractionstepisnaturally
+skipped. OntheGSM8Kmathbenchmark,DyMEimprovedQwen2.5-0.5Bfrom49.5%to55.3%,
+demonstratingthattheparadigmgeneralizesevenwhen“vision”isabsent.
+Theseresults,combinedwiththeChartQAimprovementsonthestrongerQwen2.5-VL-7Bmodel,
+confirm that DyME is not limited by the extraction step. By leveraging off-the-shelf LVLMs to
+automatevisualfactgeneration,theframeworkisimmediatelyapplicabletodiversevisualandtextual
+domains.
+Limitations on Abstract Visuals. We acknowledge that the VS module may face challenges
+in scenarios where “Visual Facts” are intrinsically difficult to define or extract, such as memes
+(relying on irony or cultural context) or highly abstract non-commonsense reasoning. However,
+6
+--- PAGE 20 ---
+PublishedasaconferencepaperatICLR2026
+Table S6: Generality of DyME across New Domains. We demonstrate performance gains on
+ComplexScenes(A-OKVQA),PureText(GSM8K),andwithstrongerbasemodels(Qwen2.5-VL-
+7B).BaselinesfortextusestandardGRPO.
+Domain Task BaseModel Method Baseline(%) DyME(%)
+WorldKnowledge A-OKVQA LLaVA-OV-S Two-stage 54.2 73.0(+18.8)
+PureText GSM8K Qwen2.5-0.5B GRPO 49.5 55.3(+5.8)
+NewLVLM ChartQA Qwen2.5-VL-7B SFT 87.3 89.6(+2.3)
+ourprimaryobjectiveistoempowerSVLMsforpractical,real-worldproductiontasks(e.g.,chart
+processing,medicaldiagnostics,geometricsolving). Inthesestructuredandsemi-structureddomains
+whereSVLMsaremostcommonlydeployed,VisualFactsarewell-definedandDyMEproveshighly
+effective.
+(6) Human evaluation of CoT quality. Automatic metrics like relaxed accuracy do not fully
+reflect the quality of the reasoning process. To verify whether DyME generates genuinely better
+thinkingtraces,weconductedahumanevaluationon100randomlysampledinstancesfromChartQA.
+AnnotatorsjudgedthevalidityofthegeneratedCoTbasedonitslogicalcoherenceandgrounding.
+As shown in Table S7, DyME produces traces that are slightly more concise (shorter length) but
+significantlymorevalid(validityrate∼70%)comparedtotheTwo-stagebaseline(∼30-40%). This
+confirms that DyME effectively mitigates the generation of “pseudo thinking traces” that plague
+standardSFT/Two-stagetraining.
+TableS7: HumanevaluationofCoTqualityonChartQA.
+BaseModel Method Avg. CoTLength HumanEval(Valid%)
+Two-stage ∼76.3Words 31%
+LLaVA-OV-S
+DyME ∼69.7Words 68%
+Two-stage ∼84.5Words 40%
+SmolVLM
+DyME ∼75.4Words 72%
+S3 SHOWCASES
+Before presenting the model outputs, we first illustrate the data quality definitions used in our
+Algorithmic Validation (Section 4.1 of the main paper). Table S8 showcases examples of Low
+(Undesigned),Medium(Standard),andHigh(Premium)qualityChain-of-Thoughtsupervisionfor
+thesamequestion. ThisvisualizesthesignificantgapinstructureanddetailthatDyMEmustbridge
+whentrainedonnon-premiumdata. Furthermore,TableS9illustratesthecomprehensiveformatof
+oursupervisiondata,encompassingtheinputimage,theassociatedquestion,theextractedvisual
+facts,andtheground-truthresponse.
+WepresentdialogueinstancesofSmolVLM,LLaVA-OV-S,andInternVL2-S,whichweretrained
+withDyMEinourexperiments,ontasksinthedomainsofmedicalVQA,chartunderstanding,and
+geometry. AsshowninFigS3toFigS5,allmodelstrainedwithDyMEdemonstratetheabilityto
+generateeffectivethinkingtraceswithaccurateintermediatevalues(ingreen),whichplayacrucial
+roleinreachingthefinalcorrectanswer.
+Thethinkingprocessesofthesemodelsarerelativelyfixedandtemplate-based. Thisisaresultof
+our vision supervision module taking effect, as SVLMs should not be overly broad and general;
+otherwise,theirexplorationcaneasilydivergeinsteadofconverging.
+7
+--- PAGE 21 ---
+PublishedasaconferencepaperatICLR2026
+TableS8: Showcaseofchain-of-thought(CoT)supervisionwithdifferentqualityforChartQA.
+Type Content
+Question Whendoestheunfavorableviewreachthepeak?
+High-quality <SUMMARY>IinspectthelinegraphshowingveryunfavorableviewsofPakistaninIndiaover
+CoT time,andidentifytheyearwherethepercentagepeaksbylocatingthemaximumpointonthe
+curve.</SUMMARY>
+<CAPTION>Linegraphtitled“VeryunfavorableviewsofPakistanincreasinginIndia”.The
+y-axisshowstheshareofrespondentswithaveryunfavorableview(0–100%). Thex-axis
+showsyears2013–2017.Markedvalues:54%(2013),49%(2014),51%(2015),55%(2016),
+and64%(2017).Theseriesexhibitsanoverallupwardtrendandpeaksin2017.</CAPTION>
+<REASONING>Thepeakcorrespondstothehighestpercentageonthey-axis. Amongthe
+annotatedyears,2017hasthelargestvalue(64%),higherthan2013–2016.Therefore,thepeak
+occursin2017.</REASONING>
+<CONCLUSION>2017</CONCLUSION>
+Medium-quality Goal:Determinetheyearwhentheunfavorableviewreachesitsmaximum.
+CoT Observation:Thevaluesforeachyearare:2013:0,2014:0,2015:0,2016:55,and2017:64.
+Reasoning:Comparingthesevalues,thelargestvalueis64,whichappearsin2017.
+Conclusion:Theunfavorableviewreachesitspeakin2017.
+Low-quality I’mtryingtofigureouttheyearwhentheunfavorableviewreachesitshighestpoint.Thevalues
+CoT staylowuntil2016,wheretheyriseto55,andthenclimbfurtherto64in2017.Thismakes
+2017theyearwhentheunfavorableviewreachesitsmaximum.
+TableS9: ShowcaseofacompleteCoTtrainingexample.
+Type Content
+Question Whatisthemanbythebagsawaiting?
+VisualFact {”description”: ”Amanstandsinthemiddleofaresidentialstreet,facingawayfromthe
+camera. Heholdsaredbagandpullsawheeledblacksuitcase,withanotherblacksuitcase
+placednearby.Houses,parkedcars,andtreeslinethebackground,suggestingheiswaiting
+tocrossorbepickedup.”,”objects”:[ ”name”:”man”,”attributes”:[”lightblueandwhite
+shirt”,”bluejeans”,”carryingaredbag”,”pullingawheeledsuitcase”],”position”:”center”,
+”name”:”redbag”,”attributes”:[”heldbytheman”],”position”:”leftoftheman”, ”name”:
+”blacksuitcase”,”attributes”:[”wheeled”,”beingpulled”],”position”:”neartheman’sfeet”
+, ”name”:”blacksuitcase”,”attributes”:[”lyingontheground”],”position”:”neartheman”
+, ”name”:”street”,”attributes”:[”asphalt”,”urbanresidential”],”position”:”foreground”,
+”name”:”houses”,”attributes”:[”residentialhomes”],”position”:”backgroundleft”, ”name”:
+”parkedcars”,”attributes”:[”redSUV”,”othervehicles”],”position”:”backgroundcenterand
+left”, ”name”:”trees”,”attributes”:[”greenfoliage”],”position”:”backgroundright” ]}
+GTResponse Atrainwouldnotappearonaresidentialstreet,andtheman’sluggagesuggestsheiswaiting
+fortransportationratherthanadelivery.Thenearbyskateboarderisnotinteractingwithhim,
+leavingacabasthemostplausibleoption.
+8
+--- PAGE 22 ---
+PublishedasaconferencepaperatICLR2026
+(a)ShowcaseofMedicalVQA
+(b)ShowcaseofChartUnderstanding
+(c)ShowcaseofGeometrySolving
+FigureS3: ShowcasesofSmolVLM.TheSVLMoriginallyproduceshallucinatedanswers(red),
+whiletheDyME-trainedmodelgeneratesstructuredthinkingtraces(green)thatincorporategrounded
+values,effectivelyimprovingtheperformance.
+9
+--- PAGE 23 ---
+PublishedasaconferencepaperatICLR2026
+(a)ShowcaseofMedicalVQA
+(b)ShowcaseofChartUnderstanding
+(c)ShowcaseofGeometrySolving
+FigureS4: ShowcasesofInternVL2-S.TheSVLMoriginallyproduceshallucinatedanswers(red),
+whiletheDyME-trainedmodelgeneratesstructuredthinkingtraces(green)thatincorporategrounded
+values,effectivelyimprovingtheperformance.
+10
+--- PAGE 24 ---
+PublishedasaconferencepaperatICLR2026
+(a)ShowcaseofChartUnderstanding
+(b)ShowcaseofMedicalVQA
+(c)ShowcaseofGeometrySolving
+FigureS5: ShowcasesofLLaVA-OV-S.TheSVLMoriginallyproduceshallucinatedanswers(red),
+whiletheDyME-trainedmodelgeneratesstructuredthinkingtraces(green)thatincorporategrounded
+values,effectivelyimprovingtheperformance.
+11

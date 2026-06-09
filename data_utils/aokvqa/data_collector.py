@@ -2,6 +2,7 @@ import os
 import json
 from typing import List, Dict, Any
 from config import CONFIG
+from data_utils.paths import resolve_image_path
 
 # Define the prompt template as a constant for clarity and easy modification.
 PROMPT_TEMPLATE = (
@@ -49,10 +50,8 @@ def prepare_world_rl_data(json_path: str) -> List[Dict[str, Any]]:
                 new_entry['answer'] = ANSWER_TEMPLATE.format(answer=new_entry['answer'].strip())
             new_entry['direct_answers'] = eval(new_entry['direct_answers'])
             image = new_entry.get('image', '')
-            if not os.path.exists(image):
-                image = image.replace('/chartqa_output/',
-                                      '/path/to/data/chartqa_output/')
-                new_entry['image'] = image
+            if image:
+                new_entry['image'] = resolve_image_path(image)
             # Format the prompt using an f-string.
             new_entry['prompt'] = PROMPT_TEMPLATE.format(question=new_entry['question'])
             new_entry['question_wo_prompt'] = new_entry['question']
@@ -102,17 +101,16 @@ def prepare_world_dyme_data(json_path: str) -> List[Dict[str, Any]]:
             new_entry['direct_answers'] = eval(new_entry['direct_answers'])
 
             image = new_entry.get('image', '')
-            if not os.path.exists(image):
-                image = image.replace('/chartqa_output/',
-                                      '/path/to/data/chartqa_output/')
-                new_entry['image'] = image
+            if image:
+                new_entry['image'] = resolve_image_path(image)
             # Format the prompt using an f-string.
             new_entry['prompt'] = PROMPT_TEMPLATE.format(question=new_entry['question'])
             new_entry['question_wo_prompt'] = new_entry['question']
             # Optionally remove the 'human_or_machine' key from the final output.
             new_entry.pop('human_or_machine', None)
             new_entry.pop('question', None)
-            new_entry['hint'] = entry['visual_fact']
+            new_entry['hint'] = entry.get('visual_fact', entry.get('hint', ''))
+            new_entry['visual_fact'] = entry.get('visual_fact', '')
 
             processed_data.append(new_entry)
 

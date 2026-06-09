@@ -95,7 +95,7 @@ def patch_json_with_direct_answers(base_output_dir):
 
 
 if __name__ == "__main__":
-    data_directory = "/path/to/data/aokvqa"
+    from data_utils.paths import AOKVQA_DIR
 
-    print(f"Target root directory: {data_directory}")
-    patch_json_with_direct_answers(base_output_dir=data_directory)
+    print(f"Target root directory: {AOKVQA_DIR}")
+    patch_json_with_direct_answers(base_output_dir=AOKVQA_DIR)

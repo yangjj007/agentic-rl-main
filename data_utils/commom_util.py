@@ -2,6 +2,8 @@ import os.path
 
 from PIL import Image as PILImage
 
+from data_utils.paths import resolve_image_path
+
 from data_utils.aokvqa.data_collector import prepare_world_rl_data, prepare_world_sft_data, prepare_world_dyme_data
 from data_utils.chart.data_collector import prepare_chart_rl_data, prepare_chart_sft_data
 from data_utils.lm_math.data_collector import prepare_math_lm_rl_data
@@ -50,8 +52,7 @@ def collate_fn(examples, processor, label_id=151646):
     for example in examples:
       image = example["image"]
       if isinstance(image, str):
-        if not os.path.exists(image):
-            image = image.replace('/path/to/chartqa_output/', '/path/to/chartqa_output/')
+        image = resolve_image_path(image)
         image = PILImage.open(image)
       if image.mode != 'RGB':
         image = image.convert('RGB')

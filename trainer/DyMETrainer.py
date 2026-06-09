@@ -61,6 +61,12 @@ from reward_utils import checker
 from reward_utils.checker import RewardCalculator
 from reward_utils.compute_rewards import calculate_rewards_in_parallel, refine_context_in_parallel
 
+from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, DEFAULT_OPSD_CONFIG
+from opsd_utils.mode_router import route_prompt_modes, expand_modes_to_completions
+from opsd_utils.recoverability import estimate_recoverable_flags
+from opsd_utils.prompt_builder import build_teacher_prompt_batch
+from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch
+
 if is_wandb_available():
     import wandb
 
@@ -269,7 +275,9 @@ class DyMETrainer(Trainer):
         processing_func = None,
         task_name: str = None,
         end_flag: str = '<|im_end|>',
+        opsd_config: Optional[dict] = None,
     ):
+        self.opsd_config = opsd_config if opsd_config is not None else dict(DEFAULT_OPSD_CONFIG)
         self.task_name = task_name
         self.reward_weights = torch.nn.Parameter(torch.ones(3), requires_grad=False)
         self.reward_func_names = ['format', 'thinking', 'accuracy']
@@ -652,8 +660,22 @@ class DyMETrainer(Trainer):
         acc_rewards = acc_rewards.view(-1, self.num_generations)
         format_rewards = format_rewards.view(-1, self.num_generations)
 
-        has_correct = (acc_rewards > 0.5).sum(1)
+        threshold = self.opsd_config.get("gate", {}).get("correct_threshold", 0.5)
+        has_correct = (acc_rewards > threshold).sum(1)
         format_rewards = format_rewards.view(-1)
+
+        opsd_active = self.opsd_config.get("enabled", False) and self.opsd_config.get("mode", "dyme") != "dyme"
+        completion_modes = None
+        if opsd_active:
+            recoverable_flags = estimate_recoverable_flags(
+                inputs,
+                self.num_generations,
+                self.opsd_config,
+            )
+            prompt_modes = route_prompt_modes(
+                acc_rewards, self.num_generations, self.opsd_config, recoverable_flags
+            )
+            completion_modes = expand_modes_to_completions(prompt_modes, self.num_generations, batch_size)
 
         sft_check = []
         for i in range(batch_size):
@@ -673,27 +695,48 @@ class DyMETrainer(Trainer):
         final_completion_id_list = []
         final_completion_mask_list = []
         final_advantange_list = []
+        opsd_mask_list = []
 
         for i in range(len(sft_padded_ids)):
             batch_id = i // self.num_generations
-            if has_correct[batch_id] == 0:
-                if sft_check[i]: 
+            cm = completion_modes[i] if completion_modes is not None else None
+            use_opsd = opsd_active and (
+                cm == MODE_OPSD or self.opsd_config.get("mode") == "opsd_only"
+            )
+            use_sft = (not opsd_active) or cm == MODE_SFT
+            joint_opsd = opsd_active and self.opsd_config.get("mode") == "grpo_opsd_joint" and has_correct[batch_id] > 0
+
+            if use_opsd and self.opsd_config.get("mode") == "opsd_only":
+                completion_id_ = completion_ids[i]
+                completion_mask_ = completion_mask[i]
+                advantange_ = torch.zeros(completion_mask[i].size(0), device=device, dtype=torch.float)
+                opsd_mask_list.append(True)
+            elif has_correct[batch_id] == 0:
+                if use_opsd:
+                    completion_id_ = completion_ids[i]
+                    completion_mask_ = completion_mask[i]
+                    advantange_ = torch.zeros(completion_mask[i].size(0), device=device, dtype=torch.float)
+                    opsd_mask_list.append(True)
+                elif sft_check[i] and use_sft:
                     completion_id_ = torch.cat([sft_padded_ids[i], completion_ids[i][0:0]])
                     completion_mask_ = torch.cat([sft_attn_masks[i], completion_mask[i][0:0]])
                     advantange_ = torch.cat([sft_advantages[i], advantages[i][0:0]])
                     advantange_[:] = 1
+                    opsd_mask_list.append(False)
                 else:
                     completion_id_ = torch.cat([completion_ids[i], completion_ids[i][0:0]])
                     completion_mask_ = torch.cat([completion_mask[i], sft_attn_masks[i][0:0]])
                     advantange_ = torch.cat([advantages[i], sft_advantages[i][0:0]])
                     advantange_ = advantange_.repeat_interleave(len(completion_id_))
                     advantange_[:] = 0
+                    opsd_mask_list.append(False)
 
             else:
                 completion_id_ = torch.cat([completion_ids[i], sft_padded_ids[i][0:0]])
                 completion_mask_ = torch.cat([completion_mask[i], sft_attn_masks[i][0:0]])
                 advantange_ = torch.cat([advantages[i], sft_advantages[i][0:0]])
                 advantange_ = advantange_.repeat_interleave(len(completion_id_))
+                opsd_mask_list.append(joint_opsd)
 
             if has_correct[batch_id] == self.num_generations:
                 advantange_[:] = 0
@@ -772,7 +815,7 @@ class DyMETrainer(Trainer):
         mask_pos = completion_advantange > 0 
         row_min = completion_advantange.min(dim=1, keepdim=True).values.abs()  # (batch, 1)
 
-        return {
+        result = {
             "prompt_ids": prompt_ids,
             "prompt_mask": prompt_mask,
             "pixel_values": pixel_values,
@@ -780,9 +823,28 @@ class DyMETrainer(Trainer):
             "completion_mask": completion_mask,
             "advantages": completion_advantange,
             "old_per_token_logps": old_per_token_logps,
-            # "has_correct": has_correct,
-            "img_sizes": image_sizes
+            "img_sizes": image_sizes,
         }
+
+        if opsd_active:
+            opsd_mask = torch.tensor(opsd_mask_list, dtype=torch.bool, device=device)
+            result["opsd_mask"] = opsd_mask
+            opsd_indices = [i for i, m in enumerate(opsd_mask_list) if m]
+            teacher_tensors = build_teacher_prompt_batch(
+                self.processing_class,
+                inputs,
+                list(range(batch_size)),
+                self.opsd_config.get("privileged_providers", ["text"]),
+                device,
+            )
+            result.update(teacher_tensors)
+            if opsd_indices:
+                mode = "train" if self.model.training else "eval"
+                self._metrics[mode].setdefault("opsd/mask_ratio", []).append(
+                    len(opsd_indices) / max(batch_size, 1)
+                )
+
+        return result
 
     def compute_liger_loss(self, unwrapped_model, inputs):
         # Compute the per-token log probabilities for the model
@@ -888,6 +950,26 @@ class DyMETrainer(Trainer):
         self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
         gathered_clip_ratio = self.accelerator.gather_for_metrics(clip_ratio)
         self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
+
+        if self.opsd_config.get("enabled", False) and inputs.get("opsd_mask") is not None:
+            opsd_mask = inputs["opsd_mask"]
+            if opsd_mask.any():
+                opsd_indices = opsd_mask.nonzero(as_tuple=True)[0].tolist()
+                beta = self.opsd_config.get("loss", {}).get("beta", 0.5)
+                opsd_weight = self.opsd_config.get("loss", {}).get("opsd_weight", 1.0)
+                grpo_weight = self.opsd_config.get("loss", {}).get("grpo_weight", 1.0)
+                opsd_loss = compute_vlm_opsd_loss_masked_batch(
+                    model,
+                    opsd_indices,
+                    list(range(prompt_ids.size(0))),
+                    inputs,
+                    beta=beta,
+                )
+                loss = grpo_weight * loss + opsd_weight * opsd_loss
+                self._metrics[mode].setdefault("loss/opsd", []).append(
+                    self.accelerator.gather_for_metrics(opsd_loss.detach()).mean().item()
+                )
+
         return loss
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys: Optional[list[str]] = None):
