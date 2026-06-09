@@ -29,21 +29,47 @@ from reward_utils.refiner import ContextRefiner, ContextRefinerLocal
 from opsd_utils import debug_log as opsd_debug
 
 
-def setup_accelerator_and_wandb(bf16) -> Accelerator:
-    """
-    Initializes Weights & Biases and the Hugging Face Accelerator.
+def _wandb_disabled_by_env() -> bool:
+    if os.environ.get("WANDB_DISABLED", "").lower() in ("true", "1", "yes", "on"):
+        return True
+    if os.environ.get("WANDB_MODE", "").lower() in ("disabled", "off"):
+        return True
+    return False
 
-    Returns:
-        Accelerator: The configured accelerator instance.
-    """
+
+def _try_wandb_login() -> bool:
+    """Return True if wandb credentials are available (env, offline, or prior login)."""
+    if os.environ.get("WANDB_MODE", "").lower() == "offline":
+        return True
     wandb_key = os.environ.get("WANDB_API_KEY")
     if wandb_key:
         wandb.login(key=wandb_key)
+        return True
+    try:
+        wandb.login(relogin=False)
+        key = wandb.api.api_key
+        return bool(key and len(key) >= 40)
+    except Exception:
+        return False
+
+
+def setup_accelerator_and_wandb(bf16, want_wandb: bool) -> tuple[Accelerator, bool]:
+    """
+    Initialize Accelerator and optionally wandb.
+
+    Returns:
+        (accelerator, use_wandb)
+    """
+    use_wandb = want_wandb and not _wandb_disabled_by_env()
+    if use_wandb:
+        use_wandb = _try_wandb_login()
+
+    accel_kwargs: dict = {}
     if bf16:
-        accelerator = Accelerator(mixed_precision="bf16", log_with="wandb")
-    else:
-        accelerator = Accelerator(log_with="wandb")
-    return accelerator
+        accel_kwargs["mixed_precision"] = "bf16"
+    if use_wandb:
+        accel_kwargs["log_with"] = "wandb"
+    return Accelerator(**accel_kwargs), use_wandb
 
 
 def load_model_and_processor(model_config: Dict[str, Any]):
@@ -135,6 +161,15 @@ def main():
         '--opsd_debug', action='store_true',
         help="Enable verbose OPSD debug logs (or set env DYME_OPSD_DEBUG=1)",
     )
+    parser.add_argument(
+        '--wandb', dest='wandb', action='store_true',
+        help="Force enable Weights & Biases logging",
+    )
+    parser.add_argument(
+        '--no_wandb', dest='wandb', action='store_false',
+        help="Disable Weights & Biases logging (or set WANDB_MODE=offline/disabled)",
+    )
+    parser.set_defaults(wandb=None)
 
     args = parser.parse_args()
     mode = args.mode
@@ -162,7 +197,24 @@ def main():
         opsd_debug.log("main", "training entry", mode=mode, config_path=args.config)
 
     # 2. Setup Environment
-    accelerator = setup_accelerator_and_wandb(bf16=training_config['dyme_args']['bf16'])
+    want_wandb = True if args.wandb is None else args.wandb
+    accelerator, use_wandb = setup_accelerator_and_wandb(
+        bf16=training_config['dyme_args']['bf16'],
+        want_wandb=want_wandb,
+    )
+    if want_wandb and not use_wandb and args.wandb is True:
+        raise RuntimeError(
+            "wandb was requested (--wandb) but no API key is configured. "
+            "Run `wandb login`, set WANDB_API_KEY, or use WANDB_MODE=offline."
+        )
+    if accelerator.is_main_process:
+        if use_wandb:
+            print("[DyME] wandb enabled for training logs")
+        elif want_wandb:
+            print(
+                "[DyME] wandb disabled (no credentials). Training continues with report_to=none. "
+                "Run `wandb login`, export WANDB_API_KEY, or pass --wandb after configuring."
+            )
     device_id = accelerator.process_index
     opsd_debug.configure(
         enabled=debug_enabled,
@@ -215,7 +267,10 @@ def main():
     checker = RewardCalculatorLocal(rl_config, client_config.copy(), gpu_id=device_id)
     refiner = ContextRefinerLocal(rl_config, client_config.copy(), gpu_id=device_id)
     # 6. Define Training Arguments
-    training_args = GRPOConfig(**training_config['dyme_args'])
+    dyme_args = dict(training_config['dyme_args'])
+    if not use_wandb:
+        dyme_args["report_to"] = "none"
+    training_args = GRPOConfig(**dyme_args)
 
     collate_fn_with_processor = partial(collate_fn, processor=processor)
     # 7. Initialize the Trainer
