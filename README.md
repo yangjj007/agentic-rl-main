@@ -316,7 +316,7 @@ export DYME_OPSD_DEBUG=1
 mkdir -p ./outputs/logs
 LOG_FILE=./outputs/logs/train_$(date +%Y%m%d_%H%M%S).log
 
-accelerate launch main.py \
+accelerate launch --config_file default_config.yaml --num_processes "$(nvidia-smi -L | wc -l)" main.py \
   --config config/config_trimode.py \
   --mode rl \
   --opsd_enabled \

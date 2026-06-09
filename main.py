@@ -180,15 +180,26 @@ def main():
         )
 
     visible_gpus = torch.cuda.device_count()
+    local_rank = int(os.environ.get("LOCAL_RANK", accelerator.local_process_index))
     if visible_gpus == 0:
         raise RuntimeError("No CUDA devices are visible to this process.")
     if accelerator.num_processes > visible_gpus:
         raise RuntimeError(
             f"GPU/process mismatch: launched {accelerator.num_processes} distributed processes "
-            f"but only {visible_gpus} CUDA device(s) are visible. "
-            f"Use `--num_processes {visible_gpus}` with accelerate launch, or set "
-            f"`NUM_GPUS={visible_gpus}` when running scripts/train_trimode.sh. "
-            f"For 8-GPU nodes, use ACCELERATE_CONFIG=default_config_8gpu.yaml."
+            f"but only {visible_gpus} CUDA device(s) are visible "
+            f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}).\n"
+            f"Fix: accelerate launch --num_processes {visible_gpus} ...\n"
+            f"Or: NUM_GPUS={visible_gpus} bash scripts/train_trimode.sh"
+        )
+    if local_rank >= visible_gpus:
+        raise RuntimeError(
+            f"LOCAL_RANK={local_rank} but only {visible_gpus} GPU(s) visible. "
+            f"Reduce --num_processes to {visible_gpus}."
+        )
+    if accelerator.is_main_process:
+        print(
+            f"[DyME] Distributed launch OK: num_processes={accelerator.num_processes}, "
+            f"visible_gpus={visible_gpus}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}"
         )
 
     # 3. Initialize Model and Processor
