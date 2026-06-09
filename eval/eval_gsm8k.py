@@ -10,6 +10,8 @@ from tqdm import tqdm
 import numpy as np
 from torch.utils.data import DataLoader
 
+from data_utils.rl_prompt import PROMPT_TEMPLATE
+
 # --- Helper functions: parsing GSM8K answers ---
 
 def parse_ground_truth(answer_str):
@@ -75,16 +77,6 @@ if tokenizer.pad_token is None:
 tokenizer.padding_side = 'left'
 
 # Removed AutoProcessor and image processor configuration
-
-# --- Prompt template ---
-# This CoT template is well-suited for GSM8K
-PROMPT_TEMPLATE = (
-    "Your task is to answer the question below. "
-    "Give step by step thinking before you answer, and when you're ready to answer, "
-    "please use the format \"Answer: ..\"\n\n"
-    "Question:\n\n{question}"
-)
-
 
 def run_model_batch(batch_data_list):  # Image-related processing removed
     batch_formatted_prompts_for_chat_template = []

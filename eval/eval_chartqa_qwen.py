@@ -8,6 +8,7 @@ from transformers import AutoProcessor, AutoConfig, AutoTokenizer, Qwen2_5_VLFor
 from trl.models import unwrap_model_for_generation
 
 from data_utils.chart.evaluator import eval_one_chart
+from data_utils.rl_prompt import PROMPT_TEMPLATE
 from reward_utils.compute_rewards import split_initial_context
 
 accelerator = Accelerator()
@@ -45,13 +46,6 @@ else:
     # Attempt an alternative if applicable, e.g.
     # processor.image_processor.size = {"longest_edge": 512 * 4} # if size itself can be replaced
     # Or this might indicate that `size` is a single value or a different structure.
-
-PROMPT_TEMPLATE = (
-    "Your task is to answer the question below. "
-    "Give step by step thinking before you answer, and when you're ready to answer, "
-    "please use the format \"Answer: ..\"\n\n"
-    "Question:\n\n{question}"
-)
 
 def run_kh_batch(batch_data_list):  # Renamed from run_kh, takes a batch
     batch_images = []

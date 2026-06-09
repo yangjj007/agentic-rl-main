@@ -379,7 +379,7 @@ grep -E '\[OPSD-(PROBE|GENDBG)\]' train.log
 | Observation in logs | Likely root cause |
 |---------------------|-------------------|
 | `p_eos` very high + `greedy_token_id==eos` | Weight collapse / train-mode distribution |
-| `prompt_tail_decode` ends with unclosed template + high `p_token_340` | Prompt / chat template issue |
+| `prompt_tail_decode` ends with unclosed template + high `p_token_340` | Prompt / chat template issue (legacy `"Answer: .."` quoted placeholder biased token 340 `)`; fixed in `data_utils/rl_prompt.py`) |
 | `greedy_matches_actual=False` with low `p_eos` | Sampling noise (temperature / top_p) |
 | Large `one_token_count` gap across ranks in `cross_rank` | Data sharding / batch composition |
 | `delta_one_token_count` spikes at `generate_call_index>=2` | Weight drift after optimizer step |

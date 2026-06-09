@@ -2,14 +2,7 @@ import os
 import json
 from typing import List, Dict, Any
 from config import CONFIG
-
-# Define the prompt template as a constant for clarity and easy modification.
-PROMPT_TEMPLATE = (
-    "Your task is to answer the question below. "
-    "Give step by step thinking before you answer, and when you're ready to answer, "
-    "please use the format \"Answer: ..\"\n\n"
-    "Question:\n\n{question}"
-)
+from data_utils.rl_prompt import PROMPT_TEMPLATE
 ANSWER_TEMPLATE = CONFIG['rl']['answer_flag'] + " " +  "{answer}"
 
 def prepare_math_lm_rl_data(json_path: str) -> List[Dict[str, Any]]:
