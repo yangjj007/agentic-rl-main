@@ -302,6 +302,35 @@ Default config keeps OPSD disabled (`DYME_OPSD_CONFIG.enabled=False`):
 accelerate launch main.py --config config/config.py --mode rl
 ```
 
+### OPSD debug logging + tee
+
+When debugging OPSD / TriMode (e.g. NCCL timeout), enable verbose logs and save stdout/stderr:
+
+```bash
+export DYME_OPSD_DEBUG=1
+mkdir -p ./outputs/logs
+LOG_FILE=./outputs/logs/train_$(date +%Y%m%d_%H%M%S).log
+
+accelerate launch main.py \
+  --config config/config_trimode.py \
+  --mode rl \
+  --opsd_enabled \
+  --opsd_debug \
+  --opsd_mode trimode \
+  --opsd_providers text,visual_facts \
+  2>&1 | tee "${LOG_FILE}"
+```
+
+Logs are prefixed with `[OPSD-DEBUG]` and include rank, step, `[SYNC_POINT]` markers before every distributed collective in the OPSD chain (reward gather, teacher prompt build, metrics gather, OPSD loss). Search the log for the last `[SYNC_POINT]` on each rank to locate where a hang occurred.
+
+You can also use the helper script (debug + tee enabled by default):
+
+```bash
+bash scripts/train_trimode.sh
+```
+
+Disable debug when not needed: `DYME_OPSD_DEBUG=0 bash scripts/train_trimode.sh`
+
 ### 2. Training TriMode (DyME + OPSD)
 
 Use `config/config_trimode.py` (OPSD pre-enabled) or override on the base config via CLI:
@@ -327,6 +356,7 @@ accelerate launch main.py --config config/config.py --mode rl \
 | Flag | Description |
 | --- | --- |
 | `--opsd_enabled` | Enable OPSD / TriMode extensions. |
+| `--opsd_debug` | Verbose OPSD chain logs (`[OPSD-DEBUG]`, or env `DYME_OPSD_DEBUG=1`). |
 | `--opsd_mode MODE` | Routing mode: `trimode`, `dyme`, `opsd_only`, `replace_sft`, … |
 | `--opsd_providers LIST` | Comma-separated providers, e.g. `text,visual_facts`. |
 

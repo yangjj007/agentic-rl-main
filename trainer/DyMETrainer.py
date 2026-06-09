@@ -66,6 +66,7 @@ from opsd_utils.mode_router import route_prompt_modes, expand_modes_to_completio
 from opsd_utils.recoverability import estimate_recoverable_flags
 from opsd_utils.prompt_builder import build_teacher_prompt_batch
 from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch
+from opsd_utils import debug_log as opsd_debug
 
 if is_wandb_available():
     import wandb
@@ -413,6 +414,25 @@ class DyMETrainer(Trainer):
         self.model_accepts_loss_kwargs = False
         self.processing_func = processing_func
 
+        opsd_debug.configure(
+            rank=self.accelerator.process_index,
+            world_size=self.accelerator.num_processes,
+        )
+        opsd_debug.log_config("init", "DyMETrainer OPSD config loaded", self.opsd_config)
+        opsd_debug.log(
+            "init",
+            "trainer distributed layout",
+            task_name=self.task_name,
+            num_generations=self.num_generations,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            num_processes=num_processes,
+            effective_batch_size=effective_batch_size,
+            device=str(self.accelerator.device),
+            local_rank=self.accelerator.local_process_index,
+            process_index=self.accelerator.process_index,
+        )
+
     def _set_signature_columns_if_needed(self):
         # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
         # By default, this method sets `self._signature_columns` to the model's expected inputs.
@@ -539,19 +559,41 @@ class DyMETrainer(Trainer):
     ) -> dict[str, Union[torch.Tensor, Any]]:
 
         mode = "train" if self.model.training else "eval"
+        opsd_debug.set_step_label(f"prepare_inputs/{mode}/step={self._step}")
         if mode == "train":
             generate_every = self.args.gradient_accumulation_steps * self.num_iterations
-            if self._step % generate_every == 0 or self._buffered_inputs is None:
+            will_generate = self._step % generate_every == 0 or self._buffered_inputs is None
+            opsd_debug.log(
+                "prepare_inputs",
+                "deciding whether to regenerate completions",
+                mode=mode,
+                trainer_step=self._step,
+                generate_every=generate_every,
+                will_generate=will_generate,
+                buffered_inputs_is_none=self._buffered_inputs is None,
+            )
+            if will_generate:
                 # self._buffered_inputs=None can occur when resuming from a checkpoint
                 accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)
                 self._buffered_inputs = split_tensor_dict(
                     accumulated_local_batch, self.args.gradient_accumulation_steps
                 )
+            else:
+                opsd_debug.log("prepare_inputs", "reuse buffered inputs slice", slice_index=self._step % self.args.gradient_accumulation_steps)
             inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]
             self._step += 1
         else:
+            opsd_debug.log("prepare_inputs", "eval mode always regenerates completions")
             # In evaluation, there is neither gradient accumulation, nor multiple iterations
             inputs = self._generate_and_score_completions(accumulated_local_batch)
+        if opsd_debug.is_enabled() and inputs.get("opsd_mask") is not None:
+            opsd_debug.log(
+                "prepare_inputs",
+                "prepared input batch summary",
+                batch_size=inputs["prompt_ids"].shape[0],
+                opsd_mask_true=int(inputs["opsd_mask"].sum().item()),
+                has_teacher_prompt_ids="teacher_prompt_ids" in inputs,
+            )
         return inputs
 
     def _generate_and_score_completions(
@@ -561,6 +603,18 @@ class DyMETrainer(Trainer):
         # TODO
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
+        opsd_debug.set_step_label(f"generate_and_score/{mode}")
+        opsd_debug.log(
+            "generate",
+            "enter _generate_and_score_completions",
+            mode=mode,
+            local_batch_size=len(inputs),
+            opsd_enabled=self.opsd_config.get("enabled", False),
+            opsd_mode=self.opsd_config.get("mode", "dyme"),
+            privileged_providers=self.opsd_config.get("privileged_providers", []),
+            num_generations=self.num_generations,
+            global_step=getattr(self.state, "global_step", None),
+        )
 
         inputs_for_generate = inputs.copy()
 
@@ -577,15 +631,16 @@ class DyMETrainer(Trainer):
         image_sizes = prompt_inputs_generate["image_sizes"]
 
         # Regular generation path
-        with unwrap_model_for_generation(
-            self.model_wrapped, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
-        ) as unwrapped_model:
-            with (
-                FSDP.summon_full_params(self.model_wrapped, recurse=False)
-                if self.is_fsdp_enabled
-                else nullcontext()
-            ):
-                prompt_completion_ids = unwrapped_model.generate(**prompt_inputs_generate, generation_config=self.generation_config)
+        with opsd_debug.timed("generate", "model.generate"):
+            with unwrap_model_for_generation(
+                self.model_wrapped, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
+            ) as unwrapped_model:
+                with (
+                    FSDP.summon_full_params(self.model_wrapped, recurse=False)
+                    if self.is_fsdp_enabled
+                    else nullcontext()
+                ):
+                    prompt_completion_ids = unwrapped_model.generate(**prompt_inputs_generate, generation_config=self.generation_config)
 
 
             # Compute prompt length and extract completion ids
@@ -620,9 +675,25 @@ class DyMETrainer(Trainer):
             batch_data['direct_answers'] = [x.get('direct_answers', '') for x in inputs]
 
         gpu_id = self.accelerator.device.index
-        all_rewards, format_rewards, acc_rewards, context_rewards = calculate_rewards_in_parallel(self.checker, batch_data,
-                                                                                   gpu_id=gpu_id,
-                                                                                   task=self.task_name)
+        opsd_debug.log(
+            "reward",
+            "start reward calculation",
+            gpu_id=gpu_id,
+            batch_size=batch_size,
+            sample_prompt=(prompts[0][:120] + "...") if prompts and len(prompts[0]) > 120 else (prompts[0] if prompts else None),
+        )
+        with opsd_debug.timed("reward", "calculate_rewards_in_parallel"):
+            all_rewards, format_rewards, acc_rewards, context_rewards = calculate_rewards_in_parallel(self.checker, batch_data,
+                                                                                       gpu_id=gpu_id,
+                                                                                       task=self.task_name)
+        opsd_debug.log(
+            "reward",
+            "reward calculation finished",
+            format_rewards_sum=sum(format_rewards),
+            acc_rewards_sum=sum(acc_rewards),
+            context_rewards_sum=sum(context_rewards),
+            all_rewards_sum=sum(all_rewards),
+        )
         all_rewards = torch.tensor(all_rewards, dtype=torch.float32).to(self.accelerator.device)
         format_rewards = torch.tensor(format_rewards, dtype=torch.float32).to(self.accelerator.device)
         context_rewards = torch.tensor(context_rewards, dtype=torch.float32).to(self.accelerator.device)
@@ -634,7 +705,19 @@ class DyMETrainer(Trainer):
         rewards_per_func[:, 1] = context_rewards.clone()
         rewards_per_func[:, -1] = acc_rewards.clone()
 
-        rewards_per_func = gather(rewards_per_func)
+        opsd_debug.log_sync_point(
+            "dist",
+            "before accelerate.gather(rewards_per_func)",
+            local_shape=tuple(rewards_per_func.shape),
+            device=str(rewards_per_func.device),
+        )
+        with opsd_debug.timed("dist", "accelerate.gather(rewards_per_func)"):
+            rewards_per_func = gather(rewards_per_func)
+        opsd_debug.log(
+            "dist",
+            "after accelerate.gather(rewards_per_func)",
+            gathered_shape=tuple(rewards_per_func.shape),
+        )
 
         # Apply weights to each reward function's output and sum
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
@@ -666,16 +749,28 @@ class DyMETrainer(Trainer):
 
         opsd_active = self.opsd_config.get("enabled", False) and self.opsd_config.get("mode", "dyme") != "dyme"
         completion_modes = None
+        opsd_debug.log(
+            "opsd_router",
+            "OPSD activation check",
+            opsd_active=opsd_active,
+            config_enabled=self.opsd_config.get("enabled", False),
+            config_mode=self.opsd_config.get("mode", "dyme"),
+            correct_threshold=threshold,
+        )
         if opsd_active:
-            recoverable_flags = estimate_recoverable_flags(
-                inputs,
-                self.num_generations,
-                self.opsd_config,
-            )
-            prompt_modes = route_prompt_modes(
-                acc_rewards, self.num_generations, self.opsd_config, recoverable_flags
-            )
+            with opsd_debug.timed("opsd_router", "estimate_recoverable_flags"):
+                recoverable_flags = estimate_recoverable_flags(
+                    inputs,
+                    self.num_generations,
+                    self.opsd_config,
+                )
+            opsd_debug.log("opsd_router", "recoverable flags computed", recoverable_flags=recoverable_flags)
+            with opsd_debug.timed("opsd_router", "route_prompt_modes"):
+                prompt_modes = route_prompt_modes(
+                    acc_rewards, self.num_generations, self.opsd_config, recoverable_flags
+                )
             completion_modes = expand_modes_to_completions(prompt_modes, self.num_generations, batch_size)
+            opsd_debug.log_mode_summary("opsd_router", prompt_modes, completion_modes)
 
         sft_check = []
         for i in range(batch_size):
@@ -683,6 +778,7 @@ class DyMETrainer(Trainer):
             sft_check.append((has_correct[batch_id] == 0) & (i % self.num_generations == 0))
 
         hints = refine_context_in_parallel(self.refiner, question_wo_prompts, hints, answers, task=self.task_name, gpu_id=gpu_id)
+        opsd_debug.log("refine", "context refinement finished", num_hints=len(hints))
 
         sft_gt = [hint + '\n' + answer + self.end_flag for hint, answer in zip(hints, answers)]
 
@@ -745,6 +841,15 @@ class DyMETrainer(Trainer):
             final_completion_mask_list.append(completion_mask_)
             final_advantange_list.append(advantange_)
 
+        opsd_debug.log(
+            "opsd_mask",
+            "completion routing finished",
+            opsd_active=opsd_active,
+            opsd_mask_true=sum(opsd_mask_list),
+            opsd_mask_false=len(opsd_mask_list) - sum(opsd_mask_list),
+            has_correct=has_correct.tolist() if hasattr(has_correct, "tolist") else has_correct,
+        )
+
         completion_ids = pad_sequence(final_completion_id_list, batch_first=True,
                                       padding_value=self.processing_class.tokenizer.pad_token_id).long()
         completion_mask = pad_sequence(final_completion_mask_list, batch_first=True, padding_value=0)
@@ -783,20 +888,30 @@ class DyMETrainer(Trainer):
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip its
             # computation here, and use per_token_logps.detach() instead.
             if self.num_iterations > 1:
-                old_per_token_logps = self._get_per_token_logps(self.model, input_completion_ids, attention_completion_mask, pixel_values, image_sizes,
-                                          logits_to_keep, batch_size)
+                opsd_debug.log_sync_point(
+                    "logps",
+                    "before _get_per_token_logps in generate path",
+                    input_shape=tuple(input_completion_ids.shape),
+                )
+                with opsd_debug.timed("logps", "_get_per_token_logps"):
+                    old_per_token_logps = self._get_per_token_logps(self.model, input_completion_ids, attention_completion_mask, pixel_values, image_sizes,
+                                              logits_to_keep, batch_size)
             else:
                 old_per_token_logps = None
+                opsd_debug.log("logps", "skip old_per_token_logps because num_iterations == 1")
 
         # Log the metrics
         if mode == "train":
+            opsd_debug.log_sync_point("dist", "before gather_for_metrics(attention_mask.sum())")
             self.state.num_input_tokens_seen += self.accelerator.gather_for_metrics(attention_mask.sum()).sum().item()
 
         # log completion lengths, mean, min, max
+        opsd_debug.log_sync_point("dist", "before gather_for_metrics(completion_mask.sum(1))")
         agg_completion_mask = self.accelerator.gather_for_metrics(completion_mask.sum(1))
         self._metrics[mode]["completions/mean_length"].append(agg_completion_mask.float().mean().item())
 
         # identify sequences that terminated with EOS and log their lengths
+        opsd_debug.log_sync_point("dist", "before gather_for_metrics(is_eos.any(dim=1))")
         agg_terminated_with_eos = self.accelerator.gather_for_metrics(is_eos.any(dim=1))
         term_completion_mask = agg_completion_mask[agg_terminated_with_eos]
         clipped_completions_ratio = 1 - len(term_completion_mask) / len(agg_completion_mask)
@@ -830,20 +945,45 @@ class DyMETrainer(Trainer):
             opsd_mask = torch.tensor(opsd_mask_list, dtype=torch.bool, device=device)
             result["opsd_mask"] = opsd_mask
             opsd_indices = [i for i, m in enumerate(opsd_mask_list) if m]
-            teacher_tensors = build_teacher_prompt_batch(
-                self.processing_class,
-                inputs,
-                list(range(batch_size)),
-                self.opsd_config.get("privileged_providers", ["text"]),
-                device,
+            opsd_debug.log_sync_point(
+                "teacher_prompt",
+                "before build_teacher_prompt_batch",
+                batch_size=batch_size,
+                opsd_indices=opsd_indices,
+                provider_names=self.opsd_config.get("privileged_providers", ["text"]),
             )
+            with opsd_debug.timed("teacher_prompt", "build_teacher_prompt_batch"):
+                teacher_tensors = build_teacher_prompt_batch(
+                    self.processing_class,
+                    inputs,
+                    list(range(batch_size)),
+                    self.opsd_config.get("privileged_providers", ["text"]),
+                    device,
+                )
             result.update(teacher_tensors)
+            for key, value in teacher_tensors.items():
+                opsd_debug.log_tensor("teacher_prompt", key, value)
             if opsd_indices:
                 mode = "train" if self.model.training else "eval"
                 self._metrics[mode].setdefault("opsd/mask_ratio", []).append(
                     len(opsd_indices) / max(batch_size, 1)
                 )
+                opsd_debug.log(
+                    "teacher_prompt",
+                    "teacher tensors attached to batch",
+                    opsd_indices=opsd_indices,
+                    opsd_mask_ratio=len(opsd_indices) / max(batch_size, 1),
+                )
+        else:
+            opsd_debug.log("teacher_prompt", "OPSD inactive, skip teacher prompt build")
 
+        opsd_debug.log(
+            "generate",
+            "exit _generate_and_score_completions",
+            result_keys=list(result.keys()),
+            batch_size=result["prompt_ids"].shape[0],
+            opsd_active=opsd_active,
+        )
         return result
 
     def compute_liger_loss(self, unwrapped_model, inputs):
@@ -953,22 +1093,47 @@ class DyMETrainer(Trainer):
 
         if self.opsd_config.get("enabled", False) and inputs.get("opsd_mask") is not None:
             opsd_mask = inputs["opsd_mask"]
+            opsd_debug.log(
+                "opsd_loss",
+                "enter OPSD loss branch in compute_loss",
+                opsd_mask_true=int(opsd_mask.sum().item()),
+                batch_size=prompt_ids.size(0),
+            )
             if opsd_mask.any():
                 opsd_indices = opsd_mask.nonzero(as_tuple=True)[0].tolist()
                 beta = self.opsd_config.get("loss", {}).get("beta", 0.5)
                 opsd_weight = self.opsd_config.get("loss", {}).get("opsd_weight", 1.0)
                 grpo_weight = self.opsd_config.get("loss", {}).get("grpo_weight", 1.0)
-                opsd_loss = compute_vlm_opsd_loss_masked_batch(
-                    model,
-                    opsd_indices,
-                    list(range(prompt_ids.size(0))),
-                    inputs,
+                opsd_debug.log(
+                    "opsd_loss",
+                    "compute_vlm_opsd_loss_masked_batch args",
+                    opsd_indices=opsd_indices,
                     beta=beta,
+                    opsd_weight=opsd_weight,
+                    grpo_weight=grpo_weight,
+                    grpo_loss=float(loss.detach().item()),
                 )
+                with opsd_debug.timed("opsd_loss", "compute_vlm_opsd_loss_masked_batch"):
+                    opsd_loss = compute_vlm_opsd_loss_masked_batch(
+                        model,
+                        opsd_indices,
+                        list(range(prompt_ids.size(0))),
+                        inputs,
+                        beta=beta,
+                    )
                 loss = grpo_weight * loss + opsd_weight * opsd_loss
+                opsd_debug.log(
+                    "opsd_loss",
+                    "combined GRPO + OPSD loss",
+                    opsd_loss=float(opsd_loss.detach().item()),
+                    combined_loss=float(loss.detach().item()),
+                )
+                opsd_debug.log_sync_point("dist", "before gather_for_metrics(opsd_loss)")
                 self._metrics[mode].setdefault("loss/opsd", []).append(
                     self.accelerator.gather_for_metrics(opsd_loss.detach()).mean().item()
                 )
+            else:
+                opsd_debug.log("opsd_loss", "opsd_mask empty on this batch, skip OPSD loss")
 
         return loss
 

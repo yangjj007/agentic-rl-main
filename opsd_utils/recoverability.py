@@ -5,11 +5,21 @@ import torch.nn.functional as F
 
 from opsd_utils.privileged import build_privileged_context
 from opsd_utils.prompt_builder import tokenize_teacher_prompt
+from opsd_utils import debug_log as opsd_debug
 
 
 def privileged_context_available(sample: dict[str, Any], provider_names: list[str]) -> bool:
-    suffix, _ = build_privileged_context(sample, provider_names)
-    return bool(suffix.strip())
+    suffix, teacher_image = build_privileged_context(sample, provider_names)
+    available = bool(suffix.strip())
+    opsd_debug.log(
+        "recoverability",
+        "privileged_context_available",
+        available=available,
+        suffix_len=len(suffix.strip()),
+        has_teacher_image=teacher_image is not None,
+        provider_names=provider_names,
+    )
+    return available
 
 
 def logprob_gain_recoverable(
@@ -94,16 +104,25 @@ def estimate_recoverable_flags(
 
     num_prompts = len(samples) // num_generations
     flags: list[bool] = []
+    opsd_debug.log(
+        "recoverability",
+        "estimate_recoverable_flags enter",
+        method=method,
+        num_prompts=num_prompts,
+        num_generations=num_generations,
+        providers=providers,
+        tau=tau,
+    )
 
     for p in range(num_prompts):
         sample = samples[p * num_generations]
         if method == "privileged_available":
-            flags.append(privileged_context_available(sample, providers))
+            flag = privileged_context_available(sample, providers)
         elif method == "logprob_gain" and model is not None and processor is not None:
             assert completions_tensors is not None
             idx = p * num_generations
-            flags.append(
-                logprob_gain_recoverable(
+            with opsd_debug.timed("recoverability", f"logprob_gain prompt={p}"):
+                flag = logprob_gain_recoverable(
                     model=model,
                     processor=processor,
                     sample=sample,
@@ -116,8 +135,10 @@ def estimate_recoverable_flags(
                     provider_names=providers,
                     tau=tau,
                 )
-            )
         else:
-            flags.append(privileged_context_available(sample, providers))
+            flag = privileged_context_available(sample, providers)
+        flags.append(flag)
+        opsd_debug.log("recoverability", "prompt recoverability", prompt_index=p, recoverable=flag)
 
+    opsd_debug.log("recoverability", "estimate_recoverable_flags done", flags=flags)
     return flags

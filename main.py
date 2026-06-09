@@ -26,6 +26,7 @@ from data_utils.commom_util import collate_fn, define_task_data_func
 from trainer.DyMETrainer import DyMETrainer
 from reward_utils.checker import RewardCalculator, RewardCalculatorLocal
 from reward_utils.refiner import ContextRefiner, ContextRefinerLocal
+from opsd_utils import debug_log as opsd_debug
 
 
 def setup_accelerator_and_wandb(bf16) -> Accelerator:
@@ -130,6 +131,10 @@ def main():
         '--opsd_enabled', action='store_true',
         help="Enable OPSD / TriMode training extensions",
     )
+    parser.add_argument(
+        '--opsd_debug', action='store_true',
+        help="Enable verbose OPSD debug logs (or set env DYME_OPSD_DEBUG=1)",
+    )
 
     args = parser.parse_args()
     mode = args.mode
@@ -151,9 +156,28 @@ def main():
     if args.opsd_providers is not None:
         opsd_config["privileged_providers"] = [p.strip() for p in args.opsd_providers.split(",") if p.strip()]
 
+    debug_enabled = opsd_debug.configure(enabled=args.opsd_debug or None)
+    if debug_enabled:
+        opsd_debug.log_config("main", "resolved OPSD config", opsd_config)
+        opsd_debug.log("main", "training entry", mode=mode, config_path=args.config)
+
     # 2. Setup Environment
     accelerator = setup_accelerator_and_wandb(bf16=training_config['dyme_args']['bf16'])
     device_id = accelerator.process_index
+    opsd_debug.configure(
+        enabled=debug_enabled,
+        rank=accelerator.process_index,
+        world_size=accelerator.num_processes,
+    )
+    if debug_enabled:
+        opsd_debug.log(
+            "main",
+            "accelerator initialized",
+            process_index=accelerator.process_index,
+            local_process_index=accelerator.local_process_index,
+            num_processes=accelerator.num_processes,
+            device=str(accelerator.device),
+        )
 
     # 3. Initialize Model and Processor
     model, processor = load_model_and_processor(model_config)
