@@ -100,6 +100,10 @@ DYME_OPSD_CONFIG = {
         "grpo_weight": 1.0,
         "sft_weight": 1.0,
     },
+    "debug": {
+        # Full weak-signal diagnostic bundle every N global steps (rank 0). 0 = off.
+        "detail_every": 10,
+    },
 }
 
 # ====== Client Configuration for Reward Calculation ======

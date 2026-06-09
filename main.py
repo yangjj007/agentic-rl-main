@@ -162,6 +162,11 @@ def main():
         help="Enable verbose OPSD debug logs (or set env DYME_OPSD_DEBUG=1)",
     )
     parser.add_argument(
+        '--opsd_detail_every', type=int, default=None,
+        help="Emit full weak-signal diagnostic bundle every N global steps on rank 0 "
+             "(default 10; config opsd.debug.detail_every or env DYME_OPSD_DETAIL_EVERY)",
+    )
+    parser.add_argument(
         '--wandb', dest='wandb', action='store_true',
         help="Force enable Weights & Biases logging",
     )
@@ -190,8 +195,12 @@ def main():
         opsd_config["mode"] = args.opsd_mode
     if args.opsd_providers is not None:
         opsd_config["privileged_providers"] = [p.strip() for p in args.opsd_providers.split(",") if p.strip()]
+    detail_every = opsd_config.get("debug", {}).get("detail_every", 10)
+    if args.opsd_detail_every is not None:
+        detail_every = max(0, args.opsd_detail_every)
+        opsd_config.setdefault("debug", {})["detail_every"] = detail_every
 
-    debug_enabled = opsd_debug.configure(enabled=args.opsd_debug or None)
+    debug_enabled = opsd_debug.configure(enabled=args.opsd_debug or None, detail_every=detail_every)
     if debug_enabled:
         opsd_debug.log_config("main", "resolved OPSD config", opsd_config)
         opsd_debug.log("main", "training entry", mode=mode, config_path=args.config)
@@ -218,6 +227,7 @@ def main():
     device_id = accelerator.process_index
     opsd_debug.configure(
         enabled=debug_enabled,
+        detail_every=detail_every,
         rank=accelerator.process_index,
         world_size=accelerator.num_processes,
     )

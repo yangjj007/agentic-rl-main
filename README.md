@@ -342,6 +342,31 @@ bash scripts/train_trimode.sh
 
 Disable debug when not needed: `DYME_OPSD_DEBUG=0 bash scripts/train_trimode.sh`
 
+### Periodic weak-signal diagnostics (`[OPSD-DETAIL]`)
+
+Separate from per-step `[OPSD-DEBUG]` spam: every **N global steps** (default **10**, rank 0 only) a full diagnostic bundle is printed to investigate **reward ≈ 0** and **gradient ≈ 0** while the OPSD chain still runs:
+
+- Generation: EOS rate, clipped ratio, effective completion tokens, decoded samples
+- Reward: format / acc / context breakdown, advantage stats, per-sample table
+- Routing: OPSD mask ratio, TriMode counts, advantage token distribution
+- Loss: GRPO per-token logps, coef\_1, clip counts, weak-signal hints
+- OPSD JSD: per-token JSD, student/teacher top-1 agreement, max-JSD token
+
+Configure via config, CLI, or env:
+
+```bash
+# default: every 10 steps (config_trimode.py)
+export DYME_OPSD_DETAIL_EVERY=10
+
+python main.py --config config/config_trimode.py --mode rl \
+  --opsd_enabled --opsd_detail_every 10
+
+# disable periodic detail
+export DYME_OPSD_DETAIL_EVERY=0
+```
+
+Search logs for `[OPSD-DETAIL]` (not `[OPSD-DEBUG]`).
+
 ### 2. Training TriMode (DyME + OPSD)
 
 Use `config/config_trimode.py` (OPSD pre-enabled) or override on the base config via CLI:
@@ -368,6 +393,7 @@ accelerate launch main.py --config config/config.py --mode rl \
 | --- | --- |
 | `--opsd_enabled` | Enable OPSD / TriMode extensions. |
 | `--opsd_debug` | Verbose OPSD chain logs (`[OPSD-DEBUG]`, or env `DYME_OPSD_DEBUG=1`). |
+| `--opsd_detail_every N` | Full weak-signal bundle every N steps (`[OPSD-DETAIL]`, default 10; `0` = off). |
 | `--opsd_mode MODE` | Routing mode: `trimode`, `dyme`, `opsd_only`, `replace_sft`, … |
 | `--opsd_providers LIST` | Comma-separated providers, e.g. `text,visual_facts`. |
 

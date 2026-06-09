@@ -67,6 +67,7 @@ from opsd_utils.recoverability import estimate_recoverable_flags
 from opsd_utils.prompt_builder import build_teacher_prompt_batch
 from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch
 from opsd_utils import debug_log as opsd_debug
+from opsd_utils import diagnostics as opsd_diagnostics
 
 if is_wandb_available():
     import wandb
@@ -414,11 +415,18 @@ class DyMETrainer(Trainer):
         self.model_accepts_loss_kwargs = False
         self.processing_func = processing_func
 
+        detail_every = self.opsd_config.get("debug", {}).get("detail_every", 10)
         opsd_debug.configure(
             rank=self.accelerator.process_index,
             world_size=self.accelerator.num_processes,
+            detail_every=detail_every,
         )
         opsd_debug.log_config("init", "DyMETrainer OPSD config loaded", self.opsd_config)
+        if self.accelerator.is_main_process and detail_every > 0:
+            print(
+                f"[OPSD-DETAIL] periodic full diagnostics every {detail_every} global steps "
+                f"(set opsd.debug.detail_every=0 or DYME_OPSD_DETAIL_EVERY=0 to disable)"
+            )
         opsd_debug.log(
             "init",
             "trainer distributed layout",
@@ -745,10 +753,13 @@ class DyMETrainer(Trainer):
 
         threshold = self.opsd_config.get("gate", {}).get("correct_threshold", 0.5)
         has_correct = (acc_rewards > threshold).sum(1)
-        format_rewards = format_rewards.view(-1)
+
+        global_step = getattr(self.state, "global_step", self._step)
+        opsd_debug.set_detail_step(global_step)
 
         opsd_active = self.opsd_config.get("enabled", False) and self.opsd_config.get("mode", "dyme") != "dyme"
         completion_modes = None
+        recoverable_flags = None
         opsd_debug.log(
             "opsd_router",
             "OPSD activation check",
@@ -771,6 +782,24 @@ class DyMETrainer(Trainer):
                 )
             completion_modes = expand_modes_to_completions(prompt_modes, self.num_generations, batch_size)
             opsd_debug.log_mode_summary("opsd_router", prompt_modes, completion_modes)
+
+        format_rewards_flat = format_rewards.reshape(-1)
+        acc_rewards_flat = acc_rewards.reshape(-1)
+        context_rewards_flat = context_rewards.reshape(-1)
+        opsd_diagnostics.log_reward_diagnostics(
+            global_step=global_step,
+            format_rewards=format_rewards_flat,
+            acc_rewards=acc_rewards_flat,
+            context_rewards=context_rewards_flat,
+            all_rewards=all_rewards,
+            advantages=advantages,
+            reward_weights=self.reward_weights,
+            num_generations=self.num_generations,
+            answers=answers,
+            completions=completions,
+        )
+
+        format_rewards = format_rewards_flat
 
         sft_check = []
         for i in range(batch_size):
@@ -850,6 +879,16 @@ class DyMETrainer(Trainer):
             has_correct=has_correct.tolist() if hasattr(has_correct, "tolist") else has_correct,
         )
 
+        opsd_diagnostics.log_generation_diagnostics(
+            global_step=global_step,
+            completions=completions,
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            is_eos=is_eos,
+            max_completion_length=self.max_completion_length,
+            num_generations=self.num_generations,
+        )
+
         completion_ids = pad_sequence(final_completion_id_list, batch_first=True,
                                       padding_value=self.processing_class.tokenizer.pad_token_id).long()
         completion_mask = pad_sequence(final_completion_mask_list, batch_first=True, padding_value=0)
@@ -857,6 +896,18 @@ class DyMETrainer(Trainer):
         completion_ids = completion_ids.to(device)
         completion_mask = completion_mask.to(device)
         completion_advantange = completion_advantange.to(device)
+
+        opsd_diagnostics.log_routing_diagnostics(
+            global_step=global_step,
+            opsd_active=opsd_active,
+            opsd_mask_list=opsd_mask_list,
+            has_correct=has_correct,
+            completion_modes=completion_modes,
+            recoverable_flags=recoverable_flags,
+            completion_advantages=completion_advantange,
+            completion_mask=completion_mask,
+        )
+
         input_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1).long()
         attention_completion_mask = torch.cat([prompt_mask, completion_mask], dim=1)
 
@@ -1101,6 +1152,12 @@ class DyMETrainer(Trainer):
         gathered_clip_ratio = self.accelerator.gather_for_metrics(clip_ratio)
         self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
 
+        global_step = getattr(self.state, "global_step", self._step)
+        opsd_debug.set_detail_step(global_step)
+        grpo_loss_tensor = loss.detach()
+        opsd_loss_tensor = None
+        combined_loss_tensor = None
+
         if self.opsd_config.get("enabled", False) and inputs.get("opsd_mask") is not None:
             opsd_mask = inputs["opsd_mask"]
             opsd_debug.log(
@@ -1131,7 +1188,9 @@ class DyMETrainer(Trainer):
                         inputs,
                         beta=beta,
                     )
+                opsd_loss_tensor = opsd_loss
                 loss = grpo_weight * loss + opsd_weight * opsd_loss
+                combined_loss_tensor = loss
                 opsd_debug.log(
                     "opsd_loss",
                     "combined GRPO + OPSD loss",
@@ -1142,8 +1201,33 @@ class DyMETrainer(Trainer):
                 self._metrics[mode].setdefault("loss/opsd", []).append(
                     self.accelerator.gather_for_metrics(opsd_loss.detach()).mean().item()
                 )
+                if opsd_debug.should_log_detail(global_step):
+                    opsd_diagnostics.log_opsd_jsd_diagnostics(
+                        global_step=global_step,
+                        model=model,
+                        inputs=inputs,
+                        opsd_indices=opsd_indices,
+                        beta=beta,
+                        tokenizer=self.processing_class.tokenizer,
+                    )
             else:
                 opsd_debug.log("opsd_loss", "opsd_mask empty on this batch, skip OPSD loss")
+
+        opsd_diagnostics.log_loss_diagnostics(
+            global_step=global_step,
+            grpo_loss=grpo_loss_tensor,
+            per_token_logps=per_token_logps,
+            old_per_token_logps=old_per_token_logps,
+            completion_mask=completion_mask,
+            advantages=advantages,
+            coef_1=coef_1,
+            per_token_loss=per_token_loss,
+            opsd_loss=opsd_loss_tensor,
+            combined_loss=combined_loss_tensor if combined_loss_tensor is not None else loss,
+            opsd_mask=inputs.get("opsd_mask"),
+            epsilon_low=self.epsilon_low,
+            epsilon_high=self.epsilon_high,
+        )
 
         return loss
 

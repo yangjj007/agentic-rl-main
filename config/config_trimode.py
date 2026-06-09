@@ -13,11 +13,21 @@ TRAINING_CONFIG = {
     },
 }
 
+_detail_every_raw = os.environ.get("DYME_OPSD_DETAIL_EVERY", "10")
+try:
+    _detail_every = max(0, int(_detail_every_raw))
+except ValueError:
+    _detail_every = 10
+
 DYME_OPSD_CONFIG = {
     **DYME_OPSD_CONFIG,
     "enabled": True,
     "mode": os.environ.get("DYME_OPSD_MODE", "trimode"),
     "privileged_providers": os.environ.get("DYME_OPSD_PROVIDERS", "text,visual_facts").split(","),
+    "debug": {
+        **DYME_OPSD_CONFIG.get("debug", {}),
+        "detail_every": _detail_every,
+    },
 }
 
 CONFIG = {

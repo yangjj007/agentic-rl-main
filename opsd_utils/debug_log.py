@@ -9,9 +9,11 @@ from contextlib import contextmanager
 from typing import Any, Optional
 
 _DEBUG_ENABLED = False
+_DETAIL_EVERY = 10
 _RANK = 0
 _WORLD_SIZE = 1
 _STEP_LABEL = "init"
+_DETAIL_STEP: Optional[int] = None
 _CALL_COUNTER = 0
 
 MODE_NAMES = {0: "GRPO", 1: "OPSD", 2: "SFT"}
@@ -21,22 +23,50 @@ def _env_debug_enabled() -> bool:
     return os.environ.get("DYME_OPSD_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env_detail_every() -> int:
+    raw = os.environ.get("DYME_OPSD_DETAIL_EVERY", "").strip()
+    if not raw:
+        return 10
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 10
+
+
 def configure(
     *,
     enabled: Optional[bool] = None,
+    detail_every: Optional[int] = None,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
 ) -> bool:
     """Configure global OPSD debug logging. Returns whether debug is enabled."""
-    global _DEBUG_ENABLED, _RANK, _WORLD_SIZE
+    global _DEBUG_ENABLED, _DETAIL_EVERY, _RANK, _WORLD_SIZE
     if enabled is None:
         enabled = _env_debug_enabled()
     _DEBUG_ENABLED = bool(enabled)
+    if detail_every is not None:
+        _DETAIL_EVERY = max(0, int(detail_every))
+    elif _env_detail_every() != 10 or os.environ.get("DYME_OPSD_DETAIL_EVERY"):
+        _DETAIL_EVERY = _env_detail_every()
     if rank is not None:
         _RANK = rank
     if world_size is not None:
         _WORLD_SIZE = world_size
     return _DEBUG_ENABLED
+
+
+def detail_every() -> int:
+    return _DETAIL_EVERY
+
+
+def should_log_detail(global_step: Optional[int]) -> bool:
+    """True when a full diagnostic bundle should be emitted (rank 0 only)."""
+    if _DETAIL_EVERY <= 0 or _RANK != 0:
+        return False
+    if global_step is None:
+        return False
+    return int(global_step) % _DETAIL_EVERY == 0
 
 
 def is_enabled() -> bool:
@@ -46,6 +76,11 @@ def is_enabled() -> bool:
 def set_step_label(label: str) -> None:
     global _STEP_LABEL
     _STEP_LABEL = label
+
+
+def set_detail_step(global_step: Optional[int]) -> None:
+    global _DETAIL_STEP
+    _DETAIL_STEP = global_step
 
 
 def _next_call_id(stage: str) -> str:
@@ -95,6 +130,34 @@ def log(stage: str, msg: str, **fields: Any) -> None:
     if fields:
         extra = " | " + " | ".join(f"{k}={_fmt(v)}" for k, v in fields.items())
     print(f"{_prefix(stage, call_id)} {msg}{extra}", flush=True)
+
+
+def _detail_prefix(global_step: int, section: str) -> str:
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    return (
+        f"[OPSD-DETAIL][{ts}][rank={_RANK}/{_WORLD_SIZE}]"
+        f"[step={global_step}][every={_DETAIL_EVERY}][{section}]"
+    )
+
+
+def log_detail_banner(global_step: int, title: str) -> None:
+    if not should_log_detail(global_step):
+        return
+    bar = "=" * 20
+    print(f"{_detail_prefix(global_step, 'BANNER')} {bar} {title} {bar}", flush=True)
+
+
+def log_detail(section: str, msg: str, global_step: Optional[int] = None, **fields: Any) -> None:
+    """Full-detail diagnostic line (periodic, rank 0). Independent of verbose OPSD-DEBUG."""
+    step = global_step if global_step is not None else _DETAIL_STEP
+    if step is None or isinstance(step, str):
+        return
+    if not should_log_detail(step):
+        return
+    extra = ""
+    if fields:
+        extra = " | " + " | ".join(f"{k}={_fmt(v, max_len=800)}" for k, v in fields.items())
+    print(f"{_detail_prefix(step, section)} {msg}{extra}", flush=True)
 
 
 def log_config(stage: str, title: str, config: dict[str, Any]) -> None:
