@@ -86,6 +86,7 @@ def build_teacher_prompt_batch(
     prompt_ids_list = []
     prompt_mask_list = []
     pixel_values_list = []
+    image_sizes_list = []
     has_images = False
 
     for idx in indices:
@@ -106,6 +107,8 @@ def build_teacher_prompt_batch(
         if "pixel_values" in batch:
             has_images = True
             pixel_values_list.append(batch["pixel_values"])
+        if "image_sizes" in batch:
+            image_sizes_list.append(batch["image_sizes"])
 
     from torch.nn.utils.rnn import pad_sequence
 
@@ -116,6 +119,11 @@ def build_teacher_prompt_batch(
     out = {"teacher_prompt_ids": prompt_ids, "teacher_prompt_mask": prompt_mask}
     if has_images:
         out["teacher_pixel_values"] = torch.cat(pixel_values_list, dim=0).to(device)
+    if image_sizes_list:
+        if isinstance(image_sizes_list[0], torch.Tensor):
+            out["teacher_image_sizes"] = torch.cat(image_sizes_list, dim=0).to(device)
+        else:
+            out["teacher_image_sizes"] = image_sizes_list
     opsd_debug.log(
         "teacher_prompt",
         "build_teacher_prompt_batch done",

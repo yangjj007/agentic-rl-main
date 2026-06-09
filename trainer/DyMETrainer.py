@@ -882,7 +882,10 @@ class DyMETrainer(Trainer):
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
 
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-        batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        local_batch_size = prompt_ids.size(0)
+        logps_micro_batch = (
+            self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        )
 
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip its
@@ -894,8 +897,15 @@ class DyMETrainer(Trainer):
                     input_shape=tuple(input_completion_ids.shape),
                 )
                 with opsd_debug.timed("logps", "_get_per_token_logps"):
-                    old_per_token_logps = self._get_per_token_logps(self.model, input_completion_ids, attention_completion_mask, pixel_values, image_sizes,
-                                              logits_to_keep, batch_size)
+                    old_per_token_logps = self._get_per_token_logps(
+                        self.model,
+                        input_completion_ids,
+                        attention_completion_mask,
+                        pixel_values,
+                        image_sizes,
+                        logits_to_keep,
+                        logps_micro_batch,
+                    )
             else:
                 old_per_token_logps = None
                 opsd_debug.log("logps", "skip old_per_token_logps because num_iterations == 1")
@@ -948,7 +958,7 @@ class DyMETrainer(Trainer):
             opsd_debug.log_sync_point(
                 "teacher_prompt",
                 "before build_teacher_prompt_batch",
-                batch_size=batch_size,
+                local_batch_size=local_batch_size,
                 opsd_indices=opsd_indices,
                 provider_names=self.opsd_config.get("privileged_providers", ["text"]),
             )
@@ -956,7 +966,7 @@ class DyMETrainer(Trainer):
                 teacher_tensors = build_teacher_prompt_batch(
                     self.processing_class,
                     inputs,
-                    list(range(batch_size)),
+                    list(range(local_batch_size)),
                     self.opsd_config.get("privileged_providers", ["text"]),
                     device,
                 )
@@ -966,13 +976,13 @@ class DyMETrainer(Trainer):
             if opsd_indices:
                 mode = "train" if self.model.training else "eval"
                 self._metrics[mode].setdefault("opsd/mask_ratio", []).append(
-                    len(opsd_indices) / max(batch_size, 1)
+                    len(opsd_indices) / max(local_batch_size, 1)
                 )
                 opsd_debug.log(
                     "teacher_prompt",
                     "teacher tensors attached to batch",
                     opsd_indices=opsd_indices,
-                    opsd_mask_ratio=len(opsd_indices) / max(batch_size, 1),
+                    opsd_mask_ratio=len(opsd_indices) / max(local_batch_size, 1),
                 )
         else:
             opsd_debug.log("teacher_prompt", "OPSD inactive, skip teacher prompt build")

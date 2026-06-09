@@ -4,6 +4,19 @@ import torch.nn.functional as F
 from opsd_utils import debug_log as opsd_debug
 
 
+def _slice_image_sizes(image_sizes, index: int):
+    """Slice per-sample image_sizes to match a batch-1 pixel_values forward."""
+    if image_sizes is None:
+        return None
+    if isinstance(image_sizes, torch.Tensor):
+        if image_sizes.dim() == 0:
+            return image_sizes
+        return image_sizes[index : index + 1]
+    if isinstance(image_sizes, (list, tuple)):
+        return image_sizes[index]
+    return image_sizes
+
+
 def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
     """Token-level generalized JSD on completion positions."""
     student_log_probs = F.log_softmax(student_logits, dim=-1)
@@ -112,22 +125,34 @@ def compute_vlm_opsd_loss_masked_batch(
     for global_idx in opsd_indices:
         local = idx_map[global_idx]
         t_pixel = inputs["pixel_values"][local : local + 1]
+        t_sizes = _slice_image_sizes(inputs.get("img_sizes"), local)
         if inputs.get("teacher_pixel_values") is not None:
             t_pixel = inputs["teacher_pixel_values"][local : local + 1]
-        opsd_debug.log("opsd_loss", "compute sample OPSD loss", global_idx=global_idx, local_idx=local)
+        teacher_sizes = None
+        if inputs.get("teacher_image_sizes") is not None:
+            teacher_sizes = _slice_image_sizes(inputs["teacher_image_sizes"], local)
+        opsd_debug.log(
+            "opsd_loss",
+            "compute sample OPSD loss",
+            global_idx=global_idx,
+            local_idx=local,
+            student_image_sizes=_slice_image_sizes(inputs.get("img_sizes"), local),
+            teacher_image_sizes=teacher_sizes,
+        )
         with opsd_debug.timed("opsd_loss", f"sample_opsd_loss idx={global_idx}"):
             loss = compute_vlm_opsd_loss(
                 model,
                 inputs["prompt_ids"][local : local + 1],
                 inputs["prompt_mask"][local : local + 1],
                 inputs["pixel_values"][local : local + 1],
-                inputs["img_sizes"],
+                t_sizes,
                 inputs["teacher_prompt_ids"][local : local + 1],
                 inputs["teacher_prompt_mask"][local : local + 1],
                 t_pixel,
                 inputs["completion_ids"][local : local + 1],
                 inputs["completion_mask"][local : local + 1],
                 beta=beta,
+                teacher_image_sizes=teacher_sizes,
             )
         losses.append(loss)
 
