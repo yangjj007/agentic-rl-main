@@ -1,6 +1,7 @@
 import os
 from typing import Any, Optional
 
+import torch
 from PIL import Image
 
 from data_utils.paths import resolve_image_path
