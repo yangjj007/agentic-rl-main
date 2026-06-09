@@ -57,6 +57,17 @@ def _generation_config_summary(generation_config: Any) -> dict[str, Any]:
     return out
 
 
+def _slice_generate_inputs(batch: dict[str, Any], index: int, batch_size: int) -> dict[str, Any]:
+    """Take one row from batched generate/forward tensors (VLM-safe)."""
+    sliced: dict[str, Any] = {}
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor) and value.dim() >= 1 and value.size(0) == batch_size:
+            sliced[key] = value[index : index + 1]
+        else:
+            sliced[key] = value
+    return sliced
+
+
 def _last_valid_prompt_positions(prompt_mask: torch.Tensor) -> torch.Tensor:
     """Return index of last valid (non-pad) prompt token per row; supports left padding."""
     with torch.no_grad():
@@ -224,16 +235,18 @@ def log_first_token_logits_probe(
     opsd_debug.set_detail_step(global_step)
     eos_id = getattr(tokenizer, "eos_token_id", None)
     forward_inputs = {k: v for k, v in prompt_inputs_generate.items() if k != "labels"}
+    batch_size = prompt_mask.size(0)
+    n = min(sample_count, batch_size)
+    last_pos = _last_valid_prompt_positions(prompt_mask)
 
-    try:
-        with torch.no_grad():
-            outputs = unwrapped_model(**forward_inputs, use_cache=False)
-            logits = outputs.logits
-            last_pos = _last_valid_prompt_positions(prompt_mask)
-            n = min(sample_count, logits.size(0))
-            for i in range(n):
+    for i in range(n):
+        try:
+            sample_inputs = _slice_generate_inputs(forward_inputs, i, batch_size)
+            with torch.no_grad():
+                outputs = unwrapped_model(**sample_inputs, use_cache=False)
+                logits = outputs.logits
                 pos = int(last_pos[i].item())
-                next_logits = logits[i, pos, :].float()
+                next_logits = logits[0, pos, :].float()
                 probs = F.softmax(next_logits, dim=-1)
                 greedy_id = int(next_logits.argmax().item())
                 greedy_by_sample[i] = greedy_id
@@ -245,6 +258,7 @@ def log_first_token_logits_probe(
                     "greedy_token_id": greedy_id,
                     "p_greedy": float(probs[greedy_id].item()),
                     "entropy": entropy,
+                    "probe_mode": "per_sample_forward",
                 }
                 if eos_id is not None:
                     fields["p_eos"] = float(probs[eos_id].item())
@@ -255,13 +269,15 @@ def log_first_token_logits_probe(
                     (int(tid), float(p)) for tid, p in zip(topk.indices.tolist(), topk.values.tolist())
                 ]
                 opsd_debug.log_gendbg("first_token_logits", f"sample[{i}]", **fields)
-    except Exception as exc:
-        opsd_debug.log_gendbg(
-            "first_token_logits",
-            "FAILED forward for first-token logits",
-            generate_call_index=generate_call_index,
-            error=repr(exc),
-        )
+        except Exception as exc:
+            opsd_debug.log_gendbg(
+                "first_token_logits",
+                f"FAILED forward for sample[{i}]",
+                generate_call_index=generate_call_index,
+                error=repr(exc),
+            )
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
     return greedy_by_sample
 
 
@@ -455,25 +471,31 @@ def log_cross_rank_generate_summary(
     if not opsd_debug.probe_on_generate():
         return
 
+    from accelerate.utils import gather as accel_gather
+
     device = accelerator.device
+    world_size = accelerator.num_processes
     local = torch.tensor(
         [float(one_token_count), effective_tokens_mean],
         dtype=torch.float32,
         device=device,
     )
-    gathered = accelerator.gather_for_metrics(local)
+    # gather_for_metrics on 1D [2] concatenates ranks into [world_size*2]; use gather + view instead.
+    gathered = accel_gather(local.unsqueeze(0))
     if not opsd_debug.should_log_gendbg():
         return
 
     if gathered.dim() == 1:
-        gathered = gathered.unsqueeze(0)
+        gathered = gathered.view(world_size, -1)
+    elif gathered.size(0) != world_size and gathered.numel() == world_size * 2:
+        gathered = gathered.reshape(world_size, 2)
     one_tokens = gathered[:, 0].tolist()
     means = gathered[:, 1].tolist()
     opsd_debug.log_gendbg(
         "cross_rank",
         "generate summary across ranks",
         generate_call_index=generate_call_index,
-        world_size=len(one_tokens),
+        world_size=world_size,
         one_token_count_per_rank=one_tokens,
         effective_tokens_mean_per_rank=means,
         one_token_count_total=int(sum(one_tokens)),

@@ -369,7 +369,7 @@ Search logs for `[OPSD-DETAIL]` (not `[OPSD-DEBUG]`).
 
 **Per-generate probe (`[OPSD-PROBE]`)** — enabled by default in `config_trimode.py`; fires on every `(re)generate` on rank 0 (no need to wait for step 10). Logs raw `completion_ids`, decode with/without special tokens, `eos_idx`, flags `ONE_TOKEN` / `EMPTY_DECODE` / `FIRST_IS_EOS`, and patterns `PAREN_THEN_EOS` / `REPEAT_LOOP`. Disable with `DYME_OPSD_PROBE_ON_GENERATE=0` or `--no_opsd_probe_on_generate`.
 
-**Deep generate debug (`[OPSD-GENDBG]`)** — runs alongside `[OPSD-PROBE]` when probe is enabled. Before each `model.generate`, logs model training context, prompt tail tokens/decode, and first-token logits (`p_eos`, `p_token_340`, `entropy`, `top5`). After generate, logs greedy-vs-actual first token, delta vs previous regenerate, and cross-rank summary.
+**Deep generate debug (`[OPSD-GENDBG]`)** — runs alongside `[OPSD-PROBE]` when probe is enabled. Before each `model.generate`, logs model training context, prompt tail tokens/decode, and first-token logits (`p_eos`, `p_token_340`, `entropy`, `top5`) via **per-sample** forward (up to `probe_sample_count`, default 4) to avoid OOM on large VLM batches. After generate, logs greedy-vs-actual first token, delta vs previous regenerate, and cross-rank summary.
 
 ```bash
 export DYME_OPSD_PROBE_ON_GENERATE=1   # default in config_trimode
