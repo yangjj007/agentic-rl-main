@@ -35,9 +35,9 @@ def setup_accelerator_and_wandb(bf16) -> Accelerator:
     Returns:
         Accelerator: The configured accelerator instance.
     """
-    # It's recommended to use environment variables for keys for better security.
-    # e.g., os.environ.get("WANDB_API_KEY")
-    wandb.login(key="WANDB_API_KEY")
+    wandb_key = os.environ.get("WANDB_API_KEY")
+    if wandb_key:
+        wandb.login(key=wandb_key)
     if bf16:
         accelerator = Accelerator(mixed_precision="bf16", log_with="wandb")
     else:
