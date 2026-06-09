@@ -1,7 +1,6 @@
 import os
 from typing import Any, Optional
 
-import torch
 from PIL import Image
 
 from data_utils.paths import resolve_image_path
@@ -21,12 +20,17 @@ def _load_image(image: Any) -> Optional[Image.Image]:
     return None
 
 
-def tokenize_teacher_prompt(processor, student_prompt: str, privileged_suffix: str, image: Any) -> dict:
-    """Tokenize teacher multimodal prompt = student question + privileged suffix."""
-    pil_image = _load_image(image)
+def _build_teacher_text(student_prompt: str, privileged_suffix: str) -> str:
     teacher_text = student_prompt
     if privileged_suffix.strip():
         teacher_text = f"{student_prompt}\n\n{privileged_suffix.strip()}"
+    return teacher_text
+
+
+def tokenize_teacher_prompt(processor, student_prompt: str, privileged_suffix: str, image: Any) -> dict:
+    """Tokenize teacher multimodal prompt = student question + privileged suffix."""
+    pil_image = _load_image(image)
+    teacher_text = _build_teacher_text(student_prompt, privileged_suffix)
 
     opsd_debug.log(
         "teacher_prompt",
@@ -83,52 +87,50 @@ def build_teacher_prompt_batch(
         opsd_debug.log("teacher_prompt", "empty indices, return {}")
         return {}
 
-    prompt_ids_list = []
-    prompt_mask_list = []
-    pixel_values_list = []
-    image_sizes_list = []
-    has_images = False
-
+    texts: list[str] = []
+    images: list[Optional[Image.Image]] = []
     for idx in indices:
         sample = samples[idx]
         suffix, teacher_image = build_privileged_context(sample, provider_names)
         image = teacher_image if teacher_image is not None else sample.get("image")
-        opsd_debug.log(
-            "teacher_prompt",
-            "build sample teacher prompt",
-            idx=idx,
-            suffix_preview=(suffix[:160] + "...") if len(suffix) > 160 else suffix,
-            has_teacher_image=teacher_image is not None,
-            image_type=type(image).__name__,
-        )
-        batch = tokenize_teacher_prompt(processor, sample["prompt"], suffix, image)
-        prompt_ids_list.append(batch["input_ids"][0])
-        prompt_mask_list.append(batch["attention_mask"][0])
-        if "pixel_values" in batch:
-            has_images = True
-            pixel_values_list.append(batch["pixel_values"])
-        if "image_sizes" in batch:
-            image_sizes_list.append(batch["image_sizes"])
+        teacher_text = _build_teacher_text(sample["prompt"], suffix)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": teacher_text},
+                ],
+            }
+        ]
+        text = processor.apply_chat_template(messages, add_generation_prompt=True)
+        texts.append(text.strip() if isinstance(text, str) else text)
+        images.append(_load_image(image))
 
-    from torch.nn.utils.rnn import pad_sequence
-
-    pad_id = processor.tokenizer.pad_token_id
-    prompt_ids = pad_sequence(prompt_ids_list, batch_first=True, padding_value=pad_id).to(device)
-    prompt_mask = pad_sequence(prompt_mask_list, batch_first=True, padding_value=0).to(device)
-
-    out = {"teacher_prompt_ids": prompt_ids, "teacher_prompt_mask": prompt_mask}
+    # Batch through processor so variable image patch counts are padded consistently.
+    has_images = any(img is not None for img in images)
     if has_images:
-        out["teacher_pixel_values"] = torch.cat(pixel_values_list, dim=0).to(device)
-    if image_sizes_list:
-        if isinstance(image_sizes_list[0], torch.Tensor):
-            out["teacher_image_sizes"] = torch.cat(image_sizes_list, dim=0).to(device)
-        else:
-            out["teacher_image_sizes"] = image_sizes_list
+        batch = processor(text=texts, images=images, return_tensors="pt", padding=True)
+    else:
+        batch = processor(text=texts, return_tensors="pt", padding=True)
+
+    out = {
+        "teacher_prompt_ids": batch["input_ids"].to(device),
+        "teacher_prompt_mask": batch["attention_mask"].to(device),
+    }
+    if "pixel_values" in batch:
+        out["teacher_pixel_values"] = batch["pixel_values"].to(device)
+    if "image_sizes" in batch:
+        out["teacher_image_sizes"] = batch["image_sizes"].to(device)
+
     opsd_debug.log(
         "teacher_prompt",
         "build_teacher_prompt_batch done",
-        teacher_prompt_ids_shape=tuple(prompt_ids.shape),
-        teacher_prompt_mask_shape=tuple(prompt_mask.shape),
+        teacher_prompt_ids_shape=tuple(out["teacher_prompt_ids"].shape),
+        teacher_prompt_mask_shape=tuple(out["teacher_prompt_mask"].shape),
         has_teacher_pixel_values="teacher_pixel_values" in out,
+        teacher_pixel_values_shape=(
+            tuple(out["teacher_pixel_values"].shape) if "teacher_pixel_values" in out else None
+        ),
     )
     return out
