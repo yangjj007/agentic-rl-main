@@ -5,6 +5,7 @@ import torch
 
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils.diagnostics import (
+    _detect_char_repeat,
     _detect_degeneration,
     _detect_repeat_loop,
     _detect_single_token_repeat,
@@ -36,6 +37,10 @@ def test_ngram_repeat_not_limited_to_first_eight_tokens():
     gram = [9, 8, 7]
     ids = prefix + gram * 5
     assert _detect_repeat_loop(ids)
+
+
+def test_char_repeat_detects_qiqiqi():
+    assert _detect_char_repeat("其其其其其其")
 
 
 def test_is_degenerate_completion_detects_repeat():

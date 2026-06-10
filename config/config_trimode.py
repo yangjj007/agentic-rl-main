@@ -34,6 +34,9 @@ except ValueError:
 _model_ctx_raw = os.environ.get("DYME_OPSD_PROBE_LOG_MODEL_CONTEXT", "1").strip().lower()
 _probe_log_model_context = _model_ctx_raw not in ("0", "false", "no", "off")
 
+_health_raw = os.environ.get("DYME_OPSD_HEALTH_MONITOR", "1").strip().lower()
+_health_monitor_enabled = _health_raw not in ("0", "false", "no", "off")
+
 DYME_OPSD_CONFIG = {
     **DYME_OPSD_CONFIG,
     "enabled": True,
@@ -61,6 +64,10 @@ DYME_OPSD_CONFIG = {
         "probe_first_token_logits": _probe_first_token_logits,
         "probe_prompt_tail_tokens": _probe_prompt_tail_tokens,
         "probe_log_model_context": _probe_log_model_context,
+        "health_monitor": {
+            **DYME_OPSD_CONFIG.get("debug", {}).get("health_monitor", {}),
+            "enabled": _health_monitor_enabled,
+        },
     },
 }
 

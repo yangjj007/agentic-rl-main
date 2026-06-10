@@ -68,6 +68,7 @@ from opsd_utils.prompt_builder import build_teacher_prompt_batch
 from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils import diagnostics as opsd_diagnostics
+from opsd_utils.health_monitor import TrainingHealthMonitor
 
 if is_wandb_available():
     import wandb
@@ -411,11 +412,16 @@ class DyMETrainer(Trainer):
         self.processing_func = processing_func
 
         debug_cfg = self.opsd_config.get("debug", {})
+        health_cfg = debug_cfg.get("health_monitor", {})
         detail_every = debug_cfg.get("detail_every", 10)
         probe_on_generate = debug_cfg.get("probe_on_generate", False)
         self._opsd_probe_sample_count = int(debug_cfg.get("probe_sample_count", 4))
         self._generate_call_index = 0
         self._last_generate_probe_stats = None
+        self._last_logits_stats: dict[str, float] = {}
+        self._health_monitor = (
+            TrainingHealthMonitor(health_cfg) if health_cfg.get("enabled", True) else None
+        )
         opsd_debug.configure(
             rank=self.accelerator.process_index,
             world_size=self.accelerator.num_processes,
@@ -424,6 +430,11 @@ class DyMETrainer(Trainer):
             probe_first_token_logits=debug_cfg.get("probe_first_token_logits", True),
             probe_prompt_tail_tokens=debug_cfg.get("probe_prompt_tail_tokens", 16),
             probe_log_model_context=debug_cfg.get("probe_log_model_context", True),
+            health_monitor_enabled=health_cfg.get("enabled", True),
+            health_log_on_generate=health_cfg.get("log_on_generate", True),
+            health_log_every_step=health_cfg.get("log_every_step", True),
+            health_log_detail_bundle=health_cfg.get("log_detail_bundle", True),
+            health_log_alerts_immediately=health_cfg.get("log_alerts_immediately", True),
         )
         opsd_debug.log_config("init", "DyMETrainer OPSD config loaded", self.opsd_config)
         if self.accelerator.is_main_process and detail_every > 0:
@@ -652,6 +663,15 @@ class DyMETrainer(Trainer):
         global_step_for_probe = getattr(self.state, "global_step", self._step)
         generate_call_index = self._generate_call_index
 
+        if self._health_monitor is not None:
+            self._health_monitor.reset_step(global_step_for_probe)
+            data_health = opsd_diagnostics.summarize_batch_data_health(
+                inputs,
+                prompt_mask=prompt_mask,
+                pixel_values=pixel_values,
+            )
+            self._health_monitor.record_data(global_step_for_probe, data_health)
+
         # Regular generation path
         with opsd_debug.timed("generate", "model.generate"):
             with unwrap_model_for_generation(
@@ -682,7 +702,7 @@ class DyMETrainer(Trainer):
                         tokenizer=self.processing_class.tokenizer,
                         sample_count=self._opsd_probe_sample_count,
                     )
-                    greedy_by_sample = opsd_diagnostics.log_first_token_logits_probe(
+                    logits_probe_result = opsd_diagnostics.log_first_token_logits_probe(
                         global_step=global_step_for_probe,
                         trainer_step=self._step,
                         generate_call_index=generate_call_index,
@@ -692,6 +712,12 @@ class DyMETrainer(Trainer):
                         tokenizer=self.processing_class.tokenizer,
                         sample_count=self._opsd_probe_sample_count,
                     )
+                    greedy_by_sample = logits_probe_result.get("greedy_by_sample", {})
+                    self._last_logits_stats = {
+                        k: logits_probe_result[k]
+                        for k in ("p_greedy_first", "p_eos_first", "entropy_first")
+                        if k in logits_probe_result
+                    }
                     prompt_completion_ids = unwrapped_model.generate(
                         **prompt_inputs_generate, generation_config=self.generation_config
                     )
@@ -752,6 +778,13 @@ class DyMETrainer(Trainer):
         )
         self._last_generate_probe_stats = probe_stats
         self._generate_call_index += 1
+
+        if self._health_monitor is not None:
+            self._health_monitor.record_generate(
+                global_step_for_probe,
+                probe_stats,
+                self._last_logits_stats,
+            )
 
         batch_size = len(completion_ids)
         images = [x['image'] for x in inputs]
@@ -984,6 +1017,18 @@ class DyMETrainer(Trainer):
             has_correct=has_correct.tolist() if hasattr(has_correct, "tolist") else has_correct,
         )
 
+        if self._health_monitor is not None:
+            local_routing_n = max(len(sft_replaced_list), 1)
+            self._health_monitor.record_routing(
+                global_step,
+                {
+                    "sft_replaced_ratio": sum(sft_replaced_list) / local_routing_n,
+                    "opsd_skipped_degenerate": opsd_skipped_degenerate,
+                    "format_mean": float(format_rewards.mean().item()),
+                    "accuracy_mean": float(acc_rewards.mean().item()),
+                },
+            )
+
         raw_completion_ids = completion_ids.clone()
         raw_completion_shape = tuple(completion_ids.shape)
         opsd_diagnostics.log_generation_diagnostics(
@@ -1154,6 +1199,12 @@ class DyMETrainer(Trainer):
             result.update(teacher_tensors)
             for key, value in teacher_tensors.items():
                 opsd_debug.log_tensor("teacher_prompt", key, value)
+            teacher_stats = teacher_tensors.get("teacher_stats")
+            if self._health_monitor is not None and teacher_stats:
+                self._health_monitor.record_data(
+                    getattr(self.state, "global_step", self._step),
+                    teacher_stats,
+                )
             if opsd_indices:
                 mode = "train" if self.model.training else "eval"
                 self._metrics[mode].setdefault("opsd/mask_ratio", []).append(
@@ -1371,6 +1422,18 @@ class DyMETrainer(Trainer):
             epsilon_high=self.epsilon_high,
         )
 
+        if self._health_monitor is not None:
+            loss_health = opsd_diagnostics.summarize_loss_health(
+                grpo_loss=grpo_loss_tensor,
+                per_token_logps=per_token_logps,
+                completion_mask=completion_mask,
+                advantages=advantages,
+                per_token_loss=per_token_loss,
+                opsd_loss=opsd_loss_tensor,
+                combined_loss=combined_loss_tensor if combined_loss_tensor is not None else loss,
+            )
+            self._health_monitor.record_loss(global_step, loss_health)
+
         return loss
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys: Optional[list[str]] = None):
@@ -1383,6 +1446,16 @@ class DyMETrainer(Trainer):
 
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
         mode = "train" if self.model.training else "eval"
+        if self._health_monitor is not None and mode == "train" and self.accelerator.is_main_process:
+            step = getattr(self.state, "global_step", self._step)
+            self._health_monitor.record_optimizer(
+                step,
+                logs.get("grad_norm"),
+                logs.get("learning_rate"),
+            )
+            health_metrics = self._health_monitor.finish_step(step)
+            for key, value in health_metrics.items():
+                self._metrics[mode].setdefault(key, []).append(value)
         metrics = {key: sum(val) / len(val) for key, val in self._metrics[mode].items()}  # average the metrics
 
         # This method can be called both in training and evaluation. When called in evaluation, the keys in `logs`

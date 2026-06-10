@@ -128,6 +128,15 @@ DYME_OPSD_CONFIG = {
         "probe_first_token_logits": True,
         "probe_prompt_tail_tokens": 16,
         "probe_log_model_context": True,
+        "health_monitor": {
+            "enabled": True,
+            "window": 20,
+            "log_on_generate": True,
+            "log_every_step": True,
+            "log_detail_bundle": True,
+            "log_alerts_immediately": True,
+            "metrics_every_step": True,
+        },
     },
 }
 

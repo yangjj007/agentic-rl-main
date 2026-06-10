@@ -14,6 +14,11 @@ _PROBE_ON_GENERATE = False
 _PROBE_FIRST_TOKEN_LOGITS = True
 _PROBE_PROMPT_TAIL_TOKENS = 16
 _PROBE_LOG_MODEL_CONTEXT = True
+_HEALTH_MONITOR_ENABLED = True
+_HEALTH_LOG_ON_GENERATE = True
+_HEALTH_LOG_EVERY_STEP = True
+_HEALTH_LOG_DETAIL_BUNDLE = True
+_HEALTH_LOG_ALERTS_IMMEDIATELY = True
 _RANK = 0
 _WORLD_SIZE = 1
 _STEP_LABEL = "init"
@@ -68,6 +73,13 @@ def _env_probe_log_model_context() -> Optional[bool]:
     return raw in ("1", "true", "yes", "on")
 
 
+def _env_health_monitor_enabled() -> Optional[bool]:
+    raw = os.environ.get("DYME_OPSD_HEALTH_MONITOR", "").strip().lower()
+    if not raw:
+        return None
+    return raw in ("1", "true", "yes", "on")
+
+
 def configure(
     *,
     enabled: Optional[bool] = None,
@@ -76,12 +88,19 @@ def configure(
     probe_first_token_logits: Optional[bool] = None,
     probe_prompt_tail_tokens: Optional[int] = None,
     probe_log_model_context: Optional[bool] = None,
+    health_monitor_enabled: Optional[bool] = None,
+    health_log_on_generate: Optional[bool] = None,
+    health_log_every_step: Optional[bool] = None,
+    health_log_detail_bundle: Optional[bool] = None,
+    health_log_alerts_immediately: Optional[bool] = None,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
 ) -> bool:
     """Configure global OPSD debug logging. Returns whether debug is enabled."""
     global _DEBUG_ENABLED, _DETAIL_EVERY, _PROBE_ON_GENERATE
     global _PROBE_FIRST_TOKEN_LOGITS, _PROBE_PROMPT_TAIL_TOKENS, _PROBE_LOG_MODEL_CONTEXT
+    global _HEALTH_MONITOR_ENABLED, _HEALTH_LOG_ON_GENERATE, _HEALTH_LOG_EVERY_STEP
+    global _HEALTH_LOG_DETAIL_BUNDLE, _HEALTH_LOG_ALERTS_IMMEDIATELY
     global _RANK, _WORLD_SIZE
     if enabled is None:
         enabled = _env_debug_enabled()
@@ -110,6 +129,19 @@ def configure(
         _PROBE_LOG_MODEL_CONTEXT = bool(probe_log_model_context)
     elif env_model_ctx is not None:
         _PROBE_LOG_MODEL_CONTEXT = env_model_ctx
+    env_health = _env_health_monitor_enabled()
+    if health_monitor_enabled is not None:
+        _HEALTH_MONITOR_ENABLED = bool(health_monitor_enabled)
+    elif env_health is not None:
+        _HEALTH_MONITOR_ENABLED = env_health
+    if health_log_on_generate is not None:
+        _HEALTH_LOG_ON_GENERATE = bool(health_log_on_generate)
+    if health_log_every_step is not None:
+        _HEALTH_LOG_EVERY_STEP = bool(health_log_every_step)
+    if health_log_detail_bundle is not None:
+        _HEALTH_LOG_DETAIL_BUNDLE = bool(health_log_detail_bundle)
+    if health_log_alerts_immediately is not None:
+        _HEALTH_LOG_ALERTS_IMMEDIATELY = bool(health_log_alerts_immediately)
     if rank is not None:
         _RANK = rank
     if world_size is not None:
@@ -273,6 +305,59 @@ def _gendbg_prefix(section: str) -> str:
 def should_log_gendbg() -> bool:
     """True when deep generate diagnostics should run (rank 0 only)."""
     return _PROBE_ON_GENERATE and _RANK == 0
+
+
+def health_monitor_enabled() -> bool:
+    return _HEALTH_MONITOR_ENABLED and _RANK == 0
+
+
+def should_log_health_on_generate() -> bool:
+    return health_monitor_enabled() and _HEALTH_LOG_ON_GENERATE and should_log_probe()
+
+
+def should_log_health_every_step() -> bool:
+    return health_monitor_enabled() and _HEALTH_LOG_EVERY_STEP
+
+
+def should_log_health_detail_bundle() -> bool:
+    return health_monitor_enabled() and _HEALTH_LOG_DETAIL_BUNDLE
+
+
+def should_log_health_alerts_immediately() -> bool:
+    return health_monitor_enabled() and _HEALTH_LOG_ALERTS_IMMEDIATELY
+
+
+def _health_prefix(section: str, global_step: Optional[int] = None) -> str:
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    step = global_step if global_step is not None else (_DETAIL_STEP if _DETAIL_STEP is not None else "?")
+    return f"[OPSD-HEALTH][{ts}][rank={_RANK}/{_WORLD_SIZE}][global_step={step}][{section}]"
+
+
+def log_health(section: str, msg: str, global_step: Optional[int] = None, **fields: Any) -> None:
+    """L1/L2/L4 health lines (rank 0)."""
+    if not health_monitor_enabled():
+        return
+    extra = ""
+    if fields:
+        extra = " | " + " | ".join(f"{k}={_fmt(v, max_len=1200)}" for k, v in fields.items())
+    print(f"{_health_prefix(section, global_step)} {msg}{extra}", flush=True)
+
+
+def log_health_detail_banner(global_step: int, title: str) -> None:
+    if not should_log_health_detail_bundle() or not should_log_detail(global_step):
+        return
+    bar = "=" * 20
+    print(f"{_detail_prefix(global_step, 'health')} {bar} {title} {bar}", flush=True)
+
+
+def log_health_detail(section: str, msg: str, global_step: int, **fields: Any) -> None:
+    """L3 periodic health bundle (rank 0, same cadence as OPSD-DETAIL)."""
+    if not should_log_health_detail_bundle() or not should_log_detail(global_step):
+        return
+    extra = ""
+    if fields:
+        extra = " | " + " | ".join(f"{k}={_fmt(v, max_len=1200)}" for k, v in fields.items())
+    print(f"{_detail_prefix(global_step, section)} {msg}{extra}", flush=True)
 
 
 def log_gendbg(section: str, msg: str, **fields: Any) -> None:

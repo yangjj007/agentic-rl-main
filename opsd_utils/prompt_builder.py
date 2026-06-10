@@ -187,6 +187,29 @@ def build_teacher_prompt_batch(
         ],
         teacher_image_token_counts=batch.get("image_token_counts"),
     )
+
+    vf_empty = 0
+    for idx in indices:
+        sample = samples[idx]
+        vf = (
+            sample.get("visual_fact_hint")
+            or sample.get("visual_fact")
+            or sample.get("visual_facts")
+            or ""
+        )
+        if not str(vf).strip():
+            vf_empty += 1
+    suffix_lens = [p["suffix_len"] for p in sample_payloads]
+    n_idx = max(len(indices), 1)
+    out["teacher_stats"] = {
+        "teacher_suffix_len_mean": float(sum(suffix_lens) / len(suffix_lens)) if suffix_lens else 0.0,
+        "visual_fact_empty_rate": vf_empty / n_idx,
+        "num_teacher_images_mean": float(
+            sum(p["num_teacher_images"] for p in sample_payloads) / len(sample_payloads)
+        )
+        if sample_payloads
+        else 0.0,
+    }
     return out
 
 

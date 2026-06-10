@@ -100,6 +100,27 @@ def _detect_single_token_repeat(token_ids: list[int], min_run: int = 8) -> bool:
     return _max_same_token_run(token_ids)[0] >= min_run
 
 
+def _detect_char_repeat(text: str, min_run: int = 6) -> bool:
+    """Detect consecutive repeated characters (CJK or ASCII), e.g. 其其其."""
+    if not text or len(text) < min_run:
+        return False
+    run = 1
+    for i in range(1, len(text)):
+        if text[i] == text[i - 1] and not text[i].isspace():
+            run += 1
+            if run >= min_run:
+                return True
+        else:
+            run = 1
+    return False
+
+
+def _count_char_repeat_samples(completions: Optional[list[str]], min_run: int = 6) -> int:
+    if not completions:
+        return 0
+    return sum(1 for c in completions if _detect_char_repeat(c or "", min_run=min_run))
+
+
 def _detect_repeat_loop(token_ids: list[int], min_repeats: int = 4, ngram: int = 3) -> bool:
     if len(token_ids) < ngram * min_repeats:
         return False
@@ -137,6 +158,8 @@ def _detect_degeneration(
     answer_count = len(re.findall(f"(?i){re.escape(answer_flag)}", text or ""))
     if answer_count != 1:
         reasons.append(f"ANSWER_FLAG_COUNT({answer_count})")
+    if _detect_char_repeat(text or ""):
+        reasons.append("CHAR_REPEAT")
     return bool(reasons), reasons
 
 
@@ -222,9 +245,11 @@ def summarize_generate_probe_stats(
         is_deg, _ = _detect_degeneration(ids, text, answer_flag=answer_flag)
         if is_deg:
             degenerate_count += 1
+    char_repeat_count = _count_char_repeat_samples(completions)
     n = max(completion_ids.size(0), 1)
     return {
         "effective_tokens_mean": float(lengths.mean().item()),
+        "char_repeat_count": char_repeat_count,
         "one_token_count": int((lengths == 1).sum().item()),
         "paren_then_eos_count": paren_then_eos,
         "repeat_loop_count": repeat_loop,
@@ -312,6 +337,22 @@ def log_prompt_tail_probe(
         )
 
 
+def summarize_first_token_logits_stats(
+  p_greedy_values: list[float],
+  p_eos_values: list[float],
+  entropy_values: list[float],
+) -> dict[str, float]:
+    """Aggregate first-token logit probe scalars across samples."""
+    def _mean(vals: list[float]) -> float:
+        return float(sum(vals) / len(vals)) if vals else 0.0
+
+    return {
+        "p_greedy_first": _mean(p_greedy_values),
+        "p_eos_first": _mean(p_eos_values),
+        "entropy_first": _mean(entropy_values),
+    }
+
+
 def log_first_token_logits_probe(
     *,
     global_step: int,
@@ -322,11 +363,14 @@ def log_first_token_logits_probe(
     prompt_mask: torch.Tensor,
     tokenizer: Any,
     sample_count: int = 4,
-) -> dict[int, int]:
-    """Forward once before generate; return greedy next-token id per sample index."""
+) -> dict[str, Any]:
+    """Forward once before generate; return greedy ids and aggregated logit stats."""
     greedy_by_sample: dict[int, int] = {}
+    p_greedy_vals: list[float] = []
+    p_eos_vals: list[float] = []
+    entropy_vals: list[float] = []
     if not opsd_debug.should_log_gendbg() or not opsd_debug.probe_first_token_logits():
-        return greedy_by_sample
+        return {"greedy_by_sample": greedy_by_sample, **summarize_first_token_logits_stats([], [], [])}
 
     opsd_debug.set_detail_step(global_step)
     eos_id = getattr(tokenizer, "eos_token_id", None)
@@ -364,6 +408,10 @@ def log_first_token_logits_probe(
                 fields["top5"] = [
                     (int(tid), float(p)) for tid, p in zip(topk.indices.tolist(), topk.values.tolist())
                 ]
+                p_greedy_vals.append(fields["p_greedy"])
+                entropy_vals.append(entropy)
+                if eos_id is not None:
+                    p_eos_vals.append(fields["p_eos"])
                 opsd_debug.log_gendbg("first_token_logits", f"sample[{i}]", **fields)
         except Exception as exc:
             opsd_debug.log_gendbg(
@@ -374,7 +422,8 @@ def log_first_token_logits_probe(
             )
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-    return greedy_by_sample
+    logits_stats = summarize_first_token_logits_stats(p_greedy_vals, p_eos_vals, entropy_vals)
+    return {"greedy_by_sample": greedy_by_sample, **logits_stats}
 
 
 def log_first_token_logits_match(
@@ -1000,6 +1049,81 @@ def log_loss_diagnostics(
         fields["weak_signal_hints"] = hints or ["none"]
 
     opsd_debug.log_detail("loss", "GRPO / OPSD loss breakdown", **fields)
+
+
+def summarize_loss_health(
+    *,
+    grpo_loss: torch.Tensor,
+    per_token_logps: torch.Tensor,
+    completion_mask: torch.Tensor,
+    advantages: torch.Tensor,
+    per_token_loss: torch.Tensor,
+    opsd_loss: Optional[torch.Tensor] = None,
+    combined_loss: Optional[torch.Tensor] = None,
+) -> dict[str, float]:
+    """Lightweight loss/signal summary for every-step health monitoring."""
+    with torch.no_grad():
+        m = completion_mask.float()
+        valid_per_sample = m.sum(dim=1).clamp(min=1.0)
+        sample_grpo = (per_token_loss * m).sum(dim=1) / valid_per_sample
+        adv_flat = advantages.detach().float().reshape(-1)
+        fields: dict[str, float] = {
+            "grpo_loss_scalar": float(grpo_loss.detach().item()),
+            "grpo_zero_loss_rate": float((sample_grpo.abs() < 1e-12).float().mean().item()),
+            "advantages_abs_mean": float(adv_flat.abs().mean().item()) if adv_flat.numel() else 0.0,
+            "completion_mask_tokens_mean": float(valid_per_sample.mean().item()),
+        }
+        if opsd_loss is not None:
+            fields["opsd_loss_scalar"] = float(opsd_loss.detach().item())
+        if combined_loss is not None:
+            fields["combined_loss_scalar"] = float(combined_loss.detach().item())
+        logps_delta = (per_token_logps * m).sum() / m.sum().clamp(min=1.0)
+        fields["logps_delta_mean"] = float(logps_delta.item()) if m.sum() > 0 else 0.0
+    return fields
+
+
+def summarize_batch_data_health(
+    samples: list[dict[str, Any]],
+    *,
+    prompt_mask: Optional[torch.Tensor] = None,
+    pixel_values: Optional[torch.Tensor] = None,
+) -> dict[str, Any]:
+    """Batch-level data I/O sanity for health monitoring."""
+    n = max(len(samples), 1)
+    vf_empty = 0
+    prompt_lens: list[int] = []
+    for sample in samples:
+        vf = (
+            sample.get("visual_fact_hint")
+            or sample.get("visual_fact")
+            or sample.get("visual_facts")
+            or ""
+        )
+        if not str(vf).strip():
+            vf_empty += 1
+        if sample.get("prompt"):
+            prompt_lens.append(len(str(sample["prompt"])))
+
+    out: dict[str, Any] = {
+        "visual_fact_empty_rate": vf_empty / n,
+        "batch_size": len(samples),
+        "prompt_len_mean": float(sum(prompt_lens) / len(prompt_lens)) if prompt_lens else 0.0,
+    }
+
+    if prompt_mask is not None:
+        with torch.no_grad():
+            lengths = prompt_mask.sum(dim=1).float()
+            out["prompt_tokens_mean"] = float(lengths.mean().item())
+            out["prompt_tokens_max"] = float(lengths.max().item())
+
+    if pixel_values is not None and isinstance(pixel_values, torch.Tensor) and pixel_values.numel() > 0:
+        with torch.no_grad():
+            flat = pixel_values.detach().float().reshape(-1)
+            out["pixel_mean"] = float(flat.mean().item())
+            out["pixel_has_nan"] = bool(torch.isnan(flat).any().item())
+            out["pixel_has_inf"] = bool(torch.isinf(flat).any().item())
+
+    return out
 
 
 def log_opsd_jsd_diagnostics(
