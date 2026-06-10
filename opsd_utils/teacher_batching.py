@@ -232,6 +232,21 @@ def as_batch_num_images_tensor(
     return torch.tensor([n] * batch_rows, device=device, dtype=torch.long)
 
 
+def _image_feature_row_count(result) -> int:
+    """Total vision placeholder rows from LLaVA-OV get_image_features return value."""
+    if hasattr(result, "pooler_output") and result.pooler_output is not None:
+        packed = result.pooler_output
+    else:
+        packed = result
+    if isinstance(packed, (list, tuple)):
+        if not packed:
+            return 0
+        return int(torch.cat(packed, dim=0).shape[0])
+    if isinstance(packed, torch.Tensor):
+        return int(packed.shape[0])
+    return 0
+
+
 @torch.no_grad()
 def expected_image_feature_count(
     model,
@@ -239,7 +254,7 @@ def expected_image_feature_count(
     image_sizes,
     batch_num_images: Optional[torch.Tensor] = None,
 ) -> int:
-    """Vision feature rows after LLaVA-OV pack_image_features (matches forward check)."""
+    """Vision feature rows after LLaVA-OV pack (matches model forward placeholder count)."""
     if pixel_values is None:
         return 0
     inner = _unwrap_model(model)
@@ -249,25 +264,17 @@ def expected_image_feature_count(
     vision_feature_layer = getattr(core.config, "vision_feature_layer", -1)
     vision_feature_select_strategy = getattr(core.config, "vision_feature_select_strategy", "full")
     vision_aspect_ratio = getattr(core.config, "vision_aspect_ratio", "anyres_max_9")
-    outputs = core.get_image_features(
+    # transformers 4.57.x: returns list[Tensor] (already packed per image); no return_dict kwarg.
+    # transformers 5.x: may return BaseModelOutputWithPooling with pooler_output.
+    result = core.get_image_features(
         pixel_values,
         image_sizes,
         vision_feature_layer=vision_feature_layer,
         vision_feature_select_strategy=vision_feature_select_strategy,
         vision_aspect_ratio=vision_aspect_ratio,
         batch_num_images=batch_num_images,
-        return_dict=True,
     )
-    packed = getattr(outputs, "pooler_output", None)
-    if packed is None:
-        image_features = outputs
-        packed, _ = core.pack_image_features(
-            image_features,
-            image_sizes,
-            image_newline=getattr(core, "image_newline", None),
-            vision_aspect_ratio=vision_aspect_ratio,
-        )
-    return int(packed.shape[0])
+    return _image_feature_row_count(result)
 
 
 def truncate_image_tokens(

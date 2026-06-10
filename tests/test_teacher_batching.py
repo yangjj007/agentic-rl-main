@@ -6,6 +6,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from opsd_utils.teacher_batching import (
+    _image_feature_row_count,
     align_teacher_prompt_image_tokens,
     as_batch_num_images_tensor,
     expected_image_feature_count,
@@ -123,6 +124,16 @@ def test_as_batch_num_images_tensor_none_cases():
     assert as_batch_num_images_tensor(None, torch.zeros(1)) is None
 
 
+def test_image_feature_row_count_list_return():
+    feats = [torch.zeros(3, 64), torch.zeros(7, 64)]
+    assert _image_feature_row_count(feats) == 10
+
+
+def test_image_feature_row_count_pooler_output():
+    out = type("Out", (), {"pooler_output": torch.zeros(5, 64)})()
+    assert _image_feature_row_count(out) == 5
+
+
 def test_expected_image_feature_count_passes_batch_num_images():
     captured: dict = {}
 
@@ -139,7 +150,8 @@ def test_expected_image_feature_count_passes_batch_num_images():
 
         def get_image_features(self, pixel_values, image_sizes, **kwargs):
             captured["batch_num_images"] = kwargs.get("batch_num_images")
-            return type("Out", (), {"pooler_output": torch.zeros(10, 64)})()
+            captured["return_dict"] = kwargs.get("return_dict")
+            return [torch.zeros(6, 64), torch.zeros(4, 64)]
 
     class _Model:
         model = _Core()
@@ -150,6 +162,7 @@ def test_expected_image_feature_count_passes_batch_num_images():
     count = expected_image_feature_count(_Model(), pv, sizes, batch_num_images=bn)
     assert count == 10
     assert captured["batch_num_images"].tolist() == [2]
+    assert captured.get("return_dict") is None
 
 
 def test_align_passes_batch_num_images():
@@ -168,7 +181,7 @@ def test_align_passes_batch_num_images():
 
         def get_image_features(self, pixel_values, image_sizes, **kwargs):
             captured["batch_num_images"] = kwargs.get("batch_num_images")
-            return type("Out", (), {"pooler_output": torch.zeros(4, 64)})()
+            return [torch.zeros(4, 64)]
 
     class _Model:
         model = _Core()
