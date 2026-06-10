@@ -6,6 +6,7 @@ from PIL import Image
 
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils.privileged import build_privileged_context, maybe_save_privileged_images
+from opsd_utils.teacher_batching import process_teacher_sample, stack_teacher_processor_batches
 
 
 def _build_teacher_text(student_prompt: str, privileged_suffix: str) -> str:
@@ -19,29 +20,6 @@ def _messages_for_teacher(teacher_text: str, num_images: int) -> list[dict]:
     content: list[dict] = [{"type": "image"} for _ in range(max(num_images, 1))]
     content.append({"type": "text", "text": teacher_text})
     return [{"role": "user", "content": content}]
-
-
-def _processor_batch(processor, texts: list[str], images: list[list[Image.Image]]):
-    has_images = any(len(imgs) > 0 for imgs in images)
-    if has_images:
-        return processor(text=texts, images=images, return_tensors="pt", padding=True)
-    return processor(text=texts, return_tensors="pt", padding=True)
-
-
-def _merge_batches(batches: list[dict]) -> dict:
-    if len(batches) == 1:
-        return batches[0]
-    out: dict[str, Any] = {}
-    keys = batches[0].keys()
-    for key in keys:
-        parts = [b[key] for b in batches if key in b]
-        if not parts:
-            continue
-        if isinstance(parts[0], torch.Tensor):
-            out[key] = torch.cat(parts, dim=0)
-        else:
-            out[key] = parts[0]
-    return out
 
 
 def tokenize_teacher_prompt(
@@ -72,16 +50,18 @@ def tokenize_teacher_prompt(
 
     messages = _messages_for_teacher(teacher_text, num_images)
     text = processor.apply_chat_template(messages, add_generation_prompt=True)
-    if pil_images:
-        batch = processor(text=[text], images=pil_images, return_tensors="pt", padding=True)
-    else:
-        batch = processor(text=[text], return_tensors="pt", padding=True)
+    batch = process_teacher_sample(
+        processor,
+        text.strip() if isinstance(text, str) else text,
+        pil_images,
+    )
 
     opsd_debug.log(
         "teacher_prompt",
         "tokenize_teacher_prompt result",
         input_ids_shape=tuple(batch["input_ids"].shape),
         has_pixel_values="pixel_values" in batch,
+        pixel_values_shape=tuple(batch["pixel_values"].shape) if "pixel_values" in batch else None,
     )
     return batch
 
@@ -164,10 +144,7 @@ def build_teacher_prompt_batch(
             }
         )
 
-    texts = [p["text"] for p in sample_payloads]
-    images = [p["images"] for p in sample_payloads]
-
-    batch = _build_teacher_batch_with_oom_retry(processor, texts, images)
+    batch = _build_teacher_batch_with_oom_retry(processor, sample_payloads)
 
     out = {
         "teacher_prompt_ids": batch["input_ids"].to(device),
@@ -178,9 +155,8 @@ def build_teacher_prompt_batch(
     if "image_sizes" in batch:
         out["teacher_image_sizes"] = batch["image_sizes"].to(device)
 
-    if "batch_num_images" in batch:
-        teacher_num_images = [int(max(1, n)) for n in batch["batch_num_images"]]
-    else:
+    teacher_num_images = [int(max(1, n)) for n in batch.get("batch_num_images", [])]
+    if not teacher_num_images:
         teacher_num_images = [max(1, p["num_teacher_images"]) for p in sample_payloads]
     out["teacher_num_images"] = torch.tensor(teacher_num_images, device=device, dtype=torch.long)
 
@@ -225,21 +201,23 @@ def build_teacher_prompt_batch(
 
 def _build_teacher_batch_with_oom_retry(
     processor,
-    texts: list[str],
-    images: list[list[Image.Image]],
+    sample_payloads: list[dict[str, Any]],
 ) -> dict:
-    """Process teacher prompts; on CUDA OOM halve micro-batch and retry (decision E)."""
-    n = len(texts)
+    """Process each teacher sample separately; on OOM halve micro-batch and retry."""
+    n = len(sample_payloads)
     if n == 0:
         return {}
     micro = n
     while micro >= 1:
         try:
-            batches = []
+            per_sample_batches: list[dict[str, Any]] = []
             for start in range(0, n, micro):
                 end = min(start + micro, n)
-                batches.append(_processor_batch(processor, texts[start:end], images[start:end]))
-            return _merge_batches(batches)
+                for payload in sample_payloads[start:end]:
+                    per_sample_batches.append(
+                        process_teacher_sample(processor, payload["text"], payload["images"])
+                    )
+            return stack_teacher_processor_batches(processor, per_sample_batches)
         except RuntimeError as exc:
             if "out of memory" not in str(exc).lower() or micro == 1:
                 raise

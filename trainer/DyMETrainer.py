@@ -201,31 +201,22 @@ def split_tensor_dict(
     """
     Splits a dictionary of tensors along the first dimension into `num_chunks` equal parts.
 
-    Example:
-        >>> x = torch.arange(12).reshape(6, 2)
-        >>> y = torch.arange(6).reshape(6, 1)
-        >>> tensor_dict = {"x": x, "y": y}
-        >>> split_tensor_dict(tensor_dict, 3)
-        [
-            {"x": tensor([[0, 1], [2, 3]]), "y": tensor([[0], [1]])},
-            {"x": tensor([[4, 5], [6, 7]]), "y": tensor([[2], [3]])},
-            {"x": tensor([[ 8,  9], [10, 11]]), "y": tensor([[4], [5]])}
-        ]
+    When teacher vision tensors are present, uses teacher_num_images-aware slicing
+    (LLaVA-OV stacks images on dim 0, not batch size).
     """
+    if tensor_dict.get("teacher_pixel_values") is not None or tensor_dict.get("teacher_num_images") is not None:
+        from opsd_utils.teacher_batching import split_tensor_dict_for_opsd
+
+        return split_tensor_dict_for_opsd(tensor_dict, num_chunks)
+
     first_tensor = next(tensor for tensor in tensor_dict.values() if tensor is not None)
     chunk_size = first_tensor.shape[0] // num_chunks
-    # has = []
-    # if 'has_correct' in tensor_dict:
-    #     has = tensor_dict['has_correct']
-    #     del tensor_dict['has_correct']
     l1 = []
     for i in range(num_chunks):
         dt = {
             key: tensor[i * chunk_size : (i + 1) * chunk_size] if tensor is not None else None
             for key, tensor in tensor_dict.items()
         }
-        # if len(has) > 0:
-        #     dt['has_correct'] = has[i]
         l1.append(dt)
 
     return l1
