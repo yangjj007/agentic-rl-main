@@ -870,7 +870,7 @@ def log_opsd_jsd_diagnostics(
     opsd_debug.log_detail_banner(global_step, "OPSD JSD DECOMPOSITION")
 
     from opsd_utils.opsd_loss import _slice_image_sizes, _teacher_image_counts
-    from opsd_utils.teacher_batching import get_teacher_vision_for_sample
+    from opsd_utils.teacher_batching import align_teacher_prompt_image_tokens, get_teacher_vision_for_sample
 
     batch_size = inputs["prompt_ids"].shape[0]
     teacher_img_counts = _teacher_image_counts(inputs, batch_size)
@@ -895,6 +895,16 @@ def log_opsd_jsd_diagnostics(
 
         student_input = torch.cat([prompt_ids, completion_ids], dim=1)
         student_attn = torch.cat([prompt_mask, completion_mask], dim=1)
+        processor = inputs.get("processor")
+        if processor is not None:
+            teacher_prompt_ids, teacher_prompt_mask = align_teacher_prompt_image_tokens(
+                model,
+                processor,
+                teacher_prompt_ids,
+                teacher_prompt_mask,
+                t_pixel,
+                teacher_sizes,
+            )
         teacher_input = torch.cat([teacher_prompt_ids, completion_ids], dim=1)
         teacher_attn = torch.cat([teacher_prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)
@@ -905,12 +915,6 @@ def log_opsd_jsd_diagnostics(
             "pixel_values": t_pixel,
             "image_sizes": teacher_sizes,
         }
-        if teacher_sizes is not None and teacher_img_counts[local] > 1:
-            teacher_forward_kwargs["batch_num_images"] = torch.tensor(
-                [teacher_img_counts[local]],
-                device=teacher_input.device,
-                dtype=torch.long,
-            )
 
         with torch.no_grad():
             student_logits = model(

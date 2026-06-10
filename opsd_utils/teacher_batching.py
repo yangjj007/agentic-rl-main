@@ -5,12 +5,30 @@ from typing import Any, Optional
 
 import torch
 import torch.nn.functional as F
+from PIL import Image
 
 from opsd_utils import debug_log as opsd_debug
 
 # Legacy stacked tensors (dim0 = total images). Prefer *_list keys.
 TEACHER_IMAGE_STACKED_KEYS = frozenset({"teacher_pixel_values", "teacher_image_sizes"})
 TEACHER_VISION_LIST_KEYS = frozenset({"teacher_pixel_values_list", "teacher_image_sizes_list"})
+
+
+def image_token_id(processor) -> int:
+    tok = processor.tokenizer
+    if getattr(tok, "image_token_id", None) is not None:
+        return int(tok.image_token_id)
+    if hasattr(processor, "image_token_id"):
+        return int(processor.image_token_id)
+    convert = getattr(tok, "convert_tokens_to_ids", None)
+    if convert is not None:
+        return int(convert(getattr(processor, "image_token", "<image>")))
+    return 151646
+
+
+def count_image_tokens(input_ids: torch.Tensor, processor) -> int:
+    img_id = image_token_id(processor)
+    return int((input_ids == img_id).sum().item())
 
 
 def batch_size_from_tensor_dict(tensor_dict: dict[str, Any]) -> int:
@@ -120,6 +138,7 @@ def stack_teacher_processor_batches(
     pixel_list: list[torch.Tensor] = []
     size_list: list[torch.Tensor] = []
     batch_num_images: list[int] = []
+    image_token_counts: list[int] = []
 
     for batch in per_sample_batches:
         ids = batch["input_ids"]
@@ -130,13 +149,14 @@ def stack_teacher_processor_batches(
             attn = F.pad(attn, (0, pad_len), value=0)
         input_ids_list.append(ids)
         attn_list.append(attn)
+        image_token_counts.append(count_image_tokens(ids, processor))
 
         if "pixel_values" in batch:
             pv = batch["pixel_values"]
             pixel_list.append(pv)
             batch_num_images.append(int(pv.shape[0]))
         else:
-            batch_num_images.append(1)
+            batch_num_images.append(0)
         if "image_sizes" in batch:
             size_list.append(batch["image_sizes"])
 
@@ -155,15 +175,144 @@ def stack_teacher_processor_batches(
         "batch_num_images": batch_num_images,
         "pixel_values_list": pixel_list,
         "image_sizes_list": size_list,
+        "image_token_counts": image_token_counts,
     }
     return out
 
 
-def process_teacher_sample(processor, text: str, images: list[Any]) -> dict[str, Any]:
-    """Tokenize one teacher sample (supports multi-image)."""
-    if images:
-        return processor(text=[text], images=images, return_tensors="pt", padding=True)
-    return processor(text=[text], return_tensors="pt", padding=True)
+def _messages_for_teacher(teacher_text: str, images: list[Image.Image]) -> list[dict]:
+    """Build chat messages with PIL images embedded (single processor tokenize path)."""
+    content: list[dict] = []
+    for img in images:
+        content.append({"type": "image", "image": img})
+    content.append({"type": "text", "text": teacher_text})
+    return [{"role": "user", "content": content}]
+
+
+def process_teacher_sample(processor, teacher_text: str, images: list[Any]) -> dict[str, Any]:
+    """Tokenize one teacher sample via processor.apply_chat_template(tokenize=True)."""
+    pil_images = [img for img in images if isinstance(img, Image.Image)]
+    messages = _messages_for_teacher(teacher_text, pil_images)
+    batch = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+        padding=True,
+    )
+    n_img_tok = count_image_tokens(batch["input_ids"], processor)
+    opsd_debug.log(
+        "teacher_batching",
+        "process_teacher_sample",
+        num_images=len(pil_images),
+        input_ids_shape=tuple(batch["input_ids"].shape),
+        pixel_values_shape=tuple(batch["pixel_values"].shape) if "pixel_values" in batch else None,
+        image_token_count=n_img_tok,
+    )
+    return batch
+
+
+def _unwrap_model(model):
+    if hasattr(model, "module"):
+        return model.module
+    return model
+
+
+@torch.no_grad()
+def expected_image_feature_count(model, pixel_values, image_sizes) -> int:
+    """Vision feature rows after LLaVA-OV pack_image_features (matches forward check)."""
+    if pixel_values is None:
+        return 0
+    inner = _unwrap_model(model)
+    if not hasattr(inner, "model"):
+        return 0
+    core = inner.model
+    vision_feature_layer = getattr(core.config, "vision_feature_layer", -1)
+    vision_feature_select_strategy = getattr(core.config, "vision_feature_select_strategy", "full")
+    vision_aspect_ratio = getattr(core.config, "vision_aspect_ratio", "anyres_max_9")
+    image_features = core.get_image_features(
+        pixel_values,
+        image_sizes,
+        vision_feature_layer=vision_feature_layer,
+        vision_feature_select_strategy=vision_feature_select_strategy,
+    )
+    packed, _ = core.pack_image_features(
+        image_features,
+        image_sizes,
+        image_newline=getattr(core, "image_newline", None),
+        vision_aspect_ratio=vision_aspect_ratio,
+    )
+    return int(packed.shape[0])
+
+
+def truncate_image_tokens(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    image_token_id_value: int,
+    max_image_tokens: int,
+    pad_token_id: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Keep the first max_image_tokens image placeholders; drop extras (anyres_max mismatch fix)."""
+    if max_image_tokens < 0:
+        return input_ids, attention_mask
+    trimmed_rows: list[list[int]] = []
+    trimmed_masks: list[list[int]] = []
+    for row_ids, row_mask in zip(input_ids, attention_mask):
+        valid = [(int(t), int(m)) for t, m in zip(row_ids.tolist(), row_mask.tolist()) if m]
+        if not valid:
+            trimmed_rows.append(row_ids.tolist())
+            trimmed_masks.append(row_mask.tolist())
+            continue
+        new_ids: list[int] = []
+        kept_img = 0
+        for tok, _ in valid:
+            if tok == image_token_id_value:
+                if kept_img < max_image_tokens:
+                    new_ids.append(tok)
+                    kept_img += 1
+            else:
+                new_ids.append(tok)
+        trimmed_rows.append(new_ids)
+        trimmed_masks.append([1] * len(new_ids))
+    max_len = max(len(r) for r in trimmed_rows)
+    out_ids = []
+    out_mask = []
+    for row, mask in zip(trimmed_rows, trimmed_masks):
+        pad_len = max_len - len(row)
+        out_ids.append(row + [pad_token_id] * pad_len)
+        out_mask.append(mask + [0] * pad_len)
+    return (
+        torch.tensor(out_ids, dtype=input_ids.dtype, device=input_ids.device),
+        torch.tensor(out_mask, dtype=attention_mask.dtype, device=attention_mask.device),
+    )
+
+
+def align_teacher_prompt_image_tokens(
+    model,
+    processor,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    pixel_values,
+    image_sizes,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sync image placeholder count in input_ids to vision feature count."""
+    if pixel_values is None:
+        return input_ids, attention_mask
+    img_id = image_token_id(processor)
+    n_tokens = int((input_ids == img_id).sum().item())
+    n_features = expected_image_feature_count(model, pixel_values, image_sizes)
+    if n_features <= 0 or n_tokens == n_features:
+        return input_ids, attention_mask
+    opsd_debug.log(
+        "teacher_batching",
+        "align teacher image tokens to vision features",
+        image_tokens=n_tokens,
+        image_features=n_features,
+        delta=n_tokens - n_features,
+    )
+    pad_id = int(processor.tokenizer.pad_token_id)
+    return truncate_image_tokens(input_ids, attention_mask, img_id, n_features, pad_id)
 
 
 def get_teacher_vision_for_sample(

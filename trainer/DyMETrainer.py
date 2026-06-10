@@ -1278,6 +1278,7 @@ class DyMETrainer(Trainer):
                         list(range(prompt_ids.size(0))),
                         inputs,
                         beta=beta,
+                        processor=self.processing_class,
                     )
                 opsd_loss_tensor = opsd_loss
                 loss = grpo_weight * loss + opsd_weight * opsd_loss

@@ -6,7 +6,11 @@ from PIL import Image
 
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils.privileged import build_privileged_context, maybe_save_privileged_images
-from opsd_utils.teacher_batching import process_teacher_sample, stack_teacher_processor_batches
+from opsd_utils.teacher_batching import (
+    count_image_tokens,
+    process_teacher_sample,
+    stack_teacher_processor_batches,
+)
 
 
 def _build_teacher_text(student_prompt: str, privileged_suffix: str) -> str:
@@ -14,12 +18,6 @@ def _build_teacher_text(student_prompt: str, privileged_suffix: str) -> str:
     if privileged_suffix.strip():
         teacher_text = f"{student_prompt}\n\n{privileged_suffix.strip()}"
     return teacher_text
-
-
-def _messages_for_teacher(teacher_text: str, num_images: int) -> list[dict]:
-    content: list[dict] = [{"type": "image"} for _ in range(max(num_images, 1))]
-    content.append({"type": "text", "text": teacher_text})
-    return [{"role": "user", "content": content}]
 
 
 def tokenize_teacher_prompt(
@@ -38,7 +36,6 @@ def tokenize_teacher_prompt(
         pil_images = [one] if one is not None else []
 
     teacher_text = _build_teacher_text(student_prompt, privileged_suffix)
-    num_images = len(pil_images) if pil_images else 1
 
     opsd_debug.log(
         "teacher_prompt",
@@ -48,13 +45,7 @@ def tokenize_teacher_prompt(
         teacher_text_len=len(teacher_text),
     )
 
-    messages = _messages_for_teacher(teacher_text, num_images)
-    text = processor.apply_chat_template(messages, add_generation_prompt=True)
-    batch = process_teacher_sample(
-        processor,
-        text.strip() if isinstance(text, str) else text,
-        pil_images,
-    )
+    batch = process_teacher_sample(processor, teacher_text, pil_images)
 
     opsd_debug.log(
         "teacher_prompt",
@@ -62,6 +53,7 @@ def tokenize_teacher_prompt(
         input_ids_shape=tuple(batch["input_ids"].shape),
         has_pixel_values="pixel_values" in batch,
         pixel_values_shape=tuple(batch["pixel_values"].shape) if "pixel_values" in batch else None,
+        image_token_count=count_image_tokens(batch["input_ids"], processor),
     )
     return batch
 
@@ -132,12 +124,9 @@ def build_teacher_prompt_batch(
         )
 
         teacher_text = _build_teacher_text(sample["prompt"], suffix)
-        num_images = len(teacher_images) if teacher_images else 1
-        messages = _messages_for_teacher(teacher_text, num_images)
-        text = processor.apply_chat_template(messages, add_generation_prompt=True)
         sample_payloads.append(
             {
-                "text": text.strip() if isinstance(text, str) else text,
+                "teacher_text": teacher_text,
                 "images": teacher_images,
                 "suffix_len": len(suffix.strip()),
                 "num_teacher_images": len(teacher_images),
@@ -155,9 +144,9 @@ def build_teacher_prompt_batch(
     if batch.get("image_sizes_list"):
         out["teacher_image_sizes_list"] = [sz.to(device) for sz in batch["image_sizes_list"]]
 
-    teacher_num_images = [int(max(1, n)) for n in batch.get("batch_num_images", [])]
+    teacher_num_images = [int(max(0, n)) for n in batch.get("batch_num_images", [])]
     if not teacher_num_images:
-        teacher_num_images = [max(1, p["num_teacher_images"]) for p in sample_payloads]
+        teacher_num_images = [p["num_teacher_images"] for p in sample_payloads]
     out["teacher_num_images"] = torch.tensor(teacher_num_images, device=device, dtype=torch.long)
 
     student_len = None
@@ -183,6 +172,7 @@ def build_teacher_prompt_batch(
         ],
         teacher_images_count=sample_payloads[0]["num_teacher_images"] if sample_payloads else 0,
         teacher_num_images=teacher_num_images,
+        teacher_image_token_counts=batch.get("image_token_counts"),
         teacher_prompt_len=teacher_len,
         vision_placeholder_delta=(teacher_len - student_len) if student_len else None,
     )
@@ -195,6 +185,7 @@ def build_teacher_prompt_batch(
         teacher_pixel_values_shapes=[
             tuple(pv.shape) for pv in out.get("teacher_pixel_values_list", [])[:4]
         ],
+        teacher_image_token_counts=batch.get("image_token_counts"),
     )
     return out
 
@@ -215,7 +206,11 @@ def _build_teacher_batch_with_oom_retry(
                 end = min(start + micro, n)
                 for payload in sample_payloads[start:end]:
                     per_sample_batches.append(
-                        process_teacher_sample(processor, payload["text"], payload["images"])
+                        process_teacher_sample(
+                            processor,
+                            payload["teacher_text"],
+                            payload["images"],
+                        )
                     )
             return stack_teacher_processor_batches(processor, per_sample_batches)
         except RuntimeError as exc:

@@ -9,6 +9,7 @@ from opsd_utils.teacher_batching import (
     get_teacher_vision_for_sample,
     split_tensor_dict_for_opsd,
     stack_teacher_processor_batches,
+    truncate_image_tokens,
 )
 
 
@@ -103,3 +104,14 @@ def test_stack_teacher_processor_batches_keeps_per_sample_pixels():
     assert out["pixel_values_list"][0].shape == (2, 7, 3, 4, 4)
     assert out["pixel_values_list"][1].shape == (2, 5, 3, 4, 4)
     assert out["batch_num_images"] == [2, 2]
+
+
+def test_truncate_image_tokens_keeps_first_n():
+    img_id = 151646
+    pad_id = 0
+    ids = torch.tensor([[img_id] * 10 + [1, 2, 3]])
+    mask = torch.ones(1, 13, dtype=torch.long)
+    out_ids, out_mask = truncate_image_tokens(ids, mask, img_id, 4, pad_id)
+    assert int((out_ids == img_id).sum()) == 4
+    assert out_ids.shape[1] == 7
+    assert int(out_mask.sum()) == 7
