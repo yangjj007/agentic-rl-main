@@ -1,6 +1,7 @@
 """Periodic full-detail diagnostics for weak reward / gradient signals."""
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 import torch
@@ -77,10 +78,33 @@ def _last_valid_prompt_positions(prompt_mask: torch.Tensor) -> torch.Tensor:
         return masked.max(dim=1).values
 
 
+def _max_same_token_run(token_ids: list[int]) -> tuple[int, Optional[int]]:
+    """Longest run of identical consecutive token ids."""
+    if not token_ids:
+        return 0, None
+    best_run = 1
+    best_tok = token_ids[0]
+    run = 1
+    for i in range(1, len(token_ids)):
+        if token_ids[i] == token_ids[i - 1]:
+            run += 1
+            if run > best_run:
+                best_run = run
+                best_tok = token_ids[i]
+        else:
+            run = 1
+    return best_run, best_tok
+
+
+def _detect_single_token_repeat(token_ids: list[int], min_run: int = 8) -> bool:
+    return _max_same_token_run(token_ids)[0] >= min_run
+
+
 def _detect_repeat_loop(token_ids: list[int], min_repeats: int = 4, ngram: int = 3) -> bool:
     if len(token_ids) < ngram * min_repeats:
         return False
-    for start in range(min(8, len(token_ids) - ngram * min_repeats + 1)):
+    last_start = len(token_ids) - ngram * min_repeats + 1
+    for start in range(max(0, last_start)):
         gram = token_ids[start : start + ngram]
         repeats = 1
         pos = start + ngram
@@ -90,6 +114,51 @@ def _detect_repeat_loop(token_ids: list[int], min_repeats: int = 4, ngram: int =
         if repeats >= min_repeats:
             return True
     return False
+
+
+def _detect_degeneration(
+    token_ids: list[int],
+    text: str,
+    *,
+    answer_flag: str = "Answer:",
+    min_single_token_run: int = 8,
+) -> tuple[bool, list[str]]:
+    """Heuristics for repetitive / format-broken completions."""
+    reasons: list[str] = []
+    if _detect_single_token_repeat(token_ids, min_run=min_single_token_run):
+        run_len, tok = _max_same_token_run(token_ids)
+        reasons.append(f"SINGLE_TOKEN_REPEAT(run={run_len},tok={tok})")
+    if _detect_repeat_loop(token_ids):
+        reasons.append("NGRAM_REPEAT")
+    if len(token_ids) >= 16:
+        unique_ratio = len(set(token_ids)) / len(token_ids)
+        if unique_ratio < 0.12:
+            reasons.append(f"LOW_UNIQUE_RATIO({unique_ratio:.3f})")
+    answer_count = len(re.findall(f"(?i){re.escape(answer_flag)}", text or ""))
+    if answer_count != 1:
+        reasons.append(f"ANSWER_FLAG_COUNT({answer_count})")
+    return bool(reasons), reasons
+
+
+def _count_answer_flag(text: str, answer_flag: str = "Answer:") -> int:
+    return len(re.findall(f"(?i){re.escape(answer_flag)}", text or ""))
+
+
+def is_degenerate_completion(
+    token_ids: list[int],
+    text: str,
+    *,
+    answer_flag: str = "Answer:",
+    min_single_token_run: int = 8,
+) -> bool:
+    """Return True when completion looks like a repetition / format-broken sample."""
+    is_deg, _ = _detect_degeneration(
+        token_ids,
+        text,
+        answer_flag=answer_flag,
+        min_single_token_run=min_single_token_run,
+    )
+    return is_deg
 
 
 def _count_paren_then_eos(
@@ -121,25 +190,52 @@ def summarize_generate_probe_stats(
     completion_mask: torch.Tensor,
     is_eos: torch.Tensor,
     eos_id: Optional[int],
+    completions: Optional[list[str]] = None,
+    answer_flag: str = "Answer:",
+    max_completion_length: Optional[int] = None,
 ) -> dict[str, Any]:
     with torch.no_grad():
         lengths = completion_mask.sum(dim=1).float()
         has_eos = is_eos.any(dim=1)
     paren_then_eos = _count_paren_then_eos(completion_ids, completion_mask, eos_id)
     repeat_loop = 0
+    degenerate_count = 0
+    max_run_lengths: list[float] = []
+    unique_ratios: list[float] = []
+    answer_flag_ok = 0
+    clipped_count = 0
     for i in range(completion_ids.size(0)):
         eff = int(lengths[i].item())
         if eff <= 0:
             continue
         ids = completion_ids[i, :eff].tolist()
-        if _detect_repeat_loop(ids):
+        text = completions[i] if completions and i < len(completions) else ""
+        if _detect_repeat_loop(ids) or _detect_single_token_repeat(ids):
             repeat_loop += 1
+        run_len, _ = _max_same_token_run(ids)
+        max_run_lengths.append(float(run_len))
+        unique_ratios.append(len(set(ids)) / max(len(ids), 1))
+        if _count_answer_flag(text, answer_flag) == 1:
+            answer_flag_ok += 1
+        if max_completion_length is not None and eff >= max_completion_length - 1:
+            clipped_count += 1
+        is_deg, _ = _detect_degeneration(ids, text, answer_flag=answer_flag)
+        if is_deg:
+            degenerate_count += 1
+    n = max(completion_ids.size(0), 1)
     return {
         "effective_tokens_mean": float(lengths.mean().item()),
         "one_token_count": int((lengths == 1).sum().item()),
         "paren_then_eos_count": paren_then_eos,
         "repeat_loop_count": repeat_loop,
         "eos_terminated_rate": float(has_eos.float().mean().item()),
+        "degenerate_count": degenerate_count,
+        "degenerate_rate": degenerate_count / n,
+        "max_token_run_mean": float(sum(max_run_lengths) / len(max_run_lengths)) if max_run_lengths else 0.0,
+        "unique_token_ratio_mean": float(sum(unique_ratios) / len(unique_ratios)) if unique_ratios else 0.0,
+        "answer_flag_exactly_once_rate": answer_flag_ok / n,
+        "clipped_count": clipped_count,
+        "clipped_rate": clipped_count / n,
     }
 
 
@@ -330,6 +426,10 @@ def log_generate_delta(
             "paren_then_eos_count",
             "repeat_loop_count",
             "eos_terminated_rate",
+            "degenerate_count",
+            "degenerate_rate",
+            "clipped_rate",
+            "answer_flag_exactly_once_rate",
         ):
             cur = current_stats.get(key)
             prev = previous_stats.get(key)
@@ -356,9 +456,18 @@ def log_generate_probe(
     num_generations: int,
     sample_count: int = 4,
     generate_call_index: Optional[int] = None,
+    answer_flag: str = "Answer:",
 ) -> dict[str, Any]:
     """Emit [OPSD-PROBE] on every (re)generate — catches 1-token / empty completions early."""
-    stats = summarize_generate_probe_stats(completion_ids, completion_mask, is_eos, getattr(tokenizer, "eos_token_id", None))
+    stats = summarize_generate_probe_stats(
+        completion_ids,
+        completion_mask,
+        is_eos,
+        getattr(tokenizer, "eos_token_id", None),
+        completions=completions,
+        answer_flag=answer_flag,
+        max_completion_length=max_completion_length,
+    )
     if generate_call_index is not None:
         stats["generate_call_index"] = generate_call_index
 
@@ -397,6 +506,13 @@ def log_generate_probe(
         paren_then_eos_count=stats["paren_then_eos_count"],
         repeat_loop_count=stats["repeat_loop_count"],
         eos_terminated_rate=stats["eos_terminated_rate"],
+        degenerate_count=stats["degenerate_count"],
+        degenerate_rate=stats["degenerate_rate"],
+        max_token_run_mean=stats["max_token_run_mean"],
+        unique_token_ratio_mean=stats["unique_token_ratio_mean"],
+        answer_flag_exactly_once_rate=stats["answer_flag_exactly_once_rate"],
+        clipped_count=stats["clipped_count"],
+        clipped_rate=stats["clipped_rate"],
         tokenizer_eos_id=eos_id,
         tokenizer_pad_id=pad_id,
         tokenizer_bos_id=bos_id,
@@ -426,8 +542,16 @@ def log_generate_probe(
             flags.append("FIRST_IS_EOS")
         if eff <= 2 and first_tok == PAREN_TOKEN_ID:
             patterns.append("PAREN_THEN_EOS")
-        if eff > 0 and _detect_repeat_loop(completion_ids[i, :eff].tolist()):
-            patterns.append("REPEAT_LOOP")
+        if eff > 0:
+            ids_eff = completion_ids[i, :eff].tolist()
+            if _detect_repeat_loop(ids_eff):
+                patterns.append("REPEAT_LOOP")
+            if _detect_single_token_repeat(ids_eff):
+                run_len, tok = _max_same_token_run(ids_eff)
+                patterns.append(f"SINGLE_TOKEN_REPEAT({run_len}x{tok})")
+            is_deg, deg_reasons = _detect_degeneration(ids_eff, decode_skip, answer_flag=answer_flag)
+            if is_deg:
+                patterns.extend(deg_reasons)
         if flags:
             suspicious.append(f"sample[{i}]:{','.join(flags)}")
 
@@ -455,6 +579,18 @@ def log_generate_probe(
             count=len(suspicious),
             samples=suspicious,
             hint="check eos_token_id, max_new_tokens, model.generate output, or training-time unwrap/FSDP",
+        )
+
+    if stats.get("degenerate_rate", 0) >= 0.25:
+        opsd_debug.log_probe(
+            "generate",
+            "ALERT repetition / format degeneration",
+            degenerate_count=stats["degenerate_count"],
+            degenerate_rate=stats["degenerate_rate"],
+            clipped_rate=stats["clipped_rate"],
+            answer_flag_exactly_once_rate=stats["answer_flag_exactly_once_rate"],
+            max_token_run_mean=stats["max_token_run_mean"],
+            hint="typical RL collapse: raise repetition_penalty, lower temperature, or shorten max_completion_length",
         )
 
     return stats
@@ -512,6 +648,8 @@ def log_routed_completion_probe(
     opsd_mask_list: list[bool],
     sample_count: int = 4,
     tokenizer: Any,
+    sft_replaced_list: Optional[list[bool]] = None,
+    raw_completion_ids: Optional[torch.Tensor] = None,
 ) -> None:
     """Compare raw vs post-routing padded completion shapes (detect routing truncation)."""
     if not opsd_debug.should_log_probe():
@@ -533,6 +671,7 @@ def log_routed_completion_probe(
         final_effective_tokens_max=float(final_lengths.max().item()),
         opsd_mask_true=sum(opsd_mask_list),
         opsd_mask_false=len(opsd_mask_list) - sum(opsd_mask_list),
+        sft_replaced_count=sum(sft_replaced_list) if sft_replaced_list else None,
     )
 
     n = min(sample_count, final_completion_ids.size(0))
@@ -543,12 +682,21 @@ def log_routed_completion_probe(
             final_completion_ids[i][final_completion_mask[i].bool()],
             skip_special_tokens=True,
         )
+        raw_head = None
+        raw_matches_final = None
+        if raw_completion_ids is not None and i < raw_completion_ids.size(0):
+            raw_eff = min(int(raw_completion_ids.size(1)), eff)
+            raw_head = raw_completion_ids[i, : min(12, raw_eff)].tolist()
+            raw_matches_final = raw_head == head if raw_head and head else None
         opsd_debug.log_probe(
             "route",
             f"routed_sample[{i}]",
             opsd_mask=opsd_mask_list[i] if i < len(opsd_mask_list) else None,
+            sft_replaced=sft_replaced_list[i] if sft_replaced_list and i < len(sft_replaced_list) else None,
             effective_tokens=eff,
             token_ids_head=head,
+            raw_token_ids_head=raw_head,
+            raw_matches_routed_head=raw_matches_final,
             decode=_preview_text(text, 300),
         )
 

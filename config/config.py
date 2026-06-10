@@ -20,7 +20,9 @@ TRAINING_CONFIG = {
         "output_dir": os.path.join(OUTPUTS_DIR, "dyme-k-8"),
         "logging_steps": 1,
         "num_generations": 8,  # RL 阶段可以生成多个响应进行比较
-        "max_completion_length": 300,
+        "max_completion_length": 200,
+        "temperature": 0.8,
+        "repetition_penalty": 1.15,
         "per_device_train_batch_size": 2,
         "gradient_accumulation_steps": 16,
         "num_train_epochs": 10,
@@ -32,7 +34,7 @@ TRAINING_CONFIG = {
         "save_strategy": "epoch",
         "weight_decay": 0.01,
         "warmup_steps": 0,
-        "beta": 0.0,  # GRPO specific
+        "beta": 0.02,  # GRPO KL — mild anchor against policy drift
         "loss_type": 'grpo',  # GRPO specific
         "seed": 42,
     },
@@ -105,10 +107,14 @@ DYME_OPSD_CONFIG = {
         "teacher_recoverable": "privileged_available",
         "recoverable_tau": 0.5,
         "use_edge_mask": False,
+        # TriMode: OPSD only on completions that are correct + well-formatted (not whole group).
+        "per_completion_opsd": True,
+        "require_format_for_opsd": True,
+        "skip_degenerate_for_opsd": True,
     },
     "loss": {
         "beta": 0.5,
-        "opsd_weight": 1.0,
+        "opsd_weight": 2.0,
         "grpo_weight": 1.0,
         "sft_weight": 1.0,
     },

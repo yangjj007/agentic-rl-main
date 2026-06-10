@@ -62,7 +62,7 @@ from reward_utils.checker import RewardCalculator
 from reward_utils.compute_rewards import calculate_rewards_in_parallel, refine_context_in_parallel
 
 from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, DEFAULT_OPSD_CONFIG
-from opsd_utils.mode_router import route_prompt_modes, expand_modes_to_completions
+from opsd_utils.mode_router import route_prompt_modes, route_completion_modes
 from opsd_utils.recoverability import estimate_recoverable_flags
 from opsd_utils.prompt_builder import build_teacher_prompt_batch
 from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch
@@ -737,6 +737,7 @@ class DyMETrainer(Trainer):
             num_generations=self.num_generations,
             sample_count=self._opsd_probe_sample_count,
             generate_call_index=generate_call_index,
+            answer_flag=getattr(self.checker, "answer_flag", "Answer:"),
         )
         opsd_diagnostics.log_generate_delta(
             generate_call_index=generate_call_index,
@@ -858,11 +859,19 @@ class DyMETrainer(Trainer):
                     self.opsd_config,
                 )
             opsd_debug.log("opsd_router", "recoverable flags computed", recoverable_flags=recoverable_flags)
-            with opsd_debug.timed("opsd_router", "route_prompt_modes"):
-                prompt_modes = route_prompt_modes(
-                    acc_rewards, self.num_generations, self.opsd_config, recoverable_flags
+            with opsd_debug.timed("opsd_router", "route_completion_modes"):
+                completion_modes = route_completion_modes(
+                    acc_rewards,
+                    self.num_generations,
+                    batch_size,
+                    self.opsd_config,
+                    recoverable_flags,
+                    format_rewards=format_rewards,
                 )
-            completion_modes = expand_modes_to_completions(prompt_modes, self.num_generations, batch_size)
+            prompt_modes = [
+                completion_modes[i * self.num_generations]
+                for i in range(acc_rewards.shape[0])
+            ]
             opsd_debug.log_mode_summary("opsd_router", prompt_modes, completion_modes)
 
         format_rewards_flat = format_rewards.reshape(-1)
@@ -903,6 +912,10 @@ class DyMETrainer(Trainer):
         final_completion_mask_list = []
         final_advantange_list = []
         opsd_mask_list = []
+        sft_replaced_list = []
+        opsd_skipped_degenerate = 0
+        answer_flag = getattr(self.checker, "answer_flag", "Answer:")
+        skip_degenerate_opsd = self.opsd_config.get("gate", {}).get("skip_degenerate_for_opsd", False)
 
         for i in range(len(sft_padded_ids)):
             batch_id = i // self.num_generations
@@ -912,6 +925,7 @@ class DyMETrainer(Trainer):
             )
             use_sft = (not opsd_active) or cm == MODE_SFT
             joint_opsd = opsd_active and self.opsd_config.get("mode") == "grpo_opsd_joint" and has_correct[batch_id] > 0
+            sft_replaced = False
 
             if use_sft and sft_check[i]:
                 completion_id_ = torch.cat([sft_padded_ids[i], completion_ids[i][0:0]])
@@ -919,11 +933,24 @@ class DyMETrainer(Trainer):
                 advantange_ = torch.cat([sft_advantages[i], advantages[i][0:0]])
                 advantange_[:] = 1
                 opsd_mask_list.append(False)
+                sft_replaced = True
             elif use_opsd:
                 completion_id_ = completion_ids[i]
                 completion_mask_ = completion_mask[i]
                 advantange_ = torch.zeros(completion_mask[i].size(0), device=device, dtype=torch.float)
-                opsd_mask_list.append(True)
+                run_opsd = True
+                if skip_degenerate_opsd:
+                    eff_len = int(completion_mask_.sum().item())
+                    if eff_len > 0:
+                        ids_eff = completion_ids[i, :eff_len].tolist()
+                        text_i = completions[i] if i < len(completions) else ""
+                        if opsd_diagnostics.is_degenerate_completion(
+                            ids_eff, text_i, answer_flag=answer_flag
+                        ):
+                            run_opsd = False
+                            opsd_skipped_degenerate += 1
+                            advantange_[:] = 0
+                opsd_mask_list.append(run_opsd)
             elif has_correct[batch_id] > 0:
                 completion_id_ = torch.cat([completion_ids[i], sft_padded_ids[i][0:0]])
                 completion_mask_ = torch.cat([completion_mask[i], sft_attn_masks[i][0:0]])
@@ -944,6 +971,7 @@ class DyMETrainer(Trainer):
             final_completion_id_list.append(completion_id_)
             final_completion_mask_list.append(completion_mask_)
             final_advantange_list.append(advantange_)
+            sft_replaced_list.append(sft_replaced)
 
         opsd_debug.log(
             "opsd_mask",
@@ -951,9 +979,12 @@ class DyMETrainer(Trainer):
             opsd_active=opsd_active,
             opsd_mask_true=sum(opsd_mask_list),
             opsd_mask_false=len(opsd_mask_list) - sum(opsd_mask_list),
+            sft_replaced_count=sum(sft_replaced_list),
+            opsd_skipped_degenerate=opsd_skipped_degenerate,
             has_correct=has_correct.tolist() if hasattr(has_correct, "tolist") else has_correct,
         )
 
+        raw_completion_ids = completion_ids.clone()
         raw_completion_shape = tuple(completion_ids.shape)
         opsd_diagnostics.log_generation_diagnostics(
             global_step=global_step,
@@ -982,6 +1013,8 @@ class DyMETrainer(Trainer):
             opsd_mask_list=opsd_mask_list,
             sample_count=self._opsd_probe_sample_count,
             tokenizer=self.processing_class.tokenizer,
+            sft_replaced_list=sft_replaced_list,
+            raw_completion_ids=raw_completion_ids,
         )
 
         opsd_diagnostics.log_routing_diagnostics(
