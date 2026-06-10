@@ -95,6 +95,20 @@ def split_tensor_dict_for_opsd(
     return chunks
 
 
+def _max_patch_count(pixel_parts: list[torch.Tensor]) -> int:
+    return max(int(pv.shape[1]) for pv in pixel_parts)
+
+
+def _pad_pixel_values_patch_dim(pixel_values: torch.Tensor, target_patches: int) -> torch.Tensor:
+    """Pad LLaVA-OV pixel_values (N, P, C, H, W) along patch dim to target_patches."""
+    cur = int(pixel_values.shape[1])
+    if cur >= target_patches:
+        return pixel_values
+    pad_p = target_patches - cur
+    # F.pad last dims first: W, H, C, P, N
+    return F.pad(pixel_values, (0, 0, 0, 0, 0, 0, 0, pad_p))
+
+
 def stack_teacher_processor_batches(
     processor,
     per_sample_batches: list[dict[str, Any]],
@@ -137,7 +151,18 @@ def stack_teacher_processor_batches(
         "batch_num_images": batch_num_images,
     }
     if pixel_parts:
-        out["pixel_values"] = torch.cat(pixel_parts, dim=0)
+        max_patches = _max_patch_count(pixel_parts)
+        padded_parts = [_pad_pixel_values_patch_dim(pv, max_patches) for pv in pixel_parts]
+        patch_counts = [int(pv.shape[1]) for pv in pixel_parts]
+        if len(set(patch_counts)) > 1:
+            opsd_debug.log(
+                "teacher_batching",
+                "pad teacher pixel_values patch dim before concat",
+                patch_counts_per_sample=patch_counts,
+                max_patches=max_patches,
+                num_samples=len(pixel_parts),
+            )
+        out["pixel_values"] = torch.cat(padded_parts, dim=0)
     if size_parts:
         out["image_sizes"] = torch.cat(size_parts, dim=0)
     return out

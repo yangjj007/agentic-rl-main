@@ -33,6 +33,15 @@ def test_split_tensor_dict_dual_image_chunks():
     assert chunks[0]["teacher_pixel_values"][2:4].shape[0] == 2
 
 
+def test_pad_mixed_patch_counts_before_concat():
+    from opsd_utils.teacher_batching import _pad_pixel_values_patch_dim, _max_patch_count
+
+    parts = [torch.zeros(2, 7, 3, 4, 4), torch.zeros(2, 5, 3, 4, 4), torch.zeros(2, 3, 3, 4, 4)]
+    max_p = _max_patch_count(parts)
+    padded = [_pad_pixel_values_patch_dim(p, max_p) for p in parts]
+    assert torch.cat(padded, dim=0).shape == (6, 7, 3, 4, 4)
+
+
 def test_stack_teacher_processor_batches_shapes():
     per_sample = [
         {"input_ids": torch.zeros(1, 5), "attention_mask": torch.ones(1, 5), "pixel_values": torch.zeros(2, 3, 3, 4, 4)},
