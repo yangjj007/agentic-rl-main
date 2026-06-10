@@ -34,7 +34,7 @@ TRAINING_CONFIG = {
         "save_strategy": "epoch",
         "weight_decay": 0.01,
         "warmup_steps": 0,
-        "beta": 0.02,  # GRPO KL — mild anchor against policy drift
+        "beta": 0.0,  # DyMETrainer requires beta=0 (no reference-model KL path yet)
         "loss_type": 'grpo',  # GRPO specific
         "seed": 42,
     },
