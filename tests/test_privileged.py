@@ -87,6 +87,29 @@ def test_resolve_teacher_images_dual():
     assert meta["crop_strategy"] in ("heuristic", "center", "center_fallback", "bbox")
 
 
+def test_chartqa_enriched_visual_fact_hint():
+    """Enriched ChartQA records (F1+F2) should activate VisualFactsProvider."""
+    sample = {
+        "hint": "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.",
+        "answer": "Answer: 70",
+        "visual_fact_hint": "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.",
+        "visual_fact": "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.",
+        "visual_fact_deplot": '{"source": "deplot_placeholder", "question": "q"}',
+        "image": Image.new("RGB", (64, 64)),
+    }
+    suffix, images = build_privileged_context(
+        sample,
+        ["text", "visual_facts"],
+        privileged_profile="hybrid",
+    )
+    assert "Visual Facts - Hint" in suffix
+    assert "Visual Facts - DePlot" in suffix
+    assert "Reference Reasoning" in suffix
+    assert len(images) == 2
+    vf_raw = sample.get("visual_fact") or sample.get("visual_facts")
+    assert vf_raw and len(vf_raw.strip()) > 0
+
+
 def test_visual_facts_f1_f2_merge():
     sample = {
         "visual_fact_hint": "hint table",

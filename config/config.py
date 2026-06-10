@@ -138,7 +138,7 @@ CLIENT_CONFIG = {
 
 # ====== Dataset Configuration ======
 DATASET_CONFIG = {
-    "train_dataset": project_path("data/chartqa/train_medium.json"),
+    "train_dataset": project_path("data/chartqa/train_medium_vf_full.json"),
     # 训练数据路径
     "eval_dataset": "HuggingFaceM4/ChartQA",  # 验证数据路径
 }

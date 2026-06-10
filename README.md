@@ -110,12 +110,40 @@ Student `collate_fn` never reads privileged fields. Teacher dual-image forward u
 * Full diagnostic bundle every N steps: `--opsd_detail_every N` or `DYME_OPSD_DETAIL_EVERY`.
 * On detail steps, teacher privileged images are saved under `{output_dir}/logs/images/` as `step_XXXXXX_idx_Y_full.png`, `_crop.png`, and `_meta.json` (controlled by `privileged_debug.max_samples_per_detail`).
 
-**ChartQA visual-facts preprocessing**
+**ChartQA visual-facts preprocessing (run on server before TriMode training)**
+
+TriMode with `privileged_providers=text,visual_facts` requires `visual_fact_hint` / `visual_fact_deplot` (and optionally `visual_fact`) on each sample. Raw `train_medium.json` only has `hint` — without this step, logs show `visual_fact_len=0` and the VisualFacts teacher channel is empty.
+
+From the repo root on your GPU server:
 
 ```bash
-python scripts/build_visual_facts_chartqa.py --input chart.json --output chart_hint.json --also-set-visual-fact
-python scripts/build_visual_facts_chartqa_deplot.py --input chart_hint.json --output chart_full.json
+cd /path/to/agentic-rl-main   # project root (parent of scripts/, config/, data/)
+
+# F1: copy hint → visual_fact_hint (+ visual_fact for backward compat)
+python scripts/build_visual_facts_chartqa.py \
+  --input data/chartqa/train_medium.json \
+  --output data/chartqa/train_medium_vf_hint.json \
+  --also-set-visual-fact
+
+# F2: add DePlot placeholder JSON per sample (replace with real DePlot later if needed)
+python scripts/build_visual_facts_chartqa_deplot.py \
+  --input data/chartqa/train_medium_vf_hint.json \
+  --output data/chartqa/train_medium_vf_full.json
+
+# quick sanity check (expect non-zero lengths)
+python -c "
+import json, random
+d = json.load(open('data/chartqa/train_medium_vf_full.json', encoding='utf-8'))
+s = random.choice(d)
+assert s.get('visual_fact_hint'), 'missing visual_fact_hint'
+assert s.get('visual_fact_deplot'), 'missing visual_fact_deplot'
+print('ok', len(d), 'records; sample visual_fact_hint len', len(s['visual_fact_hint']))
+"
 ```
+
+`config/config.py` points `train_dataset` at `data/chartqa/train_medium_vf_full.json`. Generated `*_vf_*.json` files are gitignored — **generate them on each server** (or copy from shared storage); do not rely on cloning them from GitHub.
+
+`scripts/train_local_gpus.sh` will auto-run the two Python steps above if `train_medium_vf_full.json` is missing.
 
 **Training examples (TriMode + hybrid default)**
 
@@ -355,7 +383,15 @@ Or override explicitly: `NUM_GPUS=4 bash scripts/train_trimode.sh`
 For TriMode on **all visible local GPUs** (auto-detect via `CUDA_VISIBLE_DEVICES` / `torch.cuda.device_count()`):
 
 ```bash
+# 1) One-time (or when raw data changes): enrich ChartQA JSON on the server — see
+#    "ChartQA visual-facts preprocessing" above. train_local_gpus.sh also auto-runs
+#    this if train_medium_vf_full.json is absent.
+
+# 2) Start training (default: OPSD verbose off, detail every 50 steps, probe on)
 bash scripts/train_local_gpus.sh
+
+# Optional: full verbose debug (large logs)
+# DYME_OPSD_DEBUG=1 DYME_OPSD_DETAIL_EVERY=10 bash scripts/train_local_gpus.sh
 ```
 
 

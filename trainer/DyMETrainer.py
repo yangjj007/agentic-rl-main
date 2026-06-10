@@ -998,23 +998,30 @@ class DyMETrainer(Trainer):
         input_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1).long()
         attention_completion_mask = torch.cat([prompt_mask, completion_mask], dim=1)
 
-        for s, a in enumerate(completion_advantange):
-            if acc_rewards.view(-1)[s] > 0 and format_rewards.view(-1)[s] > 0 and a[0] < 0:
-                print('no')
-
-        if self.accelerator.device.index == 0:
+        if (
+            self.accelerator.device.index == 0
+            and opsd_debug.should_log_detail(global_step)
+        ):
             completion_id = completion_ids[0]
-            completion_id_pos = completion_id[(completion_advantange[0] > 0) & (completion_mask[0] > 0)]
-            completion_id_neg = completion_id[(completion_advantange[0] < 0) & (completion_mask[0] > 0)]
+            completion_id_pos = completion_id[
+                (completion_advantange[0] > 0) & (completion_mask[0] > 0)
+            ]
+            completion_id_neg = completion_id[
+                (completion_advantange[0] < 0) & (completion_mask[0] > 0)
+            ]
 
             show = self.processing_class.decode(completion_id_pos, skip_special_tokens=False)
             show_neg = self.processing_class.decode(completion_id_neg, skip_special_tokens=False)
-            print("\n=====has_correct====================\n", has_correct,)
-            print("\n=====prediction====================\n", completions[0],)
-            if show != "":
-                print("\n=====POS GT====================\n", show)
-            if show_neg != "":
-                print("\n======NEG GT===================\n", show_neg)
+            prediction = completions[0] if completions else ""
+            opsd_debug.log_detail(
+                "routing",
+                "completion routing debug sample",
+                global_step=global_step,
+                has_correct=has_correct.tolist() if hasattr(has_correct, "tolist") else has_correct,
+                prediction_preview=prediction[:800] if isinstance(prediction, str) else str(prediction)[:800],
+                pos_decode_preview=show[:800] if show else "",
+                neg_decode_preview=show_neg[:800] if show_neg else "",
+            )
 
         # Concatenate prompt_mask with completion_mask for logit computation
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)

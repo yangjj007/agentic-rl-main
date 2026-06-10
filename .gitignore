@@ -98,6 +98,9 @@ mlruns/
 # Large downloaded image datasets (JSON metadata in data/ is kept)
 data/images/
 chartqa_output/
+# ChartQA visual-facts enriched JSON (generate on server via scripts/build_visual_facts_*.py)
+data/chartqa/train_medium_vf_hint.json
+data/chartqa/train_medium_vf_full.json
 aokvqa_output/
 
 # HuggingFace / model caches
