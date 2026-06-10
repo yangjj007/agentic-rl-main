@@ -154,6 +154,10 @@ def main():
         help="Comma-separated privileged providers: text,visual_facts,crop,hybrid",
     )
     parser.add_argument(
+        '--opsd_privilege_profile', type=str, default=None,
+        help="Privileged profile preset: text | visual | hybrid (default hybrid in config_trimode)",
+    )
+    parser.add_argument(
         '--opsd_enabled', action='store_true',
         help="Enable OPSD / TriMode training extensions",
     )
@@ -209,6 +213,8 @@ def main():
         opsd_config["mode"] = args.opsd_mode
     if args.opsd_providers is not None:
         opsd_config["privileged_providers"] = [p.strip() for p in args.opsd_providers.split(",") if p.strip()]
+    if args.opsd_privilege_profile is not None:
+        opsd_config["privileged_profile"] = args.opsd_privilege_profile.strip()
     debug_cfg = opsd_config.setdefault("debug", {})
     detail_every = debug_cfg.get("detail_every", 10)
     if args.opsd_detail_every is not None:

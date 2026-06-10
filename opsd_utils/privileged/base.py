@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
+
+from PIL import Image
 
 
 class PrivilegedContextProvider(ABC):
@@ -9,6 +11,6 @@ class PrivilegedContextProvider(ABC):
     def build_teacher_suffix(self, sample: dict[str, Any]) -> str:
         """Text appended to the teacher user message (invisible to the student)."""
 
-    def build_teacher_images(self, sample: dict[str, Any]) -> Optional[Any]:
-        """Optional alternate visual input for the teacher (e.g. crop)."""
-        return None
+    def build_teacher_images(self, sample: dict[str, Any]) -> list[Image.Image]:
+        """Optional extra teacher images (e.g. crop). Default: none."""
+        return []

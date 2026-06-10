@@ -65,7 +65,10 @@ These delimiters are essential for stable parsing, reward assignment, and evalua
 | --- | --- |
 | `enabled` | Master switch. `False` → original DyME only. |
 | `mode` | Routing mode (see table below). |
-| `privileged_providers` | Teacher context sources: `text`, `visual_facts`, `crop`, `hybrid`. |
+| `privileged_profile` | Teacher preset: `text` \| `visual` \| `hybrid` (default **`hybrid`** in `config_trimode.py`). |
+| `privileged_providers` | Override provider list; default derived from profile. |
+| `privileged_image` | Dual-image crop settings (`mode`, `crop_strategy`, `bbox_coord`, `margin_ratio`). |
+| `privileged_debug` | Periodic artifact logging: `save_images`, `image_subdir` (`logs/images`), `max_samples_per_detail`. |
 | `gate.correct_threshold` | Reward threshold to count a rollout as correct. |
 | `gate.teacher_recoverable` | Recoverability gate: `privileged_available` (default) or `logprob_gain`. |
 | `loss.beta` | JSD temperature for OPSD distillation. |
@@ -76,20 +79,71 @@ These delimiters are essential for stable parsing, reward assignment, and evalua
 | Mode | Behavior |
 | --- | --- |
 | `dyme` | Original DyME: any correct rollout → GRPO; all wrong → SFT. |
-| `trimode` | Any correct → GRPO; all wrong + recoverable → OPSD; all wrong + not recoverable → SFT. |
+| `trimode` | Any correct → OPSD (replaces GRPO); all wrong → SFT (DyME cold-start via `sft_check`, ignores recoverable). |
 | `opsd_only` | All prompts use OPSD. |
 | `replace_sft` | Any correct → GRPO; all wrong → OPSD (no SFT). |
-| `opsd_on_wrong` | Same as `trimode`, explicit naming for ablations. |
-| `grpo_opsd_joint` | Alias of `trimode` routing logic. |
+| `opsd_on_wrong` | Any correct → GRPO; all wrong + recoverable → OPSD; all wrong + not recoverable → SFT (legacy three-way routing). |
+| `grpo_opsd_joint` | Any correct → GRPO (+ optional joint OPSD loss); all wrong + recoverable → OPSD; else SFT. |
+
+Under `trimode`, the SFT share is determined by accuracy (how often prompts are all-wrong) and DyME's per-group `sft_check` (teacher injection on the first generation only)—no extra `sft_ratio` hyperparameter.
+
+**Privileged profiles** (`privileged_profile`):
+
+| Profile | Teacher images | Teacher text suffix |
+| --- | --- | --- |
+| `text` | Single full image (same as student) | hint + answer |
+| `visual` | **Dual**: full + evidence crop | Visual Facts only (no answer leak) |
+| `hybrid` | **Dual**: full + evidence crop | Visual Facts + hint + answer |
+
+Student `collate_fn` never reads privileged fields. Teacher dual-image forward uses `[full, crop]` messages; crop comes from normalized `evidence_bbox` (C2), A-OKVQA `visual_fact` heuristic (D2), or center fallback (D1).
 
 **Privileged providers** (under `opsd_utils/privileged/`):
 
-* `text` — uses the `hint` field in training samples.
-* `visual_facts` — uses `visual_fact` / `visual_facts` JSON in samples (see A-OKVQA example).
-* `crop` — reserved stub for region crops.
-* `hybrid` — combines multiple providers.
+* `text` — uses the `hint` / `answer` fields in training samples.
+* `visual_facts` — uses `visual_fact` JSON (B1 raw string), plus ChartQA `visual_fact_hint` (F1) and `visual_fact_deplot` (F2).
+* `crop` — evidence region as second teacher image (via `image_utils`, not a text suffix).
+* `hybrid` — combines text + visual_facts providers per profile.
 
-For ChartQA visual-facts preprocessing, see `scripts/build_visual_facts_chartqa.py`.
+**Debug / artifact logging**
+
+* Verbose OPSD logs: `--opsd_debug` or `DYME_OPSD_DEBUG=1`.
+* Full diagnostic bundle every N steps: `--opsd_detail_every N` or `DYME_OPSD_DETAIL_EVERY`.
+* On detail steps, teacher privileged images are saved under `{output_dir}/logs/images/` as `step_XXXXXX_idx_Y_full.png`, `_crop.png`, and `_meta.json` (controlled by `privileged_debug.max_samples_per_detail`).
+
+**ChartQA visual-facts preprocessing**
+
+```bash
+python scripts/build_visual_facts_chartqa.py --input chart.json --output chart_hint.json --also-set-visual-fact
+python scripts/build_visual_facts_chartqa_deplot.py --input chart_hint.json --output chart_full.json
+```
+
+**Training examples (TriMode + hybrid default)**
+
+```bash
+# Text-only OPSD ablation
+python main.py --config trimode --opsd_privilege_profile text
+
+# Vision-OPD style (no answer text to teacher)
+python main.py --config trimode --opsd_privilege_profile visual
+
+# Full hybrid (default in config_trimode)
+python main.py --config trimode --opsd_privilege_profile hybrid --opsd_detail_every 10
+```
+
+**Privileged sample schema**
+
+| Field | Used by | Notes |
+| --- | --- | --- |
+| `prompt`, `image` | Student + teacher | Student always single full image |
+| `hint`, `answer` | Teacher (`text` / `hybrid`) | Never in student collate |
+| `visual_fact` | Teacher | Raw JSON string (A-OKVQA) |
+| `visual_fact_hint` | Teacher (ChartQA F1) | Hint placeholder pipeline |
+| `visual_fact_deplot` | Teacher (ChartQA F2) | DePlot/table pipeline |
+| `evidence_bbox` | Teacher crop | Normalized `[x0,y0,x1,y1]` in `[0,1]` |
+
+Adapter helpers for future datasets: `data_utils/privileged_schema.py` (`normalize_evidence_bbox`, `parse_visual_fact`, `resolve_crop_bbox`).
+
+For legacy ChartQA single-field preprocessing, see `scripts/build_visual_facts_chartqa.py`.
 
 
 

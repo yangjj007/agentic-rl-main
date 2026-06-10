@@ -87,7 +87,19 @@ RL_CONFIG = {
 DYME_OPSD_CONFIG = {
     "enabled": False,
     "mode": "dyme",
+    "privileged_profile": "hybrid",
     "privileged_providers": ["text"],
+    "privileged_image": {
+        "mode": "dual",
+        "crop_strategy": "bbox_then_center",
+        "bbox_coord": "normalized",
+        "margin_ratio": 0.25,
+    },
+    "privileged_debug": {
+        "save_images": True,
+        "image_subdir": "logs/images",
+        "max_samples_per_detail": 2,
+    },
     "gate": {
         "correct_threshold": 0.5,
         "teacher_recoverable": "privileged_available",

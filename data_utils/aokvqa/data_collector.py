@@ -51,6 +51,10 @@ def prepare_world_rl_data(json_path: str) -> List[Dict[str, Any]]:
             # Optionally remove the 'human_or_machine' key from the final output.
             new_entry.pop('human_or_machine', None)
             new_entry.pop('question', None)
+            if 'visual_fact' in entry:
+                new_entry['visual_fact'] = entry['visual_fact']
+            if 'evidence_bbox' in entry:
+                new_entry['evidence_bbox'] = entry['evidence_bbox']
 
             processed_data.append(new_entry)
 
@@ -104,6 +108,8 @@ def prepare_world_dyme_data(json_path: str) -> List[Dict[str, Any]]:
             new_entry.pop('question', None)
             new_entry['hint'] = entry.get('visual_fact', entry.get('hint', ''))
             new_entry['visual_fact'] = entry.get('visual_fact', '')
+            if 'evidence_bbox' in entry:
+                new_entry['evidence_bbox'] = entry['evidence_bbox']
 
             processed_data.append(new_entry)
 

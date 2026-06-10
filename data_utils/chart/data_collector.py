@@ -51,6 +51,9 @@ def prepare_chart_rl_data(json_path: str) -> List[Dict[str, Any]]:
             # Preserve optional privileged-context fields for OPSD
             if 'visual_fact' not in new_entry and 'visual_facts' in new_entry:
                 new_entry['visual_fact'] = new_entry['visual_facts']
+            for priv_key in ('visual_fact_hint', 'visual_fact_deplot', 'evidence_bbox', 'hint'):
+                if priv_key in entry and priv_key not in new_entry:
+                    new_entry[priv_key] = entry[priv_key]
             # Optionally remove the 'human_or_machine' key from the final output.
             new_entry.pop('human_or_machine', None)
             new_entry.pop('question', None)

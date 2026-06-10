@@ -42,6 +42,41 @@ def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
     return jsd.sum() / denom
 
 
+def _teacher_logits_with_oom_retry(
+    model,
+    teacher_input,
+    teacher_attn,
+    t_pixel,
+    t_sizes,
+    logits_to_keep: int,
+):
+    """Teacher forward with OOM micro-batch halving (decision E). Batch dim is already 1 in OPSD loop."""
+    oom_retries = 0
+    while True:
+        try:
+            with torch.no_grad():
+                return model(
+                    input_ids=teacher_input,
+                    attention_mask=teacher_attn,
+                    pixel_values=t_pixel,
+                    image_sizes=t_sizes,
+                ).logits[:, -logits_to_keep - 1 : -1, :]
+        except RuntimeError as exc:
+            if "out of memory" not in str(exc).lower():
+                raise
+            oom_retries += 1
+            opsd_debug.log(
+                "teacher_forward_oom",
+                "teacher OPSD forward OOM, clearing cache and retrying",
+                micro_batch_size=teacher_input.shape[0],
+                oom_retries=oom_retries,
+            )
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if oom_retries >= 3:
+                raise
+
+
 def compute_vlm_opsd_loss(
     model,
     student_prompt_ids,
@@ -59,7 +94,6 @@ def compute_vlm_opsd_loss(
     """
     Self-OPSD: same model, student vs privileged teacher prompt, shared student completion.
     """
-    device = student_prompt_ids.device
     opsd_debug.log(
         "opsd_loss",
         "compute_vlm_opsd_loss enter",
@@ -68,6 +102,9 @@ def compute_vlm_opsd_loss(
         teacher_prompt_shape=tuple(teacher_prompt_ids.shape),
         completion_shape=tuple(completion_ids.shape),
         has_teacher_pixel_values=teacher_pixel_values is not None,
+        teacher_pixel_values_shape=(
+            tuple(teacher_pixel_values.shape) if teacher_pixel_values is not None else None
+        ),
     )
     student_input = torch.cat([student_prompt_ids, completion_ids], dim=1)
     student_attn = torch.cat([student_prompt_mask, completion_mask], dim=1)
@@ -84,16 +121,17 @@ def compute_vlm_opsd_loss(
             image_sizes=student_image_sizes,
         ).logits[:, -logits_to_keep - 1 : -1, :]
 
-    with torch.no_grad():
-        t_pixel = teacher_pixel_values if teacher_pixel_values is not None else student_pixel_values
-        t_sizes = teacher_image_sizes if teacher_image_sizes is not None else student_image_sizes
-        with opsd_debug.timed("opsd_loss", "teacher forward (no grad)"):
-            teacher_logits = model(
-                input_ids=teacher_input,
-                attention_mask=teacher_attn,
-                pixel_values=t_pixel,
-                image_sizes=t_sizes,
-            ).logits[:, -logits_to_keep - 1 : -1, :]
+    t_pixel = teacher_pixel_values if teacher_pixel_values is not None else student_pixel_values
+    t_sizes = teacher_image_sizes if teacher_image_sizes is not None else student_image_sizes
+    with opsd_debug.timed("opsd_loss", "teacher forward (no grad)"):
+        teacher_logits = _teacher_logits_with_oom_retry(
+            model,
+            teacher_input,
+            teacher_attn,
+            t_pixel,
+            t_sizes,
+            logits_to_keep,
+        )
 
     loss = generalized_jsd_loss(student_logits, teacher_logits, completion_mask.float(), beta=beta)
     opsd_debug.log("opsd_loss", "compute_vlm_opsd_loss done", loss=float(loss.detach().item()))
@@ -138,6 +176,7 @@ def compute_vlm_opsd_loss_masked_batch(
             local_idx=local,
             student_image_sizes=_slice_image_sizes(inputs.get("img_sizes"), local),
             teacher_image_sizes=teacher_sizes,
+            teacher_pixel_values_shape=tuple(t_pixel.shape) if t_pixel is not None else None,
         )
         with opsd_debug.timed("opsd_loss", f"sample_opsd_loss idx={global_idx}"):
             loss = compute_vlm_opsd_loss(

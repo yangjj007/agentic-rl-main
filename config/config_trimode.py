@@ -38,7 +38,22 @@ DYME_OPSD_CONFIG = {
     **DYME_OPSD_CONFIG,
     "enabled": True,
     "mode": os.environ.get("DYME_OPSD_MODE", "trimode"),
+    "privileged_profile": os.environ.get("DYME_OPSD_PRIVILEGE_PROFILE", "hybrid"),
     "privileged_providers": os.environ.get("DYME_OPSD_PROVIDERS", "text,visual_facts").split(","),
+    "privileged_image": {
+        **DYME_OPSD_CONFIG.get("privileged_image", {}),
+        "mode": os.environ.get("DYME_OPSD_PRIVILEGE_IMAGE_MODE", "dual"),
+        "crop_strategy": os.environ.get("DYME_OPSD_CROP_STRATEGY", "bbox_then_center"),
+        "bbox_coord": "normalized",
+        "margin_ratio": float(os.environ.get("DYME_OPSD_CROP_MARGIN", "0.25")),
+    },
+    "privileged_debug": {
+        **DYME_OPSD_CONFIG.get("privileged_debug", {}),
+        "save_images": os.environ.get("DYME_OPSD_SAVE_PRIVILEGED_IMAGES", "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        "image_subdir": os.environ.get("DYME_OPSD_PRIVILEGED_IMAGE_DIR", "logs/images"),
+        "max_samples_per_detail": int(os.environ.get("DYME_OPSD_PRIVILEGED_IMAGE_MAX", "2")),
+    },
     "debug": {
         **DYME_OPSD_CONFIG.get("debug", {}),
         "detail_every": _detail_every,

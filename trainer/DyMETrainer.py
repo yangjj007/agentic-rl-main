@@ -918,37 +918,30 @@ class DyMETrainer(Trainer):
             use_sft = (not opsd_active) or cm == MODE_SFT
             joint_opsd = opsd_active and self.opsd_config.get("mode") == "grpo_opsd_joint" and has_correct[batch_id] > 0
 
-            if use_opsd and self.opsd_config.get("mode") == "opsd_only":
+            if use_sft and sft_check[i]:
+                completion_id_ = torch.cat([sft_padded_ids[i], completion_ids[i][0:0]])
+                completion_mask_ = torch.cat([sft_attn_masks[i], completion_mask[i][0:0]])
+                advantange_ = torch.cat([sft_advantages[i], advantages[i][0:0]])
+                advantange_[:] = 1
+                opsd_mask_list.append(False)
+            elif use_opsd:
                 completion_id_ = completion_ids[i]
                 completion_mask_ = completion_mask[i]
                 advantange_ = torch.zeros(completion_mask[i].size(0), device=device, dtype=torch.float)
                 opsd_mask_list.append(True)
-            elif has_correct[batch_id] == 0:
-                if use_opsd:
-                    completion_id_ = completion_ids[i]
-                    completion_mask_ = completion_mask[i]
-                    advantange_ = torch.zeros(completion_mask[i].size(0), device=device, dtype=torch.float)
-                    opsd_mask_list.append(True)
-                elif sft_check[i] and use_sft:
-                    completion_id_ = torch.cat([sft_padded_ids[i], completion_ids[i][0:0]])
-                    completion_mask_ = torch.cat([sft_attn_masks[i], completion_mask[i][0:0]])
-                    advantange_ = torch.cat([sft_advantages[i], advantages[i][0:0]])
-                    advantange_[:] = 1
-                    opsd_mask_list.append(False)
-                else:
-                    completion_id_ = torch.cat([completion_ids[i], completion_ids[i][0:0]])
-                    completion_mask_ = torch.cat([completion_mask[i], sft_attn_masks[i][0:0]])
-                    advantange_ = torch.cat([advantages[i], sft_advantages[i][0:0]])
-                    advantange_ = advantange_.repeat_interleave(len(completion_id_))
-                    advantange_[:] = 0
-                    opsd_mask_list.append(False)
-
-            else:
+            elif has_correct[batch_id] > 0:
                 completion_id_ = torch.cat([completion_ids[i], sft_padded_ids[i][0:0]])
                 completion_mask_ = torch.cat([completion_mask[i], sft_attn_masks[i][0:0]])
                 advantange_ = torch.cat([advantages[i], sft_advantages[i][0:0]])
                 advantange_ = advantange_.repeat_interleave(len(completion_id_))
                 opsd_mask_list.append(joint_opsd)
+            else:
+                completion_id_ = torch.cat([completion_ids[i], completion_ids[i][0:0]])
+                completion_mask_ = torch.cat([completion_mask[i], sft_attn_masks[i][0:0]])
+                advantange_ = torch.cat([advantages[i], sft_advantages[i][0:0]])
+                advantange_ = advantange_.repeat_interleave(len(completion_id_))
+                advantange_[:] = 0
+                opsd_mask_list.append(False)
 
             if has_correct[batch_id] == self.num_generations:
                 advantange_[:] = 0
@@ -1119,6 +1112,9 @@ class DyMETrainer(Trainer):
                     list(range(local_batch_size)),
                     self.opsd_config.get("privileged_providers", ["text"]),
                     device,
+                    opsd_config=self.opsd_config,
+                    global_step=getattr(self.state, "global_step", self._step),
+                    output_dir=self.args.output_dir,
                 )
             result.update(teacher_tensors)
             for key, value in teacher_tensors.items():

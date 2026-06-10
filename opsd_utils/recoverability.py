@@ -3,20 +3,30 @@ from typing import Any, Optional
 import torch
 import torch.nn.functional as F
 
+from opsd_utils import debug_log as opsd_debug
 from opsd_utils.privileged import build_privileged_context
 from opsd_utils.prompt_builder import tokenize_teacher_prompt
-from opsd_utils import debug_log as opsd_debug
 
 
-def privileged_context_available(sample: dict[str, Any], provider_names: list[str]) -> bool:
-    suffix, teacher_image = build_privileged_context(sample, provider_names)
-    available = bool(suffix.strip())
+def privileged_context_available(
+    sample: dict[str, Any],
+    provider_names: list[str],
+    opsd_config: Optional[dict[str, Any]] = None,
+) -> bool:
+    suffix, teacher_images = build_privileged_context(
+        sample,
+        provider_names,
+        opsd_config=opsd_config or {},
+    )
+    has_visual = len(teacher_images) > 1
+    available = bool(suffix.strip()) or has_visual
     opsd_debug.log(
         "recoverability",
         "privileged_context_available",
         available=available,
         suffix_len=len(suffix.strip()),
-        has_teacher_image=teacher_image is not None,
+        num_teacher_images=len(teacher_images),
+        has_privileged_visual=has_visual,
         provider_names=provider_names,
     )
     return available
@@ -34,17 +44,29 @@ def logprob_gain_recoverable(
     image_sizes,
     provider_names: list[str],
     tau: float = 0.5,
+    opsd_config: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Compare mean log-prob gain on completion tokens (teacher vs student)."""
-    suffix, teacher_image = build_privileged_context(sample, provider_names)
-    if not suffix.strip():
+    opsd_config = opsd_config or {}
+    suffix, teacher_images = build_privileged_context(
+        sample,
+        provider_names,
+        opsd_config=opsd_config,
+    )
+    if not suffix.strip() and len(teacher_images) <= 1:
         return False
+
+    if not teacher_images:
+        from opsd_utils.privileged.image_utils import load_rgb
+
+        full = load_rgb(sample.get("image"))
+        teacher_images = [full] if full is not None else []
 
     teacher_batch = tokenize_teacher_prompt(
         processor,
         sample["prompt"],
         suffix,
-        teacher_image if teacher_image is not None else sample.get("image"),
+        teacher_images,
     )
     device = student_prompt_ids.device
     teacher_prompt_ids = teacher_batch["input_ids"].to(device)
@@ -72,18 +94,47 @@ def logprob_gain_recoverable(
             pixel_values=pixel_values[:1] if pixel_values is not None else None,
             image_sizes=image_sizes,
         ).logits[:, -comp_len - 1 : -1, :]
-        t_logits = model(
-            input_ids=teacher_input,
-            attention_mask=teacher_attn,
-            pixel_values=teacher_pixel_values,
-            image_sizes=teacher_image_sizes,
-        ).logits[:, -comp_len - 1 : -1, :]
+        t_logits = _teacher_forward_with_oom_retry(
+            model,
+            teacher_input,
+            teacher_attn,
+            teacher_pixel_values,
+            teacher_image_sizes,
+            comp_len,
+        )
 
         targets = completion_ids[:comp_len].unsqueeze(0)
         s_logp = F.log_softmax(s_logits, dim=-1).gather(2, targets.unsqueeze(-1)).squeeze(-1)
         t_logp = F.log_softmax(t_logits, dim=-1).gather(2, targets.unsqueeze(-1)).squeeze(-1)
         gain = (t_logp - s_logp).mean().item()
     return gain > tau
+
+
+def _teacher_forward_with_oom_retry(model, input_ids, attention_mask, pixel_values, image_sizes, comp_len):
+    try:
+        return model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            pixel_values=pixel_values,
+            image_sizes=image_sizes,
+        ).logits[:, -comp_len - 1 : -1, :]
+    except RuntimeError as exc:
+        if "out of memory" not in str(exc).lower() or pixel_values is None:
+            raise
+        opsd_debug.log(
+            "teacher_forward_oom",
+            "teacher recoverability forward OOM, clearing cache and retrying",
+            micro_batch_size=1,
+            oom_retries=1,
+        )
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            pixel_values=pixel_values,
+            image_sizes=image_sizes,
+        ).logits[:, -comp_len - 1 : -1, :]
 
 
 def estimate_recoverable_flags(
@@ -111,13 +162,14 @@ def estimate_recoverable_flags(
         num_prompts=num_prompts,
         num_generations=num_generations,
         providers=providers,
+        privileged_profile=opsd_config.get("privileged_profile", "hybrid"),
         tau=tau,
     )
 
     for p in range(num_prompts):
         sample = samples[p * num_generations]
         if method == "privileged_available":
-            flag = privileged_context_available(sample, providers)
+            flag = privileged_context_available(sample, providers, opsd_config=opsd_config)
         elif method == "logprob_gain" and model is not None and processor is not None:
             assert completions_tensors is not None
             idx = p * num_generations
@@ -134,11 +186,18 @@ def estimate_recoverable_flags(
                     image_sizes=completions_tensors["image_sizes"],
                     provider_names=providers,
                     tau=tau,
+                    opsd_config=opsd_config,
                 )
         else:
-            flag = privileged_context_available(sample, providers)
+            flag = privileged_context_available(sample, providers, opsd_config=opsd_config)
         flags.append(flag)
-        opsd_debug.log("recoverability", "prompt recoverability", prompt_index=p, recoverable=flag)
+        opsd_debug.log(
+            "recoverability",
+            "prompt recoverability",
+            prompt_index=p,
+            recoverable=flag,
+            has_privileged_visual=flag and opsd_config.get("privileged_profile") in ("visual", "hybrid"),
+        )
 
     opsd_debug.log("recoverability", "estimate_recoverable_flags done", flags=flags)
     return flags

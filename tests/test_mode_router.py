@@ -18,10 +18,17 @@ def test_dyme_mode_matches_binary_routing():
     assert modes == [MODE_SFT, MODE_GRPO, MODE_GRPO]
 
 
-def test_trimode_routes_opsd_when_recoverable():
+def test_trimode_routes_sft_when_all_wrong():
     acc = torch.tensor([[0.0, 0.0]])
     cfg = {"enabled": True, "mode": "trimode", "gate": {"correct_threshold": 0.5}}
     modes = route_prompt_modes(acc, 2, cfg, recoverable_flags=[True])
+    assert modes == [MODE_SFT]
+
+
+def test_trimode_opsd_when_any_correct():
+    acc = torch.tensor([[1.0, 0.0]])
+    cfg = {"enabled": True, "mode": "trimode", "gate": {"correct_threshold": 0.5}}
+    modes = route_prompt_modes(acc, 2, cfg, recoverable_flags=[False])
     assert modes == [MODE_OPSD]
 
 
@@ -39,7 +46,8 @@ def test_expand_modes_to_completions():
 
 if __name__ == "__main__":
     test_dyme_mode_matches_binary_routing()
-    test_trimode_routes_opsd_when_recoverable()
+    test_trimode_routes_sft_when_all_wrong()
+    test_trimode_opsd_when_any_correct()
     test_trimode_falls_back_to_sft()
     test_expand_modes_to_completions()
     print("All routing tests passed.")

@@ -42,45 +42,32 @@ def route_prompt_modes(
         recoverable = recoverable_flags[p] if p < len(recoverable_flags) else False
 
         if not enabled or mode_name == "dyme":
-            modes.append(MODE_GRPO if any_correct else MODE_SFT)
-            continue
-
-        if mode_name == "opsd_only":
-            modes.append(MODE_OPSD)
-            continue
-
-        if mode_name == "replace_sft":
-            modes.append(MODE_GRPO if any_correct else MODE_OPSD)
-            continue
-
-        if mode_name == "opsd_on_wrong":
+            selected = MODE_GRPO if any_correct else MODE_SFT
+        elif mode_name == "opsd_only":
+            selected = MODE_OPSD
+        elif mode_name == "replace_sft":
+            selected = MODE_GRPO if any_correct else MODE_OPSD
+        elif mode_name == "opsd_on_wrong":
             if any_correct:
-                modes.append(MODE_GRPO)
+                selected = MODE_GRPO
             elif recoverable:
-                modes.append(MODE_OPSD)
+                selected = MODE_OPSD
             else:
-                modes.append(MODE_SFT)
-            continue
-
-        if mode_name == "grpo_opsd_joint":
-            modes.append(MODE_GRPO if any_correct else (MODE_OPSD if recoverable else MODE_SFT))
-            continue
-
-        # trimode (default when enabled)
-        if any_correct:
-            modes.append(MODE_GRPO)
-        elif recoverable:
-            modes.append(MODE_OPSD)
+                selected = MODE_SFT
+        elif mode_name == "grpo_opsd_joint":
+            selected = MODE_GRPO if any_correct else (MODE_OPSD if recoverable else MODE_SFT)
         else:
-            modes.append(MODE_SFT)
+            # trimode: OPSD replaces GRPO; wrong prompts use DyME SFT cold-start
+            selected = MODE_OPSD if any_correct else MODE_SFT
 
+        modes.append(selected)
         opsd_debug.log(
             "mode_router",
             "prompt routed",
             prompt_index=p,
             any_correct=any_correct,
             recoverable=recoverable,
-            selected_mode=opsd_debug.MODE_NAMES.get(modes[-1], modes[-1]),
+            selected_mode=opsd_debug.MODE_NAMES.get(selected, selected),
             acc_rewards_row=acc_rewards[p].tolist(),
         )
 
