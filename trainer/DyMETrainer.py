@@ -204,7 +204,11 @@ def split_tensor_dict(
     When teacher vision tensors are present, uses teacher_num_images-aware slicing
     (LLaVA-OV stacks images on dim 0, not batch size).
     """
-    if tensor_dict.get("teacher_pixel_values") is not None or tensor_dict.get("teacher_num_images") is not None:
+    if (
+        tensor_dict.get("teacher_pixel_values_list") is not None
+        or tensor_dict.get("teacher_pixel_values") is not None
+        or tensor_dict.get("teacher_num_images") is not None
+    ):
         from opsd_utils.teacher_batching import split_tensor_dict_for_opsd
 
         return split_tensor_dict_for_opsd(tensor_dict, num_chunks)

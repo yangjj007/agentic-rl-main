@@ -150,10 +150,10 @@ def build_teacher_prompt_batch(
         "teacher_prompt_ids": batch["input_ids"].to(device),
         "teacher_prompt_mask": batch["attention_mask"].to(device),
     }
-    if "pixel_values" in batch:
-        out["teacher_pixel_values"] = batch["pixel_values"].to(device)
-    if "image_sizes" in batch:
-        out["teacher_image_sizes"] = batch["image_sizes"].to(device)
+    if batch.get("pixel_values_list"):
+        out["teacher_pixel_values_list"] = [pv.to(device) for pv in batch["pixel_values_list"]]
+    if batch.get("image_sizes_list"):
+        out["teacher_image_sizes_list"] = [sz.to(device) for sz in batch["image_sizes_list"]]
 
     teacher_num_images = [int(max(1, n)) for n in batch.get("batch_num_images", [])]
     if not teacher_num_images:
@@ -177,10 +177,10 @@ def build_teacher_prompt_batch(
         "build_teacher_prompt_batch done",
         teacher_prompt_ids_shape=tuple(out["teacher_prompt_ids"].shape),
         teacher_prompt_mask_shape=tuple(out["teacher_prompt_mask"].shape),
-        has_teacher_pixel_values="teacher_pixel_values" in out,
-        teacher_pixel_values_shape=(
-            tuple(out["teacher_pixel_values"].shape) if "teacher_pixel_values" in out else None
-        ),
+        has_teacher_pixel_values=bool(out.get("teacher_pixel_values_list")),
+        teacher_pixel_values_shapes=[
+            tuple(pv.shape) for pv in out.get("teacher_pixel_values_list", [])[:4]
+        ],
         teacher_images_count=sample_payloads[0]["num_teacher_images"] if sample_payloads else 0,
         teacher_num_images=teacher_num_images,
         teacher_prompt_len=teacher_len,
@@ -192,9 +192,9 @@ def build_teacher_prompt_batch(
         global_step=global_step,
         batch_size=len(indices),
         teacher_prompt_len=teacher_len,
-        teacher_pixel_values_shape=(
-            tuple(out["teacher_pixel_values"].shape) if "teacher_pixel_values" in out else None
-        ),
+        teacher_pixel_values_shapes=[
+            tuple(pv.shape) for pv in out.get("teacher_pixel_values_list", [])[:4]
+        ],
     )
     return out
 

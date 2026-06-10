@@ -869,11 +869,8 @@ def log_opsd_jsd_diagnostics(
 
     opsd_debug.log_detail_banner(global_step, "OPSD JSD DECOMPOSITION")
 
-    from opsd_utils.opsd_loss import (
-        _slice_image_sizes,
-        _teacher_image_counts,
-        slice_teacher_vision_inputs,
-    )
+    from opsd_utils.opsd_loss import _slice_image_sizes, _teacher_image_counts
+    from opsd_utils.teacher_batching import get_teacher_vision_for_sample
 
     batch_size = inputs["prompt_ids"].shape[0]
     teacher_img_counts = _teacher_image_counts(inputs, batch_size)
@@ -889,11 +886,8 @@ def log_opsd_jsd_diagnostics(
 
         teacher_prompt_ids = inputs["teacher_prompt_ids"][local : local + 1]
         teacher_prompt_mask = inputs["teacher_prompt_mask"][local : local + 1]
-        t_pixel, teacher_sizes = slice_teacher_vision_inputs(
-            inputs.get("teacher_pixel_values"),
-            inputs.get("teacher_image_sizes"),
-            local,
-            teacher_img_counts,
+        t_pixel, teacher_sizes = get_teacher_vision_for_sample(
+            inputs, local, teacher_img_counts
         )
         if t_pixel is None:
             t_pixel = pixel_values

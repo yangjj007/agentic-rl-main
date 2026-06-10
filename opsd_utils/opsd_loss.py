@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from opsd_utils import debug_log as opsd_debug
+from opsd_utils.teacher_batching import get_teacher_vision_for_sample
 
 
 def _slice_image_sizes(image_sizes, index: int):
@@ -202,11 +203,8 @@ def compute_vlm_opsd_loss_masked_batch(
     for global_idx in opsd_indices:
         local = idx_map[global_idx]
         student_sizes = _slice_image_sizes(inputs.get("img_sizes"), local)
-        t_pixel, teacher_sizes = slice_teacher_vision_inputs(
-            inputs.get("teacher_pixel_values"),
-            inputs.get("teacher_image_sizes"),
-            local,
-            teacher_img_counts,
+        t_pixel, teacher_sizes = get_teacher_vision_for_sample(
+            inputs, local, teacher_img_counts
         )
         if t_pixel is None:
             t_pixel = inputs["pixel_values"][local : local + 1]
