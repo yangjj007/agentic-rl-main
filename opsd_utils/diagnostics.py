@@ -547,8 +547,8 @@ def log_generate_probe(
             if _detect_repeat_loop(ids_eff):
                 patterns.append("REPEAT_LOOP")
             if _detect_single_token_repeat(ids_eff):
-                run_len, tok = _max_same_token_run(ids_eff)
-                patterns.append(f"SINGLE_TOKEN_REPEAT({run_len}x{tok})")
+                run_len, repeat_tok_id = _max_same_token_run(ids_eff)
+                patterns.append(f"SINGLE_TOKEN_REPEAT({run_len}x{repeat_tok_id})")
             is_deg, deg_reasons = _detect_degeneration(ids_eff, decode_skip, answer_flag=answer_flag)
             if is_deg:
                 patterns.extend(deg_reasons)

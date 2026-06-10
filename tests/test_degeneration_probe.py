@@ -1,11 +1,28 @@
 """Regression tests for completion degeneration heuristics."""
+from unittest.mock import patch
+
+import torch
+
+from opsd_utils import debug_log as opsd_debug
 from opsd_utils.diagnostics import (
     _detect_degeneration,
     _detect_repeat_loop,
     _detect_single_token_repeat,
     _max_same_token_run,
     is_degenerate_completion,
+    log_generate_probe,
 )
+
+
+class _FakeTokenizer:
+    eos_token_id = 151645
+    pad_token_id = 151643
+    bos_token_id = None
+
+    def decode(self, ids, skip_special_tokens=False):
+        if isinstance(ids, torch.Tensor):
+            ids = ids.tolist()
+        return " ".join(str(i) for i in ids)
 
 
 def test_single_token_repeat_detects_cjk_loop():
@@ -32,3 +49,39 @@ def test_degeneration_flags_missing_answer():
     is_deg, reasons = _detect_degeneration(ids, text, answer_flag="Answer:")
     assert is_deg
     assert any(r.startswith("ANSWER_FLAG_COUNT") for r in reasons)
+
+
+def test_log_generate_probe_does_not_shadow_tokenizer_across_samples():
+    """sample[0] single-token repeat must not break decode for sample[1]."""
+    repeat_tail = [24] * 12
+    row0 = [39992, 25, 7379] + repeat_tail + [0] * (200 - 3 - len(repeat_tail))
+    row1 = [39992, 25, 7379, 100, 101, 102] + [0] * 194
+    completion_ids = torch.tensor([row0, row1], dtype=torch.long)
+    completion_mask = torch.tensor(
+        [[1] * 15 + [0] * 185, [1] * 6 + [0] * 194],
+        dtype=torch.long,
+    )
+    is_eos = torch.zeros_like(completion_mask, dtype=torch.bool)
+    is_eos[:, 14] = True
+    is_eos[:, 5] = True
+    eos_idx = torch.tensor([14, 5], dtype=torch.long)
+    completions = ["Goal: repeat\n" + "x" * 20, "Goal: ok\nAnswer: 1"]
+
+    with patch.object(opsd_debug, "should_log_probe", return_value=True):
+        stats = log_generate_probe(
+            global_step=1,
+            trainer_step=1,
+            prompt_length=100,
+            prompt_completion_ids=torch.zeros(2, 300, dtype=torch.long),
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            is_eos=is_eos,
+            eos_idx=eos_idx,
+            completions=completions,
+            tokenizer=_FakeTokenizer(),
+            generation_config=None,
+            max_completion_length=200,
+            num_generations=1,
+            sample_count=2,
+        )
+    assert stats["degenerate_count"] >= 1
