@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils.privileged import build_privileged_context
 from opsd_utils.prompt_builder import tokenize_teacher_prompt
+from opsd_utils.teacher_batching import as_batch_num_images_tensor
 
 
 def privileged_context_available(
@@ -94,6 +95,7 @@ def logprob_gain_recoverable(
             pixel_values=pixel_values[:1] if pixel_values is not None else None,
             image_sizes=image_sizes,
         ).logits[:, -comp_len - 1 : -1, :]
+        teacher_batch_num_images = as_batch_num_images_tensor(len(teacher_images), teacher_pixel_values)
         t_logits = _teacher_forward_with_oom_retry(
             model,
             teacher_input,
@@ -101,6 +103,7 @@ def logprob_gain_recoverable(
             teacher_pixel_values,
             teacher_image_sizes,
             comp_len,
+            teacher_batch_num_images,
         )
 
         targets = completion_ids[:comp_len].unsqueeze(0)
@@ -110,13 +113,22 @@ def logprob_gain_recoverable(
     return gain > tau
 
 
-def _teacher_forward_with_oom_retry(model, input_ids, attention_mask, pixel_values, image_sizes, comp_len):
+def _teacher_forward_with_oom_retry(
+    model,
+    input_ids,
+    attention_mask,
+    pixel_values,
+    image_sizes,
+    comp_len,
+    batch_num_images=None,
+):
     try:
         return model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             pixel_values=pixel_values,
             image_sizes=image_sizes,
+            batch_num_images=batch_num_images,
         ).logits[:, -comp_len - 1 : -1, :]
     except RuntimeError as exc:
         if "out of memory" not in str(exc).lower() or pixel_values is None:
@@ -134,6 +146,7 @@ def _teacher_forward_with_oom_retry(model, input_ids, attention_mask, pixel_valu
             attention_mask=attention_mask,
             pixel_values=pixel_values,
             image_sizes=image_sizes,
+            batch_num_images=batch_num_images,
         ).logits[:, -comp_len - 1 : -1, :]
 
 

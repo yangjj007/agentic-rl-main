@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
+    as_batch_num_images_tensor,
     get_teacher_vision_for_sample,
 )
 
@@ -87,6 +88,7 @@ def _teacher_logits_with_oom_retry(
     t_pixel,
     t_sizes,
     logits_to_keep: int,
+    teacher_batch_num_images=None,
 ):
     """Teacher forward with OOM micro-batch halving (decision E). Batch dim is already 1 in OPSD loop."""
     if processor is not None:
@@ -97,6 +99,7 @@ def _teacher_logits_with_oom_retry(
             teacher_prompt_mask,
             t_pixel,
             t_sizes,
+            batch_num_images=teacher_batch_num_images,
         )
     teacher_input = torch.cat([teacher_prompt_ids, completion_ids], dim=1)
     teacher_attn = torch.cat([teacher_prompt_mask, completion_mask], dim=1)
@@ -109,6 +112,7 @@ def _teacher_logits_with_oom_retry(
                     attention_mask=teacher_attn,
                     pixel_values=t_pixel,
                     image_sizes=t_sizes,
+                    batch_num_images=teacher_batch_num_images,
                 ).logits[:, -logits_to_keep - 1 : -1, :]
         except RuntimeError as exc:
             if "out of memory" not in str(exc).lower():
@@ -140,6 +144,7 @@ def compute_vlm_opsd_loss(
     beta=0.5,
     teacher_image_sizes=None,
     processor=None,
+    teacher_batch_num_images=None,
 ) -> torch.Tensor:
     """
     Self-OPSD: same model, student vs privileged teacher prompt, shared student completion.
@@ -182,6 +187,7 @@ def compute_vlm_opsd_loss(
             t_pixel,
             t_sizes,
             logits_to_keep,
+            teacher_batch_num_images=teacher_batch_num_images,
         )
 
     loss = generalized_jsd_loss(student_logits, teacher_logits, completion_mask.float(), beta=beta)
@@ -233,6 +239,8 @@ def compute_vlm_opsd_loss_masked_batch(
             teacher_image_sizes=teacher_sizes,
             teacher_pixel_values_shape=tuple(t_pixel.shape) if t_pixel is not None else None,
         )
+        n_img = teacher_img_counts[local]
+        teacher_batch_num_images = as_batch_num_images_tensor(n_img, t_pixel)
         with opsd_debug.timed("opsd_loss", f"sample_opsd_loss idx={global_idx}"):
             loss = compute_vlm_opsd_loss(
                 model,
@@ -248,6 +256,7 @@ def compute_vlm_opsd_loss_masked_batch(
                 beta=beta,
                 teacher_image_sizes=teacher_sizes,
                 processor=processor,
+                teacher_batch_num_images=teacher_batch_num_images,
             )
         losses.append(loss)
 

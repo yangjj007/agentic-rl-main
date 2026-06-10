@@ -219,8 +219,26 @@ def _unwrap_model(model):
     return model
 
 
+def as_batch_num_images_tensor(
+    num_images: int | None,
+    pixel_values: Optional[torch.Tensor],
+    batch_rows: int = 1,
+) -> Optional[torch.Tensor]:
+    """Build batch_num_images for LLaVA-OV (per-sample image count in each batch row)."""
+    if pixel_values is None or num_images is None:
+        return None
+    n = int(max(1, num_images))
+    device = pixel_values.device
+    return torch.tensor([n] * batch_rows, device=device, dtype=torch.long)
+
+
 @torch.no_grad()
-def expected_image_feature_count(model, pixel_values, image_sizes) -> int:
+def expected_image_feature_count(
+    model,
+    pixel_values,
+    image_sizes,
+    batch_num_images: Optional[torch.Tensor] = None,
+) -> int:
     """Vision feature rows after LLaVA-OV pack_image_features (matches forward check)."""
     if pixel_values is None:
         return 0
@@ -231,18 +249,24 @@ def expected_image_feature_count(model, pixel_values, image_sizes) -> int:
     vision_feature_layer = getattr(core.config, "vision_feature_layer", -1)
     vision_feature_select_strategy = getattr(core.config, "vision_feature_select_strategy", "full")
     vision_aspect_ratio = getattr(core.config, "vision_aspect_ratio", "anyres_max_9")
-    image_features = core.get_image_features(
+    outputs = core.get_image_features(
         pixel_values,
         image_sizes,
         vision_feature_layer=vision_feature_layer,
         vision_feature_select_strategy=vision_feature_select_strategy,
-    )
-    packed, _ = core.pack_image_features(
-        image_features,
-        image_sizes,
-        image_newline=getattr(core, "image_newline", None),
         vision_aspect_ratio=vision_aspect_ratio,
+        batch_num_images=batch_num_images,
+        return_dict=True,
     )
+    packed = getattr(outputs, "pooler_output", None)
+    if packed is None:
+        image_features = outputs
+        packed, _ = core.pack_image_features(
+            image_features,
+            image_sizes,
+            image_newline=getattr(core, "image_newline", None),
+            vision_aspect_ratio=vision_aspect_ratio,
+        )
     return int(packed.shape[0])
 
 
@@ -295,13 +319,16 @@ def align_teacher_prompt_image_tokens(
     attention_mask: torch.Tensor,
     pixel_values,
     image_sizes,
+    batch_num_images: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Sync image placeholder count in input_ids to vision feature count."""
     if pixel_values is None:
         return input_ids, attention_mask
     img_id = image_token_id(processor)
     n_tokens = int((input_ids == img_id).sum().item())
-    n_features = expected_image_feature_count(model, pixel_values, image_sizes)
+    n_features = expected_image_feature_count(
+        model, pixel_values, image_sizes, batch_num_images=batch_num_images
+    )
     if n_features <= 0 or n_tokens == n_features:
         return input_ids, attention_mask
     opsd_debug.log(
