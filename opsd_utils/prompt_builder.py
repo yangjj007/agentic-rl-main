@@ -178,6 +178,12 @@ def build_teacher_prompt_batch(
     if "image_sizes" in batch:
         out["teacher_image_sizes"] = batch["image_sizes"].to(device)
 
+    if "batch_num_images" in batch:
+        teacher_num_images = [int(max(1, n)) for n in batch["batch_num_images"]]
+    else:
+        teacher_num_images = [max(1, p["num_teacher_images"]) for p in sample_payloads]
+    out["teacher_num_images"] = torch.tensor(teacher_num_images, device=device, dtype=torch.long)
+
     student_len = None
     if indices and samples[indices[0]].get("prompt"):
         student_messages = [
@@ -200,6 +206,7 @@ def build_teacher_prompt_batch(
             tuple(out["teacher_pixel_values"].shape) if "teacher_pixel_values" in out else None
         ),
         teacher_images_count=sample_payloads[0]["num_teacher_images"] if sample_payloads else 0,
+        teacher_num_images=teacher_num_images,
         teacher_prompt_len=teacher_len,
         vision_placeholder_delta=(teacher_len - student_len) if student_len else None,
     )

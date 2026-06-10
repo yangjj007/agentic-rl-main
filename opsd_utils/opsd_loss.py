@@ -5,7 +5,7 @@ from opsd_utils import debug_log as opsd_debug
 
 
 def _slice_image_sizes(image_sizes, index: int):
-    """Slice per-sample image_sizes to match a batch-1 pixel_values forward."""
+    """Slice per-sample image_sizes for student path (one image per batch row)."""
     if image_sizes is None:
         return None
     if isinstance(image_sizes, torch.Tensor):
@@ -15,6 +15,37 @@ def _slice_image_sizes(image_sizes, index: int):
     if isinstance(image_sizes, (list, tuple)):
         return image_sizes[index]
     return image_sizes
+
+
+def _teacher_image_counts(inputs: dict, batch_size: int) -> list[int]:
+    """Number of teacher images per batch sample (LLaVA-OV stacks images on dim 0)."""
+    counts = inputs.get("teacher_num_images")
+    if counts is None:
+        return [1] * batch_size
+    if isinstance(counts, torch.Tensor):
+        return [int(max(1, c)) for c in counts.detach().cpu().tolist()]
+    return [int(max(1, c)) for c in counts]
+
+
+def slice_teacher_vision_inputs(
+    teacher_pixel_values,
+    teacher_image_sizes,
+    local: int,
+    num_images_per_sample: list[int],
+):
+    """
+    Slice teacher pixel_values / image_sizes for one batch sample.
+    LLaVA-OneVision uses dim-0 = total images across batch (not batch size).
+    """
+    if teacher_pixel_values is None:
+        return None, None
+    start = sum(num_images_per_sample[:local])
+    end = start + num_images_per_sample[local]
+    t_pixel = teacher_pixel_values[start:end]
+    t_sizes = None
+    if teacher_image_sizes is not None and isinstance(teacher_image_sizes, torch.Tensor):
+        t_sizes = teacher_image_sizes[start:end]
+    return t_pixel, t_sizes
 
 
 def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
@@ -49,18 +80,22 @@ def _teacher_logits_with_oom_retry(
     t_pixel,
     t_sizes,
     logits_to_keep: int,
+    batch_num_images=None,
 ):
     """Teacher forward with OOM micro-batch halving (decision E). Batch dim is already 1 in OPSD loop."""
     oom_retries = 0
     while True:
         try:
             with torch.no_grad():
-                return model(
-                    input_ids=teacher_input,
-                    attention_mask=teacher_attn,
-                    pixel_values=t_pixel,
-                    image_sizes=t_sizes,
-                ).logits[:, -logits_to_keep - 1 : -1, :]
+                forward_kwargs = {
+                    "input_ids": teacher_input,
+                    "attention_mask": teacher_attn,
+                    "pixel_values": t_pixel,
+                    "image_sizes": t_sizes,
+                }
+                if batch_num_images is not None:
+                    forward_kwargs["batch_num_images"] = batch_num_images
+                return model(**forward_kwargs).logits[:, -logits_to_keep - 1 : -1, :]
         except RuntimeError as exc:
             if "out of memory" not in str(exc).lower():
                 raise
@@ -90,6 +125,7 @@ def compute_vlm_opsd_loss(
     completion_mask,
     beta=0.5,
     teacher_image_sizes=None,
+    teacher_batch_num_images=None,
 ) -> torch.Tensor:
     """
     Self-OPSD: same model, student vs privileged teacher prompt, shared student completion.
@@ -131,6 +167,7 @@ def compute_vlm_opsd_loss(
             t_pixel,
             t_sizes,
             logits_to_keep,
+            batch_num_images=teacher_batch_num_images,
         )
 
     loss = generalized_jsd_loss(student_logits, teacher_logits, completion_mask.float(), beta=beta)
@@ -159,32 +196,45 @@ def compute_vlm_opsd_loss_masked_batch(
     )
     losses = []
     idx_map = {g: i for i, g in enumerate(all_indices)}
+    batch_size = inputs["prompt_ids"].shape[0]
+    teacher_img_counts = _teacher_image_counts(inputs, batch_size)
 
     for global_idx in opsd_indices:
         local = idx_map[global_idx]
-        t_pixel = inputs["pixel_values"][local : local + 1]
-        t_sizes = _slice_image_sizes(inputs.get("img_sizes"), local)
-        if inputs.get("teacher_pixel_values") is not None:
-            t_pixel = inputs["teacher_pixel_values"][local : local + 1]
-        teacher_sizes = None
-        if inputs.get("teacher_image_sizes") is not None:
-            teacher_sizes = _slice_image_sizes(inputs["teacher_image_sizes"], local)
+        student_sizes = _slice_image_sizes(inputs.get("img_sizes"), local)
+        t_pixel, teacher_sizes = slice_teacher_vision_inputs(
+            inputs.get("teacher_pixel_values"),
+            inputs.get("teacher_image_sizes"),
+            local,
+            teacher_img_counts,
+        )
+        if t_pixel is None:
+            t_pixel = inputs["pixel_values"][local : local + 1]
+            teacher_sizes = student_sizes
         opsd_debug.log(
             "opsd_loss",
             "compute sample OPSD loss",
             global_idx=global_idx,
             local_idx=local,
-            student_image_sizes=_slice_image_sizes(inputs.get("img_sizes"), local),
+            teacher_num_images=teacher_img_counts[local],
+            student_image_sizes=student_sizes,
             teacher_image_sizes=teacher_sizes,
             teacher_pixel_values_shape=tuple(t_pixel.shape) if t_pixel is not None else None,
         )
+        teacher_batch_num_images = None
+        if teacher_sizes is not None and teacher_img_counts[local] > 1:
+            teacher_batch_num_images = torch.tensor(
+                [teacher_img_counts[local]],
+                device=inputs["prompt_ids"].device,
+                dtype=torch.long,
+            )
         with opsd_debug.timed("opsd_loss", f"sample_opsd_loss idx={global_idx}"):
             loss = compute_vlm_opsd_loss(
                 model,
                 inputs["prompt_ids"][local : local + 1],
                 inputs["prompt_mask"][local : local + 1],
                 inputs["pixel_values"][local : local + 1],
-                t_sizes,
+                student_sizes,
                 inputs["teacher_prompt_ids"][local : local + 1],
                 inputs["teacher_prompt_mask"][local : local + 1],
                 t_pixel,
@@ -192,6 +242,7 @@ def compute_vlm_opsd_loss_masked_batch(
                 inputs["completion_mask"][local : local + 1],
                 beta=beta,
                 teacher_image_sizes=teacher_sizes,
+                teacher_batch_num_images=teacher_batch_num_images,
             )
         losses.append(loss)
 

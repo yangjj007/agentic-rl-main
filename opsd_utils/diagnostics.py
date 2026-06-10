@@ -869,7 +869,14 @@ def log_opsd_jsd_diagnostics(
 
     opsd_debug.log_detail_banner(global_step, "OPSD JSD DECOMPOSITION")
 
-    from opsd_utils.opsd_loss import _slice_image_sizes
+    from opsd_utils.opsd_loss import (
+        _slice_image_sizes,
+        _teacher_image_counts,
+        slice_teacher_vision_inputs,
+    )
+
+    batch_size = inputs["prompt_ids"].shape[0]
+    teacher_img_counts = _teacher_image_counts(inputs, batch_size)
 
     for k, global_idx in enumerate(opsd_indices[:max_samples]):
         local = global_idx
@@ -882,18 +889,34 @@ def log_opsd_jsd_diagnostics(
 
         teacher_prompt_ids = inputs["teacher_prompt_ids"][local : local + 1]
         teacher_prompt_mask = inputs["teacher_prompt_mask"][local : local + 1]
-        t_pixel = inputs["pixel_values"][local : local + 1]
-        teacher_sizes = _slice_image_sizes(inputs.get("img_sizes"), local)
-        if inputs.get("teacher_pixel_values") is not None:
-            t_pixel = inputs["teacher_pixel_values"][local : local + 1]
-        if inputs.get("teacher_image_sizes") is not None:
-            teacher_sizes = _slice_image_sizes(inputs["teacher_image_sizes"], local)
+        t_pixel, teacher_sizes = slice_teacher_vision_inputs(
+            inputs.get("teacher_pixel_values"),
+            inputs.get("teacher_image_sizes"),
+            local,
+            teacher_img_counts,
+        )
+        if t_pixel is None:
+            t_pixel = pixel_values
+            teacher_sizes = img_sizes
 
         student_input = torch.cat([prompt_ids, completion_ids], dim=1)
         student_attn = torch.cat([prompt_mask, completion_mask], dim=1)
         teacher_input = torch.cat([teacher_prompt_ids, completion_ids], dim=1)
         teacher_attn = torch.cat([teacher_prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)
+
+        teacher_forward_kwargs = {
+            "input_ids": teacher_input,
+            "attention_mask": teacher_attn,
+            "pixel_values": t_pixel,
+            "image_sizes": teacher_sizes,
+        }
+        if teacher_sizes is not None and teacher_img_counts[local] > 1:
+            teacher_forward_kwargs["batch_num_images"] = torch.tensor(
+                [teacher_img_counts[local]],
+                device=teacher_input.device,
+                dtype=torch.long,
+            )
 
         with torch.no_grad():
             student_logits = model(
@@ -902,12 +925,7 @@ def log_opsd_jsd_diagnostics(
                 pixel_values=pixel_values,
                 image_sizes=img_sizes,
             ).logits[:, -logits_to_keep - 1 : -1, :]
-            teacher_logits = model(
-                input_ids=teacher_input,
-                attention_mask=teacher_attn,
-                pixel_values=t_pixel,
-                image_sizes=teacher_sizes,
-            ).logits[:, -logits_to_keep - 1 : -1, :]
+            teacher_logits = model(**teacher_forward_kwargs).logits[:, -logits_to_keep - 1 : -1, :]
 
         stats = jsd_token_stats(student_logits, teacher_logits, completion_mask.float(), beta=beta)
         decoded = tokenizer.decode(
