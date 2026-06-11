@@ -37,6 +37,9 @@ _probe_log_model_context = _model_ctx_raw not in ("0", "false", "no", "off")
 _health_raw = os.environ.get("DYME_OPSD_HEALTH_MONITOR", "1").strip().lower()
 _health_monitor_enabled = _health_raw not in ("0", "false", "no", "off")
 
+_require_format_raw = os.environ.get("DYME_OPSD_REQUIRE_FORMAT", "1").strip().lower()
+_require_format_for_opsd = _require_format_raw not in ("0", "false", "no", "off")
+
 DYME_OPSD_CONFIG = {
     **DYME_OPSD_CONFIG,
     "enabled": True,
@@ -45,7 +48,7 @@ DYME_OPSD_CONFIG = {
     "privileged_providers": os.environ.get("DYME_OPSD_PROVIDERS", "text,visual_facts").split(","),
     "privileged_image": {
         **DYME_OPSD_CONFIG.get("privileged_image", {}),
-        "mode": os.environ.get("DYME_OPSD_PRIVILEGE_IMAGE_MODE", "dual"),
+        "mode": os.environ.get("DYME_OPSD_PRIVILEGE_IMAGE_MODE", "single"),
         "crop_strategy": os.environ.get("DYME_OPSD_CROP_STRATEGY", "bbox_then_center"),
         "bbox_coord": "normalized",
         "margin_ratio": float(os.environ.get("DYME_OPSD_CROP_MARGIN", "0.25")),
@@ -56,6 +59,10 @@ DYME_OPSD_CONFIG = {
         not in ("0", "false", "no", "off"),
         "image_subdir": os.environ.get("DYME_OPSD_PRIVILEGED_IMAGE_DIR", "logs/images"),
         "max_samples_per_detail": int(os.environ.get("DYME_OPSD_PRIVILEGED_IMAGE_MAX", "2")),
+    },
+    "gate": {
+        **DYME_OPSD_CONFIG.get("gate", {}),
+        "require_format_for_opsd": _require_format_for_opsd,
     },
     "debug": {
         **DYME_OPSD_CONFIG.get("debug", {}),

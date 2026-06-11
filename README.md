@@ -67,7 +67,7 @@ These delimiters are essential for stable parsing, reward assignment, and evalua
 | `mode` | Routing mode (see table below). |
 | `privileged_profile` | Teacher preset: `text` \| `visual` \| `hybrid` (default **`hybrid`** in `config_trimode.py`). |
 | `privileged_providers` | Override provider list; default derived from profile. |
-| `privileged_image` | Dual-image crop settings (`mode`, `crop_strategy`, `bbox_coord`, `margin_ratio`). |
+| `privileged_image` | Teacher image layout: `mode` `single` (ChartQA default) or `dual` (full + crop); plus `crop_strategy`, `bbox_coord`, `margin_ratio`. |
 | `privileged_debug` | Periodic artifact logging: `save_images`, `image_subdir` (`logs/images`), `max_samples_per_detail`. |
 | `gate.correct_threshold` | Reward threshold to count a rollout as correct. |
 | `gate.teacher_recoverable` | Recoverability gate: `privileged_available` (default) or `logprob_gain`. |
@@ -93,9 +93,9 @@ Under `trimode`, the SFT share is determined by accuracy (how often prompts are 
 | --- | --- | --- |
 | `text` | Single full image (same as student) | hint + answer |
 | `visual` | **Dual**: full + evidence crop | Visual Facts only (no answer leak) |
-| `hybrid` | **Dual**: full + evidence crop | Visual Facts + hint + answer |
+| `hybrid` | Single full image by default (`privileged_image.mode=single`); dual with `mode=dual` | Visual Facts + hint + answer |
 
-Student `collate_fn` never reads privileged fields. Teacher dual-image forward uses `[full, crop]` messages; crop comes from normalized `evidence_bbox` (C2), A-OKVQA `visual_fact` heuristic (D2), or center fallback (D1).
+Student `collate_fn` never reads privileged fields. With `privileged_image.mode=dual`, teacher forward uses `[full, crop]`; crop comes from normalized `evidence_bbox` (C2), A-OKVQA `visual_fact` heuristic (D2), or center fallback (D1). ChartQA defaults to `single` (no crop zoom).
 
 **Privileged providers** (under `opsd_utils/privileged/`):
 
@@ -125,10 +125,15 @@ python scripts/build_visual_facts_chartqa.py \
   --output data/chartqa/train_medium_vf_hint.json \
   --also-set-visual-fact
 
-# F2: add DePlot placeholder JSON per sample (replace with real DePlot later if needed)
+# F2: DePlot offline table extraction (google/deplot, batched GPU inference; default ON)
 python scripts/build_visual_facts_chartqa_deplot.py \
   --input data/chartqa/train_medium_vf_hint.json \
-  --output data/chartqa/train_medium_vf_full.json
+  --output data/chartqa/train_medium_vf_full.json \
+  --batch-size 8 \
+  --cache data/chartqa/deplot_cache.json
+
+# Fast placeholder-only mode (no GPU / CI): add --no-enabled
+# DYME_DEPLOT_ENABLED=0 bash scripts/train_local_gpus.sh
 
 # quick sanity check (expect non-zero lengths)
 python -c "
@@ -166,7 +171,7 @@ python main.py --config trimode --opsd_privilege_profile hybrid --opsd_detail_ev
 | `hint`, `answer` | Teacher (`text` / `hybrid`) | Never in student collate |
 | `visual_fact` | Teacher | Raw JSON string (A-OKVQA) |
 | `visual_fact_hint` | Teacher (ChartQA F1) | Hint placeholder pipeline |
-| `visual_fact_deplot` | Teacher (ChartQA F2) | DePlot/table pipeline |
+| `visual_fact_deplot` | Teacher (ChartQA F2) | DePlot `parsed_table` text (`google/deplot`; placeholder skipped) |
 | `evidence_bbox` | Teacher crop | Normalized `[x0,y0,x1,y1]` in `[0,1]` |
 
 Adapter helpers for future datasets: `data_utils/privileged_schema.py` (`normalize_evidence_bbox`, `parse_visual_fact`, `resolve_crop_bbox`).
@@ -392,7 +397,40 @@ bash scripts/train_local_gpus.sh
 
 # Optional: full verbose debug (large logs)
 # DYME_OPSD_DEBUG=1 DYME_OPSD_DETAIL_EVERY=10 bash scripts/train_local_gpus.sh
+
+# Roll back to original trimode config (pre-antidegen hyperparameters)
+# DYME_CONFIG=config/config_trimode.py bash scripts/train_local_gpus.sh
 ```
+
+### Anti-degeneration config (`config_trimode_antidegen`)
+
+`scripts/train_local_gpus.sh` defaults to **`config/config_trimode_antidegen.py`** (alias `trimode_antidegen`). Overrides are based on offline analysis of `train_trimode_4gpu_20260610_173637.log` (1225 steps):
+
+| Issue | Baseline log evidence | Antidegen change |
+|-------|----------------------|------------------|
+| Logit collapse | `LOGIT_MODE_COLLAPSE` 212×; step 1 clip 0→1.0; step 1175 clip≈0.92 | `max_completion_length=150`, `temperature=0.7`, `repetition_penalty=1.25` |
+| Step-1 gradient shock | `GEN_CLIP_COLLAPSE` from step 1; `OPT_GRAD_SPIKE` 44× | `learning_rate=5e-5`, `warmup_steps=50` |
+| OPSD coverage low | `opsd_mask` mean 5.6%; 492/1226 zero-mask steps | `require_format_for_opsd=False` (env default `DYME_OPSD_REQUIRE_FORMAT=0`) |
+| RL signal sparse | `RL_ZERO_SIGNAL` expected in trimode | `reward_weights=[0.5, 1.5, 1.0]` (format, context F1, acc) |
+| visual_fact empty | `visual_fact_empty_rate=0` throughout | no data change |
+
+Environment overrides:
+
+```bash
+export DYME_CONFIG=config/config_trimode_antidegen.py   # default in train_local_gpus.sh
+export DYME_OPSD_REQUIRE_FORMAT=0                       # antidegen default; set 1 to restore strict gate
+export DYME_REWARD_WEIGHTS=0.5,1.5,1.0                  # format, context, accuracy
+```
+
+After a new run (~200+ steps), compare against the baseline log:
+
+```bash
+python scripts/parse_trimode_log.py outputs/logs/train_trimode_*_new.log
+python scripts/degeneration_report.py outputs/logs/train_trimode_*_new.log
+python scripts/compare_trimode_logs.py train_trimode_4gpu_20260610_173637.log outputs/logs/train_trimode_*_new.log
+```
+
+Success criteria (candidate vs baseline): step 1 `clip` &lt; 1.0; `LOGIT_MODE_COLLAPSE` count down &gt;30%; `opsd_mask` mean &gt; 8%; step 200+ `mean_length` median &lt; 130. `RL_ZERO_SIGNAL` may remain high (trimode design).
 
 
 ### 1. Training DyME (original)

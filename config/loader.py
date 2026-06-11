@@ -6,6 +6,7 @@ from typing import Any
 _CONFIG_ALIASES: dict[str, str] = {
     "norm": "config.config",
     "trimode": "config.config_trimode",
+    "trimode_antidegen": "config.config_trimode_antidegen",
     "llavacot": "config.config_llavacot",
     "low": "config.config_low",
     "aok": "config.config_aok",

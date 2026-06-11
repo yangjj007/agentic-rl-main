@@ -277,7 +277,15 @@ class DyMETrainer(Trainer):
     ):
         self.opsd_config = opsd_config if opsd_config is not None else dict(DEFAULT_OPSD_CONFIG)
         self.task_name = task_name
-        self.reward_weights = torch.nn.Parameter(torch.ones(3), requires_grad=False)
+        reward_weights = self.opsd_config.get("reward_weights", [1.0, 1.0, 1.0])
+        if len(reward_weights) != 3:
+            raise ValueError(
+                f"opsd_config reward_weights must have length 3 (format, context, acc), got {reward_weights}"
+            )
+        self.reward_weights = torch.nn.Parameter(
+            torch.tensor(reward_weights, dtype=torch.float32),
+            requires_grad=False,
+        )
         self.reward_func_names = ['format', 'thinking', 'accuracy']
         # Models
         # Trained model

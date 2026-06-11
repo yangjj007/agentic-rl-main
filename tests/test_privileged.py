@@ -37,10 +37,23 @@ def test_text_provider():
 def test_hybrid_provider_suffix():
     img = Image.new("RGB", (32, 32))
     sample = {"hint": "step", "visual_fact": "bar=3", "answer": "Answer: 3", "image": img}
-    suffix, images = build_privileged_context(sample, privileged_profile="hybrid")
+    suffix, images = build_privileged_context(
+        sample,
+        privileged_profile="hybrid",
+        opsd_config={"privileged_image": {"mode": "dual"}},
+    )
     assert "Visual Facts" in suffix
     assert "Reference" in suffix
     assert len(images) == 2
+
+
+def test_hybrid_default_single_image_for_chartqa():
+    img = Image.new("RGB", (32, 32))
+    sample = {"hint": "step", "visual_fact": "bar=3", "answer": "Answer: 3", "image": img}
+    suffix, images = build_privileged_context(sample, privileged_profile="hybrid")
+    assert "Visual Facts" in suffix
+    assert "Reference" in suffix
+    assert len(images) == 1
 
 
 def test_visual_profile_excludes_answer():
@@ -81,7 +94,7 @@ def test_resolve_teacher_images_dual():
         "image": img,
         "visual_fact": json.dumps({"objects": [{"position": "top"}]}),
     }
-    images, meta = resolve_teacher_images(sample, "hybrid")
+    images, meta = resolve_teacher_images(sample, "hybrid", crop_cfg={"mode": "dual"})
     assert len(images) == 2
     assert meta["num_teacher_images"] == 2
     assert meta["crop_strategy"] in ("heuristic", "center", "center_fallback", "bbox")
@@ -89,12 +102,16 @@ def test_resolve_teacher_images_dual():
 
 def test_chartqa_enriched_visual_fact_hint():
     """Enriched ChartQA records (F1+F2) should activate VisualFactsProvider."""
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
     sample = {
         "hint": "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.",
         "answer": "Answer: 70",
         "visual_fact_hint": "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.",
         "visual_fact": "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.",
-        "visual_fact_deplot": '{"source": "deplot_placeholder", "question": "q"}',
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Year | Value\n2019 | 70\n2020 | 72"
+        ),
         "image": Image.new("RGB", (64, 64)),
     }
     suffix, images = build_privileged_context(
@@ -104,21 +121,27 @@ def test_chartqa_enriched_visual_fact_hint():
     )
     assert "Visual Facts - Hint" in suffix
     assert "Visual Facts - DePlot" in suffix
+    assert "2019 | 70" in suffix
     assert "Reference Reasoning" in suffix
-    assert len(images) == 2
+    assert len(images) == 1
     vf_raw = sample.get("visual_fact") or sample.get("visual_facts")
     assert vf_raw and len(vf_raw.strip()) > 0
 
 
 def test_visual_facts_f1_f2_merge():
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
     sample = {
         "visual_fact_hint": "hint table",
-        "visual_fact_deplot": '{"source":"deplot"}',
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Col | Val\nA | 1"
+        ),
         "image": Image.new("RGB", (32, 32)),
     }
     suffix, _ = build_privileged_context(sample, privileged_profile="hybrid")
     assert "Visual Facts - Hint" in suffix
     assert "Visual Facts - DePlot" in suffix
+    assert "Col | Val" in suffix
 
 
 def test_parse_visual_fact_b1():

@@ -21,9 +21,18 @@ def test_text_profile_single_image():
 def test_hybrid_profile_dual_image():
     img = Image.new("RGB", (64, 64))
     sample = {"image": img, "evidence_bbox": [0.1, 0.1, 0.9, 0.9]}
-    images, meta = resolve_teacher_images(sample, "hybrid")
+    images, meta = resolve_teacher_images(sample, "hybrid", crop_cfg={"mode": "dual"})
     assert len(images) == 2
     assert meta["has_bbox"] is True
+
+
+def test_hybrid_profile_single_image_by_default():
+    img = Image.new("RGB", (64, 64))
+    sample = {"image": img, "evidence_bbox": [0.1, 0.1, 0.9, 0.9]}
+    images, meta = resolve_teacher_images(sample, "hybrid")
+    assert len(images) == 1
+    assert meta["num_teacher_images"] == 1
+    assert meta["crop_strategy"] == "single_full"
 
 
 def test_no_image_empty():

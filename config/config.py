@@ -92,7 +92,7 @@ DYME_OPSD_CONFIG = {
     "privileged_profile": "hybrid",
     "privileged_providers": ["text"],
     "privileged_image": {
-        "mode": "dual",
+        "mode": "single",
         "crop_strategy": "bbox_then_center",
         "bbox_coord": "normalized",
         "margin_ratio": 0.25,
@@ -118,6 +118,8 @@ DYME_OPSD_CONFIG = {
         "grpo_weight": 1.0,
         "sft_weight": 1.0,
     },
+    # Optional: [format, context, accuracy] — default uniform; antidegen uses [0.5, 1.5, 1.0]
+    "reward_weights": [1.0, 1.0, 1.0],
     "debug": {
         # Full weak-signal diagnostic bundle every N global steps (rank 0). 0 = off.
         "detail_every": 10,
@@ -158,6 +160,16 @@ DATASET_CONFIG = {
     "eval_dataset": "HuggingFaceM4/ChartQA",  # 验证数据路径
 }
 
+# ====== DePlot offline preprocessing (ChartQA F2) ======
+DEPLOT_CONFIG = {
+    "enabled": True,
+    "model_id": "google/deplot",
+    "batch_size": 8,
+    "max_new_tokens": 384,
+    "cache_path": project_path("data/chartqa/deplot_cache.json"),
+    "prompt": "Generate underlying data table of the figure below:",
+}
+
 # ====== Full Configuration ======
 CONFIG = {
     "model": MODEL_CONFIG,
@@ -166,6 +178,7 @@ CONFIG = {
     "opsd": DYME_OPSD_CONFIG,
     "client": CLIENT_CONFIG,
     "dataset": DATASET_CONFIG,
+    "deplot": DEPLOT_CONFIG,
 }
 
 # Save configuration to a file for reference

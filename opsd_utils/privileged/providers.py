@@ -2,6 +2,7 @@ from typing import Any
 
 from PIL import Image
 
+from data_utils.chart.deplot_pipeline import format_deplot_for_teacher, is_deplot_placeholder
 from data_utils.privileged_schema import parse_visual_fact
 from opsd_utils.privileged.base import PrivilegedContextProvider
 from opsd_utils.privileged.image_utils import heuristic_crop_from_visual_fact, load_rgb
@@ -31,8 +32,8 @@ class VisualFactsProvider(PrivilegedContextProvider):
                 parts.append(f"[Visual Facts - Hint]\n{text}")
 
         deplot_vf = sample.get("visual_fact_deplot")
-        if deplot_vf:
-            text = parse_visual_fact(deplot_vf)
+        if deplot_vf and not is_deplot_placeholder(deplot_vf):
+            text = format_deplot_for_teacher(deplot_vf)
             if text:
                 parts.append(f"[Visual Facts - DePlot]\n{text}")
 

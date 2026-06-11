@@ -8,7 +8,7 @@ DEFAULT_OPSD_CONFIG = {
     "privileged_profile": "hybrid",
     "privileged_providers": ["text"],
     "privileged_image": {
-        "mode": "dual",
+        "mode": "single",
         "crop_strategy": "bbox_then_center",
         "bbox_coord": "normalized",
         "margin_ratio": 0.25,
@@ -33,4 +33,5 @@ DEFAULT_OPSD_CONFIG = {
         "grpo_weight": 1.0,
         "sft_weight": 1.0,
     },
+    "reward_weights": [1.0, 1.0, 1.0],
 }

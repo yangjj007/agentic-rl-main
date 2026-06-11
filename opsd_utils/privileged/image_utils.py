@@ -107,7 +107,7 @@ def resolve_teacher_images(
 ) -> tuple[list[Image.Image], dict[str, Any]]:
     """
     Build teacher image list for privileged forward.
-    text -> [full]; visual/hybrid -> [full, crop].
+    text -> [full]; visual/hybrid + mode=dual -> [full, crop]; otherwise [full].
     Returns (images, debug_meta).
     """
     crop_cfg = crop_cfg or {}
@@ -119,12 +119,14 @@ def resolve_teacher_images(
     if full is None:
         return [], {"crop_strategy": "load_failed", "num_teacher_images": 0, "has_bbox": False}
 
-    if profile == "text":
+    image_mode = str(crop_cfg.get("mode", "single")).strip().lower()
+    if profile == "text" or image_mode in ("single", "full", "off", "none"):
         meta = {
             "crop_strategy": "single_full",
             "num_teacher_images": 1,
             "has_bbox": False,
             "bbox_norm": None,
+            "image_mode": image_mode,
         }
         return [full], meta
 
@@ -136,5 +138,6 @@ def resolve_teacher_images(
         "bbox_norm": bbox_norm,
         "full_size": full.size,
         "crop_size": crop.size,
+        "image_mode": image_mode,
     }
     return [full, crop], meta

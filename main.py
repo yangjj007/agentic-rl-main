@@ -158,6 +158,11 @@ def main():
         help="Privileged profile preset: text | visual | hybrid (default hybrid in config_trimode)",
     )
     parser.add_argument(
+        '--reward_weights', type=str, default=None,
+        help="Comma-separated reward weights: format,context,acc (e.g. 0.5,1.5,1.0). "
+             "Overrides config; env DYME_REWARD_WEIGHTS also supported in antidegen config.",
+    )
+    parser.add_argument(
         '--opsd_enabled', action='store_true',
         help="Enable OPSD / TriMode training extensions",
     )
@@ -215,6 +220,14 @@ def main():
         opsd_config["privileged_providers"] = [p.strip() for p in args.opsd_providers.split(",") if p.strip()]
     if args.opsd_privilege_profile is not None:
         opsd_config["privileged_profile"] = args.opsd_privilege_profile.strip()
+    reward_weights_raw = args.reward_weights or os.environ.get("DYME_REWARD_WEIGHTS")
+    if reward_weights_raw:
+        parts = [p.strip() for p in reward_weights_raw.split(",") if p.strip()]
+        if len(parts) != 3:
+            raise ValueError(
+                f"reward_weights must have exactly 3 comma-separated values (format,context,acc), got: {reward_weights_raw!r}"
+            )
+        opsd_config["reward_weights"] = [float(p) for p in parts]
     debug_cfg = opsd_config.setdefault("debug", {})
     detail_every = debug_cfg.get("detail_every", 10)
     if args.opsd_detail_every is not None:
