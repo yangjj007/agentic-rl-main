@@ -29,7 +29,7 @@ DyME/
 ├── config/               # Modular configuration files for experiments
 ├── opsd_utils/           # Privileged-context OPSD / TriMode extensions for DyMETrainer
 ├── default_config.yaml   # Default DDP (MULTI_GPU, no DeepSpeed required)
-├── default_config_deepspeed.yaml  # Optional ZeRO-2 offload when deepspeed is installed
+├── default_config_deepspeed.yaml  # Optional ZeRO-0 only (no sharding); needs pip install deepspeed
 ├── main.py               # Entry point for DyME training
 ├── main_*.py             # Additional experimental variants (e.g., 7B, LLM-only)
 ├── requirements.txt      # Python dependencies
@@ -374,17 +374,19 @@ A small subset of demo images for verifying the data loading pipeline may be pro
 
 All training scripts are launched using `accelerate`. Pass `--config` as a **Python config file path** (recommended) or a shorthand alias (`norm`, `trimode`, `llavacot`, `low`, `aok`).
 
-**Important:** `num_processes` must match the number of visible GPUs on your node. Helper scripts auto-detect GPU count and pick a launch config:
+**Important:** `num_processes` must match the number of visible GPUs on your node. Helper scripts auto-detect GPU count and use **native PyTorch DDP** (`default_config.yaml`, `distributed_type: MULTI_GPU`) — **DeepSpeed is not required** for 0.5B multi-GPU training.
 
-- **Default:** `default_config.yaml` → native **DDP** (`MULTI_GPU`), **no DeepSpeed install required** (sufficient for 0.5B on multi-GPU).
-- **Optional:** if `deepspeed` is installed, scripts auto-select `default_config_deepspeed.yaml` (ZeRO-2 + CPU offload). Force DDP with `ACCELERATE_CONFIG=default_config.yaml`.
+Optional: if you already have `deepspeed` installed and want the Accelerate integration without parameter sharding, use ZeRO-0 (`default_config_deepspeed.yaml`, `zero_stage: 0`). Do **not** use ZeRO-2/3 offload for 0.5B — it slows training without benefit.
 
 ```bash
-# 2-GPU node example (DDP)
-accelerate launch --config_file default_config.yaml --num_processes 2 main.py --config config/config.py --mode rl
+# 4-GPU node (default DDP, recommended)
+bash scripts/train_rlsd_chartqa.sh
 
-# 8-GPU node example
-accelerate launch --config_file default_config_8gpu.yaml --num_processes 8 main.py --config config/config.py --mode rl
+# Explicit DDP config
+accelerate launch --config_file default_config.yaml --num_processes 4 main.py --config config/config.py --mode rl
+
+# Optional ZeRO-0 (requires deepspeed, no sharding)
+ACCELERATE_CONFIG=default_config_deepspeed.yaml bash scripts/train_rlsd_chartqa.sh
 ```
 
 Or override explicitly: `NUM_GPUS=4 bash scripts/train_trimode.sh`

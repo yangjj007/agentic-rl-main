@@ -14,11 +14,8 @@ same_network: true
 tpu_use_cluster: false
 tpu_use_sudo: false
 use_cpu: false
+# Optional DeepSpeed ZeRO-0 (no sharding). Prefer MULTI_GPU DDP for single-node training.
 deepspeed_config:
-  zero_stage: 2
+  zero_stage: 0
   gradient_accumulation_steps: 1
-  gradient_clipping: "auto"
-  offload_optimizer_device: "cpu"
-  offload_param_device: "cpu"
   zero3_init_flag: false
-  zero3_save_16bit_model: "auto"
