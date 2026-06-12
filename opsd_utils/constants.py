@@ -22,6 +22,7 @@ DEFAULT_OPSD_CONFIG = {
         "correct_threshold": 0.5,
         "teacher_recoverable": "privileged_available",
         "recoverable_tau": 0.5,
+        "recoverable_without_privilege": False,
         "use_edge_mask": False,
         "per_completion_opsd": True,
         "require_format_for_opsd": True,
@@ -32,6 +33,8 @@ DEFAULT_OPSD_CONFIG = {
         "opsd_weight": 2.0,
         "grpo_weight": 1.0,
         "sft_weight": 1.0,
+        "acc_gate": True,
     },
+    "text_include_gold": True,
     "reward_weights": [1.0, 1.0, 1.0],
 }

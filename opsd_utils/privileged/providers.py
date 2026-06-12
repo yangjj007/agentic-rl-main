@@ -8,8 +8,29 @@ from opsd_utils.privileged.base import PrivilegedContextProvider
 from opsd_utils.privileged.image_utils import heuristic_crop_from_visual_fact, load_rgb
 
 
-class TextProvider(PrivilegedContextProvider):
+DEFAULT_FORMAT_ONLY_HINT = (
+    "Use the following structure in your response:\n"
+    "Goal: ...\nObservation: ...\nReasoning: ...\nAnswer: ..."
+)
+
+
+class FormatOnlyProvider(PrivilegedContextProvider):
+    """Structure hint only — no gold answer or reference reasoning (anti-leakage)."""
+
+    def __init__(self, hint_text: str | None = None):
+        self._hint_text = (hint_text or DEFAULT_FORMAT_ONLY_HINT).strip()
+
     def build_teacher_suffix(self, sample: dict[str, Any]) -> str:
+        return self._hint_text
+
+
+class TextProvider(PrivilegedContextProvider):
+    def __init__(self, include_gold: bool = True):
+        self.include_gold = include_gold
+
+    def build_teacher_suffix(self, sample: dict[str, Any]) -> str:
+        if not self.include_gold:
+            return ""
         parts = []
         hint = (sample.get("hint") or "").strip()
         answer = (sample.get("answer") or "").strip()
@@ -72,12 +93,21 @@ class CropProvider(PrivilegedContextProvider):
 
 
 class HybridProvider(PrivilegedContextProvider):
-    def __init__(self, provider_names: list[str], crop_cfg: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        provider_names: list[str],
+        crop_cfg: dict[str, Any] | None = None,
+        *,
+        text_include_gold: bool = True,
+        format_only_hint: str | None = None,
+    ):
         self._providers: list[PrivilegedContextProvider] = []
         self._crop_cfg = crop_cfg or {}
         for name in provider_names:
             if name == "text":
-                self._providers.append(TextProvider())
+                self._providers.append(TextProvider(include_gold=text_include_gold))
+            elif name == "format_only":
+                self._providers.append(FormatOnlyProvider(format_only_hint))
             elif name == "visual_facts":
                 self._providers.append(VisualFactsProvider())
             elif name == "crop":

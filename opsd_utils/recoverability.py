@@ -165,6 +165,8 @@ def estimate_recoverable_flags(
     method = gate.get("teacher_recoverable", "privileged_available")
     providers = opsd_config.get("privileged_providers", ["text"])
     tau = gate.get("recoverable_tau", 0.5)
+    mode_name = opsd_config.get("mode", "dyme")
+    recoverable_without_privilege = bool(gate.get("recoverable_without_privilege", False))
 
     num_prompts = len(samples) // num_generations
     flags: list[bool] = []
@@ -181,7 +183,9 @@ def estimate_recoverable_flags(
 
     for p in range(num_prompts):
         sample = samples[p * num_generations]
-        if method == "privileged_available":
+        if recoverable_without_privilege or mode_name in ("rlsd", "copsd_opd"):
+            flag = True
+        elif method == "privileged_available":
             flag = privileged_context_available(sample, providers, opsd_config=opsd_config)
         elif method == "logprob_gain" and model is not None and processor is not None:
             assert completions_tensors is not None

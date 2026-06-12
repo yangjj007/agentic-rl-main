@@ -11,7 +11,7 @@ echo "Evaluating ${EXPERIMENT} from ${CHECKPOINT_DIR}"
 python eval/eval_chartqa.py --model_path "${CHECKPOINT_DIR}"
 
 # Suggested matrix:
-# E0: MODE=dyme  (original DyME, opsd disabled)
-# E1: MODE=trimode
-# E2: MODE=replace_sft
-# E3: MODE=opsd_only DYME_OPSD_PROVIDERS=text|visual_facts|text,visual_facts
+# E0: trimode baseline  CHECKPOINT_DIR=./outputs/trimode-chartqa/final_checkpoint EXPERIMENT=E0
+# E1: RLSD anti-leak    CHECKPOINT_DIR=./outputs/rlsd-chartqa/final_checkpoint EXPERIMENT=E1
+# E2: 7B cross-OPD      CHECKPOINT_DIR=./outputs/opd-7b-chartqa/final_checkpoint EXPERIMENT=E2
+# E3: opsd_only ablation (legacy providers)

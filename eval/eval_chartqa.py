@@ -1,3 +1,6 @@
+import argparse
+import os
+
 import torch
 from PIL import Image
 from accelerate import Accelerator
@@ -20,7 +23,14 @@ DEVICE = accelerator.device
 # Model and Processor Configuration
 model_args = {}  # Use {"torch_dtype": torch.bfloat16} if desired and supported
 
-model_id = '/path/to/dyme-k-8/final_checkpoint'
+_eval_parser = argparse.ArgumentParser(add_help=False)
+_eval_parser.add_argument("--model_path", default=None)
+_eval_args, _ = _eval_parser.parse_known_args()
+model_id = (
+    _eval_args.model_path
+    or os.environ.get("CHECKPOINT_DIR")
+    or "/path/to/dyme-k-8/final_checkpoint"
+)
 
 config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_id, config=config, trust_remote_code=True)

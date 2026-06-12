@@ -100,6 +100,35 @@ def load_model_and_processor(model_config: Dict[str, Any]):
     return model, processor
 
 
+def load_teacher_model(model_config: Dict[str, Any]):
+    """Load optional frozen teacher for cross-model OPD (e.g. LLaVA-OneVision 7B)."""
+    teacher_path = model_config.get("teacher_model_path")
+    if not teacher_path:
+        return None
+
+    dtype_name = model_config.get("teacher_dtype", model_config.get("torch_dtype", "bfloat16"))
+    torch_dtype = getattr(torch, dtype_name)
+    device_map = model_config.get("teacher_device_map")
+
+    load_kwargs: Dict[str, Any] = {
+        "torch_dtype": torch_dtype,
+        "low_cpu_mem_usage": True,
+    }
+    if device_map:
+        load_kwargs["device_map"] = device_map
+
+    teacher = LlavaOnevisionForConditionalGeneration.from_pretrained(
+        teacher_path,
+        attn_implementation='flash_attention_2' if model_config.get('use_flash_attention_2') else 'sdpa',
+        **load_kwargs,
+    )
+    teacher.eval()
+    teacher.requires_grad_(False)
+    if hasattr(teacher, "base_model") and hasattr(teacher.base_model, "vision_tower"):
+        teacher.base_model.vision_tower.requires_grad_(False)
+    return teacher
+
+
 def prepare_datasets(task: str, dataset_config: Dict[str, Any], mode='rl') -> (Dataset, Dataset):
     """
     Prepares the training and evaluation datasets based on the specified task.
@@ -147,7 +176,7 @@ def main():
     )
     parser.add_argument(
         '--opsd_mode', type=str, default=None,
-        help="OPSD routing mode: dyme | trimode | opsd_only | replace_sft | opsd_on_wrong | grpo_opsd_joint",
+        help="OPSD routing mode: dyme | trimode | rlsd | copsd_opd | opsd_only | replace_sft | opsd_on_wrong | grpo_opsd_joint",
     )
     parser.add_argument(
         '--opsd_providers', type=str, default=None,
@@ -319,6 +348,9 @@ def main():
 
     # 3. Initialize Model and Processor
     model, processor = load_model_and_processor(model_config)
+    teacher_model = load_teacher_model(model_config)
+    if accelerator.is_main_process and teacher_model is not None:
+        print(f"[DyME] Frozen teacher loaded from {model_config.get('teacher_model_path')}")
 
     # 4. Prepare Datasets
     train_dataset, eval_dataset = prepare_datasets(task, dataset_config, mode=mode)
@@ -349,6 +381,7 @@ def main():
         task_name=task,
         end_flag=rl_config['end_flag'],
         opsd_config=opsd_config,
+        teacher_model=teacher_model,
     )
 
     # 8. Start Training

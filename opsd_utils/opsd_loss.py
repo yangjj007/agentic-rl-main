@@ -145,10 +145,13 @@ def compute_vlm_opsd_loss(
     teacher_image_sizes=None,
     processor=None,
     teacher_batch_num_images=None,
+    teacher_model=None,
 ) -> torch.Tensor:
     """
-    Self-OPSD: same model, student vs privileged teacher prompt, shared student completion.
+    OPSD / OPD: student vs teacher prompt, shared student completion.
+    When teacher_model is set, cross-model OPD (e.g. frozen 7B teacher); else self-OPSD.
     """
+    teacher_model = teacher_model if teacher_model is not None else model
     opsd_debug.log(
         "opsd_loss",
         "compute_vlm_opsd_loss enter",
@@ -178,7 +181,7 @@ def compute_vlm_opsd_loss(
     t_sizes = teacher_image_sizes if teacher_image_sizes is not None else student_image_sizes
     with opsd_debug.timed("opsd_loss", "teacher forward (no grad)"):
         teacher_logits = _teacher_logits_with_oom_retry(
-            model,
+            teacher_model,
             processor,
             teacher_prompt_ids,
             teacher_prompt_mask,
@@ -202,6 +205,8 @@ def compute_vlm_opsd_loss_masked_batch(
     inputs: dict,
     beta: float = 0.5,
     processor=None,
+    teacher_model=None,
+    acc_gate: bool = True,
 ) -> torch.Tensor:
     """Compute mean OPSD loss over opsd_indices within a batch."""
     if not opsd_indices:
@@ -257,7 +262,11 @@ def compute_vlm_opsd_loss_masked_batch(
                 teacher_image_sizes=teacher_sizes,
                 processor=processor,
                 teacher_batch_num_images=teacher_batch_num_images,
+                teacher_model=teacher_model,
             )
+            if acc_gate and "acc_rewards" in inputs:
+                acc_val = float(inputs["acc_rewards"][global_idx].item())
+                loss = loss * max(0.0, 1.0 - acc_val)
         losses.append(loss)
 
     mean_loss = torch.stack(losses).mean()

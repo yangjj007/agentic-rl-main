@@ -15,6 +15,8 @@ ALERT_RL_ZERO_SIGNAL = "RL_ZERO_SIGNAL"
 ALERT_REWARD_FORMAT_HACK = "REWARD_FORMAT_HACK"
 ALERT_DATA_EMPTY_VF = "DATA_EMPTY_VF"
 ALERT_LOGIT_MODE_COLLAPSE = "LOGIT_MODE_COLLAPSE"
+ALERT_OPSD_LEAKAGE_PATTERN = "OPSD_LEAKAGE_PATTERN"
+ALERT_OPSD_ON_CORRECT = "OPSD_ON_CORRECT"
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -182,6 +184,20 @@ class TrainingHealthMonitor:
                 accuracy_mean=acc_mean,
                 degenerate_rate=degenerate_rate,
             )
+        opsd_on_correct = _safe_float(fields.get("opsd_on_correct_rate"))
+        if opsd_on_correct > 0.01:
+            self._emit_alert(
+                step,
+                ALERT_OPSD_ON_CORRECT,
+                opsd_on_correct_rate=opsd_on_correct,
+            )
+        leakage_skip = int(fields.get("opsd_skipped_leakage", 0) or 0)
+        if leakage_skip > 0:
+            self._emit_alert(
+                step,
+                ALERT_OPSD_LEAKAGE_PATTERN,
+                opsd_skipped_leakage=leakage_skip,
+            )
 
     def record_loss(self, step: int, fields: dict[str, Any]) -> None:
         if not self.enabled:
@@ -343,6 +359,11 @@ class TrainingHealthMonitor:
             "completions/repeat_loop_count": "repeat_loop_count",
             "routing/sft_replaced_ratio": "sft_replaced_ratio",
             "routing/opsd_skipped_degenerate": "opsd_skipped_degenerate",
+            "routing/opsd_skipped_leakage": "opsd_skipped_leakage",
+            "routing/opsd_on_correct_rate": "opsd_on_correct_rate",
+            "routing/grpo_on_correct_rate": "grpo_on_correct_rate",
+            "routing/opd_teacher_call_rate": "opd_teacher_call_rate",
+            "teacher/privileged_suffix_has_gold_rate": "privileged_suffix_has_gold_rate",
             "teacher/visual_fact_empty_rate": "visual_fact_empty_rate",
             "teacher/suffix_len_mean": "teacher_suffix_len_mean",
             "signal/grpo_zero_loss_rate": "grpo_zero_loss_rate",

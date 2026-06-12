@@ -548,14 +548,40 @@ accelerate launch main.py --config config/config.py --mode rl \
 | `--opsd_debug` | Verbose OPSD chain logs (`[OPSD-DEBUG]`, or env `DYME_OPSD_DEBUG=1`). |
 | `--opsd_detail_every N` | Full weak-signal bundle every N steps (`[OPSD-DETAIL]`, default 10; `0` = off). |
 | `--opsd_probe_on_generate` / `--no_opsd_probe_on_generate` | Per-generate `[OPSD-PROBE]` on rank 0 (trimode default on). |
-| `--opsd_mode MODE` | Routing mode: `trimode`, `dyme`, `opsd_only`, `replace_sft`, … |
-| `--opsd_providers LIST` | Comma-separated providers, e.g. `text,visual_facts`. |
+| `--opsd_mode MODE` | Routing mode: `trimode` (legacy), `rlsd` (anti-leakage), `copsd_opd`, `dyme`, `opsd_only`, `replace_sft`, … |
+| `--opsd_providers LIST` | Comma-separated providers, e.g. `text`, `format_only`, `visual_facts`. Empty = same-prompt OPD only. |
+
+### 2b. RLSD / anti-leakage OPSD (recommended for ChartQA)
+
+`trimode` routes OPSD on **correct** completions and injects gold answer into the teacher prompt (information leakage). Use **`rlsd`** instead:
+
+- **Correct** → GRPO (on-policy self-learning, no privileged suffix)
+- **Wrong** → same-prompt OPSD / OPD (no `[Reference Answer]` in teacher)
+- **All-wrong group** → online SFT replace (DyME cold-start; no separate offline SFT phase)
+
+```bash
+bash scripts/train_rlsd_chartqa.sh
+# or: --config config/config_rlsd_chartqa.py --opsd_mode rlsd --opsd_providers format_only
+```
+
+**Cross-model OPD (7B frozen teacher + 0.5B student):**
+
+```bash
+export DYME_TEACHER_DEVICE_MAP=cuda:0
+bash scripts/train_opd_7b_chartqa.sh
+# eval: CHECKPOINT_DIR=./outputs/opd-7b-chartqa/final_checkpoint bash scripts/run_eval_ablation.sh
+```
+
+Note: `main.py --mode rl --config config/config.py` uses **`dyme_args`** (not the unused `grpo_args` block in the same file). Pure GRPO baselines use `main_rebuttal.py`.
 
 **Helper scripts** (under `scripts/`):
 
 ```bash
-# TriMode on ChartQA
+# TriMode on ChartQA (legacy; leakage risk on ChartQA)
 bash scripts/train_trimode.sh
+
+# Anti-leakage RLSD (recommended)
+bash scripts/train_rlsd_chartqa.sh
 
 # Ablation matrix: MODE=dyme|trimode|replace_sft|opsd_only|...
 MODE=trimode DYME_OPSD_PROVIDERS=text,visual_facts bash scripts/train_baselines.sh

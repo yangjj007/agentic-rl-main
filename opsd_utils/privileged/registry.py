@@ -6,6 +6,7 @@ from opsd_utils.privileged.image_utils import resolve_teacher_images
 from opsd_utils.privileged.profiles import DEFAULT_PROFILE, effective_profile, resolve_profile_config
 from opsd_utils.privileged.providers import (
     CropProvider,
+    FormatOnlyProvider,
     HybridProvider,
     TextProvider,
     VisualFactsProvider,
@@ -13,21 +14,53 @@ from opsd_utils.privileged.providers import (
 
 PROVIDER_REGISTRY: dict[str, type[PrivilegedContextProvider]] = {
     "text": TextProvider,
+    "format_only": FormatOnlyProvider,
     "visual_facts": VisualFactsProvider,
     "crop": CropProvider,
     "hybrid": HybridProvider,
 }
 
 
-def get_providers(names: list[str], crop_cfg: Optional[dict[str, Any]] = None) -> list[PrivilegedContextProvider]:
+def get_providers(
+    names: list[str],
+    crop_cfg: Optional[dict[str, Any]] = None,
+    *,
+    opsd_config: Optional[dict[str, Any]] = None,
+) -> list[PrivilegedContextProvider]:
     if not names:
-        names = ["text"]
+        return []
+    cfg = opsd_config or {}
+    text_include_gold = bool(cfg.get("text_include_gold", True))
+    format_only_hint = cfg.get("format_only_hint")
+
     if len(names) == 1 and names[0] == "hybrid":
-        return [HybridProvider(["text", "visual_facts"], crop_cfg=crop_cfg)]
+        return [
+            HybridProvider(
+                ["text", "visual_facts"],
+                crop_cfg=crop_cfg,
+                text_include_gold=text_include_gold,
+                format_only_hint=format_only_hint,
+            )
+        ]
     if "hybrid" in names:
         sub = [n for n in names if n != "hybrid"]
-        return [HybridProvider(sub or ["text", "visual_facts"], crop_cfg=crop_cfg)]
-    return [PROVIDER_REGISTRY[n]() for n in names if n in PROVIDER_REGISTRY]
+        return [
+            HybridProvider(
+                sub or ["text", "visual_facts"],
+                crop_cfg=crop_cfg,
+                text_include_gold=text_include_gold,
+                format_only_hint=format_only_hint,
+            )
+        ]
+    providers: list[PrivilegedContextProvider] = []
+    for name in names:
+        if name == "text":
+            providers.append(TextProvider(include_gold=text_include_gold))
+        elif name == "format_only":
+            providers.append(FormatOnlyProvider(format_only_hint))
+        elif name in PROVIDER_REGISTRY:
+            providers.append(PROVIDER_REGISTRY[name]())
+    return providers
 
 
 def build_privileged_context(
@@ -58,8 +91,20 @@ def build_privileged_context(
         sample_keys=list(sample.keys()),
     )
 
-    hybrid = HybridProvider(providers, crop_cfg=crop_cfg)
+    text_include_gold = bool(cfg.get("text_include_gold", True))
+    format_only_hint = cfg.get("format_only_hint")
+    hybrid = HybridProvider(
+        providers,
+        crop_cfg=crop_cfg,
+        text_include_gold=text_include_gold,
+        format_only_hint=format_only_hint,
+    )
     suffix = hybrid.build_teacher_suffix(sample)
+    answer = (sample.get("answer") or "").strip()
+    hint = (sample.get("hint") or "").strip()
+    privileged_suffix_has_gold = bool(
+        answer and answer in suffix
+    ) or bool(hint and hint in suffix) or "[Reference Answer]" in suffix
     teacher_images, image_meta = resolve_teacher_images(sample, profile, crop_cfg)
 
     vf_raw = sample.get("visual_fact") or sample.get("visual_facts")
@@ -76,6 +121,7 @@ def build_privileged_context(
         "privileged_profile": profile,
         "num_teacher_images": len(teacher_images),
         "suffix_len": len(suffix.strip()),
+        "privileged_suffix_has_gold": privileged_suffix_has_gold,
         "visual_fact_len": visual_fact_len,
         **image_meta,
     }

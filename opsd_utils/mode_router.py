@@ -3,6 +3,9 @@ import torch
 from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT
 from opsd_utils import debug_log as opsd_debug
 
+# Anti-leakage modes: correct → GRPO, wrong → OPSD/OPD, else SFT
+_NO_LEAK_MODES = frozenset({"rlsd", "copsd_opd"})
+
 
 def route_prompt_modes(
     acc_rewards: torch.Tensor,
@@ -56,8 +59,15 @@ def route_prompt_modes(
                 selected = MODE_SFT
         elif mode_name == "grpo_opsd_joint":
             selected = MODE_GRPO if any_correct else (MODE_OPSD if recoverable else MODE_SFT)
+        elif mode_name in _NO_LEAK_MODES:
+            if any_correct:
+                selected = MODE_GRPO
+            elif recoverable:
+                selected = MODE_OPSD
+            else:
+                selected = MODE_SFT
         else:
-            # trimode: OPSD replaces GRPO; wrong prompts use DyME SFT cold-start
+            # trimode (legacy/leaky): OPSD on correct; wrong → DyME SFT cold-start
             selected = MODE_OPSD if any_correct else MODE_SFT
 
         modes.append(selected)
@@ -106,9 +116,38 @@ def route_completion_modes(
     threshold = gate.get("correct_threshold", 0.5)
     require_format = gate.get("require_format_for_opsd", False)
 
-    if mode_name == "trimode" and per_completion:
+    if per_completion and mode_name in _NO_LEAK_MODES:
         completion_modes: list[int] = []
-        num_prompts = acc_rewards.shape[0]
+        for i in range(batch_size):
+            prompt_idx = i // num_generations
+            gen_idx = i % num_generations
+            acc_ok = acc_rewards[prompt_idx, gen_idx].item() > threshold
+            fmt_ok = True
+            if require_format and format_rewards is not None:
+                fmt_ok = format_rewards[prompt_idx, gen_idx].item() > 0
+            recoverable = (
+                recoverable_flags[prompt_idx] if recoverable_flags and prompt_idx < len(recoverable_flags) else True
+            )
+            if acc_ok and fmt_ok:
+                selected = MODE_GRPO
+            elif not acc_ok and recoverable:
+                selected = MODE_OPSD
+            else:
+                selected = MODE_SFT
+            completion_modes.append(selected)
+        opsd_debug.log(
+            "mode_router",
+            "route_completion_modes rlsd/copsd per-completion",
+            batch_size=batch_size,
+            num_generations=num_generations,
+            mode_name=mode_name,
+            require_format_for_opsd=require_format,
+            completion_modes=[opsd_debug.MODE_NAMES.get(m, m) for m in completion_modes],
+        )
+        return completion_modes
+
+    if mode_name == "trimode" and per_completion:
+        completion_modes = []
         for i in range(batch_size):
             prompt_idx = i // num_generations
             gen_idx = i % num_generations

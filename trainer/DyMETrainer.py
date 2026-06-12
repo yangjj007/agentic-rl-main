@@ -62,6 +62,7 @@ from reward_utils.checker import RewardCalculator
 from reward_utils.compute_rewards import calculate_rewards_in_parallel, refine_context_in_parallel
 
 from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, DEFAULT_OPSD_CONFIG
+from opsd_utils.leakage import completion_has_leakage_pattern
 from opsd_utils.mode_router import route_prompt_modes, route_completion_modes
 from opsd_utils.recoverability import estimate_recoverable_flags
 from opsd_utils.prompt_builder import build_teacher_prompt_batch
@@ -274,8 +275,10 @@ class DyMETrainer(Trainer):
         task_name: str = None,
         end_flag: str = '<|im_end|>',
         opsd_config: Optional[dict] = None,
+        teacher_model: Optional[PreTrainedModel] = None,
     ):
         self.opsd_config = opsd_config if opsd_config is not None else dict(DEFAULT_OPSD_CONFIG)
+        self.teacher_model = teacher_model
         self.task_name = task_name
         reward_weights = self.opsd_config.get("reward_weights", [1.0, 1.0, 1.0])
         if len(reward_weights) != 3:
@@ -955,12 +958,17 @@ class DyMETrainer(Trainer):
         opsd_mask_list = []
         sft_replaced_list = []
         opsd_skipped_degenerate = 0
+        opsd_skipped_leakage = 0
+        opsd_on_correct = 0
+        grpo_on_correct = 0
         answer_flag = getattr(self.checker, "answer_flag", "Answer:")
         skip_degenerate_opsd = self.opsd_config.get("gate", {}).get("skip_degenerate_for_opsd", False)
+        threshold = self.opsd_config.get("gate", {}).get("correct_threshold", 0.5)
 
         for i in range(len(sft_padded_ids)):
             batch_id = i // self.num_generations
             cm = completion_modes[i] if completion_modes is not None else None
+            use_grpo = opsd_active and cm == MODE_GRPO
             use_opsd = opsd_active and (
                 cm == MODE_OPSD or self.opsd_config.get("mode") == "opsd_only"
             )
@@ -991,8 +999,21 @@ class DyMETrainer(Trainer):
                             run_opsd = False
                             opsd_skipped_degenerate += 1
                             advantange_[:] = 0
+                if run_opsd:
+                    gold = answers[batch_id] if batch_id < len(answers) else ""
+                    text_i = completions[i] if i < len(completions) else ""
+                    if completion_has_leakage_pattern(text_i, gold):
+                        run_opsd = False
+                        opsd_skipped_leakage += 1
+                        advantange_[:] = 0
+                if run_opsd and acc_rewards_flat[i].item() > threshold:
+                    opsd_on_correct += 1
+                    run_opsd = False
+                    advantange_[:] = 0
                 opsd_mask_list.append(run_opsd)
-            elif has_correct[batch_id] > 0:
+            elif use_grpo or (completion_modes is None and has_correct[batch_id] > 0):
+                if use_grpo or acc_rewards_flat[i].item() > threshold:
+                    grpo_on_correct += 1
                 completion_id_ = torch.cat([completion_ids[i], sft_padded_ids[i][0:0]])
                 completion_mask_ = torch.cat([completion_mask[i], sft_attn_masks[i][0:0]])
                 advantange_ = torch.cat([advantages[i], sft_advantages[i][0:0]])
@@ -1032,6 +1053,10 @@ class DyMETrainer(Trainer):
                 {
                     "sft_replaced_ratio": sum(sft_replaced_list) / local_routing_n,
                     "opsd_skipped_degenerate": opsd_skipped_degenerate,
+                    "opsd_skipped_leakage": opsd_skipped_leakage,
+                    "opsd_on_correct_rate": opsd_on_correct / local_routing_n,
+                    "grpo_on_correct_rate": grpo_on_correct / local_routing_n,
+                    "opd_teacher_call_rate": sum(opsd_mask_list) / local_routing_n,
                     "format_mean": float(format_rewards.mean().item()),
                     "accuracy_mean": float(acc_rewards.mean().item()),
                 },
@@ -1180,6 +1205,7 @@ class DyMETrainer(Trainer):
             "advantages": completion_advantange,
             "old_per_token_logps": old_per_token_logps,
             "img_sizes": image_sizes,
+            "acc_rewards": acc_rewards_flat.to(device),
         }
 
         if opsd_active:
@@ -1371,6 +1397,7 @@ class DyMETrainer(Trainer):
                     grpo_loss=float(loss.detach().item()),
                 )
                 with opsd_debug.timed("opsd_loss", "compute_vlm_opsd_loss_masked_batch"):
+                    acc_gate = self.opsd_config.get("loss", {}).get("acc_gate", True)
                     opsd_loss = compute_vlm_opsd_loss_masked_batch(
                         model,
                         opsd_indices,
@@ -1378,6 +1405,8 @@ class DyMETrainer(Trainer):
                         inputs,
                         beta=beta,
                         processor=self.processing_class,
+                        teacher_model=self.teacher_model,
+                        acc_gate=acc_gate,
                     )
                 opsd_loss_tensor = opsd_loss
                 loss = grpo_weight * loss + opsd_weight * opsd_loss
