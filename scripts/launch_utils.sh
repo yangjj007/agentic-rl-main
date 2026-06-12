@@ -57,11 +57,42 @@ launch_num_processes_flag() {
   echo "--num_processes ${num_gpus}"
 }
 
+resolve_accelerate_config() {
+  # Explicit override always wins.
+  if [[ -n "${ACCELERATE_CONFIG:-}" ]]; then
+    echo "${ACCELERATE_CONFIG}"
+    return
+  fi
+
+  local num_gpus
+  num_gpus="$(detect_num_gpus)"
+
+  # Optional ZeRO offload when DeepSpeed is installed.
+  if python - <<'PY' >/dev/null 2>&1
+import deepspeed  # noqa: F401
+PY
+  then
+    if [[ "${num_gpus}" -ge 8 ]]; then
+      echo "default_config_8gpu_deepspeed.yaml"
+    else
+      echo "default_config_deepspeed.yaml"
+    fi
+    return
+  fi
+
+  if [[ "${num_gpus}" -ge 8 ]]; then
+    echo "default_config_8gpu.yaml"
+  else
+    echo "default_config.yaml"
+  fi
+}
+
 print_launch_plan() {
   local num_gpus
   num_gpus="$(detect_num_gpus)"
   echo "============================================================"
   echo "Launch plan: --num_processes ${num_gpus}"
+  echo "accelerate config: $(resolve_accelerate_config)"
   if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
   fi

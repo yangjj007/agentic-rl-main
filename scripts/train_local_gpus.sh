@@ -11,11 +11,7 @@ if [[ "${NUM_PROCESSES}" -lt 1 ]]; then
   exit 1
 fi
 
-if [[ "${NUM_PROCESSES}" -ge 8 ]]; then
-  ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-default_config_8gpu.yaml}"
-else
-  ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-default_config.yaml}"
-fi
+ACCELERATE_CONFIG="$(resolve_accelerate_config)"
 
 export DYME_OPSD_MODE="${DYME_OPSD_MODE:-trimode}"
 export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-text,visual_facts}"

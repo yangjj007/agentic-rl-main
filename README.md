@@ -28,7 +28,8 @@ DyME/
 ├── reward_utils/         # Reward function implementations for RLVR
 ├── config/               # Modular configuration files for experiments
 ├── opsd_utils/           # Privileged-context OPSD / TriMode extensions for DyMETrainer
-├── default_config.yaml   # Default training and environment configurations
+├── default_config.yaml   # Default DDP (MULTI_GPU, no DeepSpeed required)
+├── default_config_deepspeed.yaml  # Optional ZeRO-2 offload when deepspeed is installed
 ├── main.py               # Entry point for DyME training
 ├── main_*.py             # Additional experimental variants (e.g., 7B, LLM-only)
 ├── requirements.txt      # Python dependencies
@@ -373,10 +374,13 @@ A small subset of demo images for verifying the data loading pipeline may be pro
 
 All training scripts are launched using `accelerate`. Pass `--config` as a **Python config file path** (recommended) or a shorthand alias (`norm`, `trimode`, `llavacot`, `low`, `aok`).
 
-**Important:** `num_processes` must match the number of visible GPUs on your node. If you launch 8 processes on a 2-GPU machine, DeepSpeed fails with `CUDA error: invalid device ordinal`. Helper scripts auto-detect GPU count; for manual launch always pass `--num_processes`:
+**Important:** `num_processes` must match the number of visible GPUs on your node. Helper scripts auto-detect GPU count and pick a launch config:
+
+- **Default:** `default_config.yaml` → native **DDP** (`MULTI_GPU`), **no DeepSpeed install required** (sufficient for 0.5B on multi-GPU).
+- **Optional:** if `deepspeed` is installed, scripts auto-select `default_config_deepspeed.yaml` (ZeRO-2 + CPU offload). Force DDP with `ACCELERATE_CONFIG=default_config.yaml`.
 
 ```bash
-# 2-GPU node example
+# 2-GPU node example (DDP)
 accelerate launch --config_file default_config.yaml --num_processes 2 main.py --config config/config.py --mode rl
 
 # 8-GPU node example

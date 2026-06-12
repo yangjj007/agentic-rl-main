@@ -10,7 +10,7 @@ export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-text,visual_facts}"
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/trimode-chartqa}"
 export DYME_OPSD_DEBUG="${DYME_OPSD_DEBUG:-1}"
 
-ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-default_config.yaml}"
+ACCELERATE_CONFIG="$(resolve_accelerate_config)"
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
 

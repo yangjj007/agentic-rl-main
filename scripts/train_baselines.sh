@@ -8,7 +8,7 @@ source "$(dirname "$0")/launch_utils.sh"
 MODE="${MODE:-dyme}"
 CONFIG="${CONFIG:-config/config.py}"
 PROVIDERS="${DYME_OPSD_PROVIDERS:-text}"
-ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-default_config.yaml}"
+ACCELERATE_CONFIG="$(resolve_accelerate_config)"
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
 

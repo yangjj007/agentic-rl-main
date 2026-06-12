@@ -10,7 +10,7 @@ export DYME_OPSD_MODE="${DYME_OPSD_MODE:-rlsd}"
 export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-format_only}"
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/rlsd-chartqa-shortrun}"
 
-ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-default_config.yaml}"
+ACCELERATE_CONFIG="$(resolve_accelerate_config)"
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
 

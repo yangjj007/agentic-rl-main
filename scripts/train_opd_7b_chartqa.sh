@@ -13,7 +13,7 @@ export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa}"
 # Optional: pin teacher to a dedicated GPU, e.g. export DYME_TEACHER_DEVICE_MAP=cuda:3
 export DYME_TEACHER_DEVICE_MAP="${DYME_TEACHER_DEVICE_MAP:-}"
 
-ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-default_config.yaml}"
+ACCELERATE_CONFIG="$(resolve_accelerate_config)"
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
 
