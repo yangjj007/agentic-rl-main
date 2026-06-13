@@ -38,6 +38,8 @@ DYME_OPSD_CONFIG = {
         "require_format_for_opsd": os.environ.get("DYME_OPSD_REQUIRE_FORMAT", "0").strip().lower()
         not in ("0", "false", "no", "off"),
         "skip_degenerate_for_opsd": True,
+        # ChartQA short numeric answers lack "Answer:" — do not block OPSD on format alone
+        "opsd_degenerate_require_answer_flag": False,
     },
     "loss": {
         **antidegen.DYME_OPSD_CONFIG.get("loss", {}),
@@ -54,6 +56,10 @@ _dyme_args = {
         "DYME_OUTPUT_DIR",
         os.path.join(OUTPUTS_DIR, "rlsd-chartqa"),
     ),
+    # Mitigate early RL collapse (newline + bare number + immediate EOS)
+    "temperature": float(os.environ.get("DYME_TEMPERATURE", "0.6")),
+    "repetition_penalty": float(os.environ.get("DYME_REPETITION_PENALTY", "1.35")),
+    "max_completion_length": int(os.environ.get("DYME_MAX_COMPLETION_LENGTH", "128")),
 }
 _max_steps_raw = os.environ.get("DYME_MAX_STEPS", "").strip()
 if _max_steps_raw:

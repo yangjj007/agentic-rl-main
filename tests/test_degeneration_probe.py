@@ -48,6 +48,12 @@ def test_is_degenerate_completion_detects_repeat():
     assert is_degenerate_completion(ids, "Goal: x\n" + "其" * 40)
 
 
+def test_short_numeric_answer_not_degenerate_without_answer_flag():
+    ids = [198, 17, 15, 18, 15]  # \n2030
+    assert not is_degenerate_completion(ids, "\n2030", require_answer_flag=False)
+    assert is_degenerate_completion(ids, "\n2030", require_answer_flag=True)
+
+
 def test_degeneration_flags_missing_answer():
     ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     text = "Goal: test\nObservation: x\nReasoning: y\nConclusion: z"

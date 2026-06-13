@@ -561,17 +561,23 @@ class DyMETrainer(Trainer):
     # Get the per-token log probabilities for the completions for the model and the reference model
     @profiling_decorator
     def _get_per_token_logps(self, model, input_ids, attention_mask, pixel_values, image_sizes, logits_to_keep, batch_size=None) -> torch.Tensor:
+        from opsd_utils.opsd_loss import _slice_image_sizes_batch
+
         batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
         for i in range(0, input_ids.size(0), batch_size):
-            input_ids_batch = input_ids[i : i + batch_size]
-            attention_mask_batch = attention_mask[i : i + batch_size]
-            pixel_values_batch = pixel_values[i : i + batch_size]
+            end = i + batch_size
+            input_ids_batch = input_ids[i:end]
+            attention_mask_batch = attention_mask[i:end]
+            pixel_values_batch = pixel_values[i:end]
+            image_sizes_batch = _slice_image_sizes_batch(image_sizes, i, end)
             # pixel_attention_mask_batch = pixel_attention_mask[i : i + batch_size]
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(
-                input_ids=input_ids_batch, pixel_values=pixel_values_batch, image_sizes=image_sizes,
-                attention_mask=attention_mask_batch
+                input_ids=input_ids_batch,
+                pixel_values=pixel_values_batch,
+                image_sizes=image_sizes_batch,
+                attention_mask=attention_mask_batch,
             ).logits
             # logits = logits[:, :-1, :]  # (B, L-1, H)
             if logits_to_keep is not None:
@@ -963,6 +969,9 @@ class DyMETrainer(Trainer):
         grpo_on_correct = 0
         answer_flag = getattr(self.checker, "answer_flag", "Answer:")
         skip_degenerate_opsd = self.opsd_config.get("gate", {}).get("skip_degenerate_for_opsd", False)
+        opsd_degenerate_require_answer_flag = self.opsd_config.get("gate", {}).get(
+            "opsd_degenerate_require_answer_flag", True
+        )
         threshold = self.opsd_config.get("gate", {}).get("correct_threshold", 0.5)
 
         for i in range(len(sft_padded_ids)):
@@ -994,7 +1003,10 @@ class DyMETrainer(Trainer):
                         ids_eff = completion_ids[i, :eff_len].tolist()
                         text_i = completions[i] if i < len(completions) else ""
                         if opsd_diagnostics.is_degenerate_completion(
-                            ids_eff, text_i, answer_flag=answer_flag
+                            ids_eff,
+                            text_i,
+                            answer_flag=answer_flag,
+                            require_answer_flag=opsd_degenerate_require_answer_flag,
                         ):
                             run_opsd = False
                             opsd_skipped_degenerate += 1

@@ -22,6 +22,21 @@ def _slice_image_sizes(image_sizes, index: int):
     return image_sizes
 
 
+def _slice_image_sizes_batch(image_sizes, start: int, end: int):
+    """Slice image_sizes for a micro-batch row range [start, end)."""
+    if image_sizes is None:
+        return None
+    if isinstance(image_sizes, torch.Tensor):
+        if image_sizes.dim() == 0:
+            return image_sizes
+        if image_sizes.shape[0] >= end:
+            return image_sizes[start:end]
+        return image_sizes
+    if isinstance(image_sizes, (list, tuple)):
+        return image_sizes[start:end] if len(image_sizes) >= end else image_sizes
+    return image_sizes
+
+
 def _teacher_image_counts(inputs: dict, batch_size: int) -> list[int]:
     """Number of teacher images per batch sample (LLaVA-OV stacks images on dim 0)."""
     counts = inputs.get("teacher_num_images")
@@ -164,6 +179,23 @@ def compute_vlm_opsd_loss(
             tuple(teacher_pixel_values.shape) if teacher_pixel_values is not None else None
         ),
     )
+    student_batch_num_images = None
+    if student_pixel_values is not None:
+        n_student_img = int(max(1, student_pixel_values.shape[0]))
+        student_batch_num_images = as_batch_num_images_tensor(
+            n_student_img, student_pixel_values, batch_rows=student_prompt_ids.shape[0]
+        )
+    if processor is not None and student_pixel_values is not None:
+        student_prompt_ids, student_prompt_mask = align_teacher_prompt_image_tokens(
+            model,
+            processor,
+            student_prompt_ids,
+            student_prompt_mask,
+            student_pixel_values,
+            student_image_sizes,
+            batch_num_images=student_batch_num_images,
+        )
+
     student_input = torch.cat([student_prompt_ids, completion_ids], dim=1)
     student_attn = torch.cat([student_prompt_mask, completion_mask], dim=1)
 
@@ -175,6 +207,7 @@ def compute_vlm_opsd_loss(
             attention_mask=student_attn,
             pixel_values=student_pixel_values,
             image_sizes=student_image_sizes,
+            batch_num_images=student_batch_num_images,
         ).logits[:, -logits_to_keep - 1 : -1, :]
 
     t_pixel = teacher_pixel_values if teacher_pixel_values is not None else student_pixel_values

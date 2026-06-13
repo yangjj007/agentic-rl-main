@@ -143,6 +143,7 @@ def _detect_degeneration(
     *,
     answer_flag: str = "Answer:",
     min_single_token_run: int = 8,
+    require_answer_flag: bool = True,
 ) -> tuple[bool, list[str]]:
     """Heuristics for repetitive / format-broken completions."""
     reasons: list[str] = []
@@ -155,9 +156,10 @@ def _detect_degeneration(
         unique_ratio = len(set(token_ids)) / len(token_ids)
         if unique_ratio < 0.12:
             reasons.append(f"LOW_UNIQUE_RATIO({unique_ratio:.3f})")
-    answer_count = len(re.findall(f"(?i){re.escape(answer_flag)}", text or ""))
-    if answer_count != 1:
-        reasons.append(f"ANSWER_FLAG_COUNT({answer_count})")
+    if require_answer_flag:
+        answer_count = len(re.findall(f"(?i){re.escape(answer_flag)}", text or ""))
+        if answer_count != 1:
+            reasons.append(f"ANSWER_FLAG_COUNT({answer_count})")
     if _detect_char_repeat(text or ""):
         reasons.append("CHAR_REPEAT")
     return bool(reasons), reasons
@@ -173,6 +175,7 @@ def is_degenerate_completion(
     *,
     answer_flag: str = "Answer:",
     min_single_token_run: int = 8,
+    require_answer_flag: bool = True,
 ) -> bool:
     """Return True when completion looks like a repetition / format-broken sample."""
     is_deg, _ = _detect_degeneration(
@@ -180,6 +183,7 @@ def is_degenerate_completion(
         text,
         answer_flag=answer_flag,
         min_single_token_run=min_single_token_run,
+        require_answer_flag=require_answer_flag,
     )
     return is_deg
 
