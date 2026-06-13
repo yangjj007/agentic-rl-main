@@ -13,6 +13,7 @@ from opsd_utils.teacher_batching import (
     get_teacher_vision_for_sample,
     split_tensor_dict_for_opsd,
     stack_teacher_processor_batches,
+    student_batch_num_images_tensor,
     truncate_image_tokens,
 )
 
@@ -122,6 +123,22 @@ def test_as_batch_num_images_tensor_shape():
 def test_as_batch_num_images_tensor_none_cases():
     assert as_batch_num_images_tensor(2, None) is None
     assert as_batch_num_images_tensor(None, torch.zeros(1)) is None
+
+
+def test_student_batch_num_images_tensor_collator_layout():
+    """Processor-batched student pixels: dim0 is batch size, one image per row."""
+    pv = torch.zeros(4, 7, 3, 384, 384)
+    bn = student_batch_num_images_tensor(pv, batch_rows=4)
+    assert bn is not None
+    assert bn.tolist() == [1, 1, 1, 1]
+
+
+def test_student_batch_num_images_tensor_stacked_images():
+    """Per-sample vision tensor with multiple images (dim0 = num images)."""
+    pv = torch.zeros(2, 7, 3, 384, 384)
+    bn = student_batch_num_images_tensor(pv, batch_rows=1)
+    assert bn is not None
+    assert bn.tolist() == [2]
 
 
 def test_image_feature_row_count_list_return():

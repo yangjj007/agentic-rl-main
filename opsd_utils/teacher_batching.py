@@ -232,6 +232,26 @@ def as_batch_num_images_tensor(
     return torch.tensor([n] * batch_rows, device=device, dtype=torch.long)
 
 
+def student_batch_num_images_tensor(
+    pixel_values: Optional[torch.Tensor],
+    batch_rows: int,
+) -> Optional[torch.Tensor]:
+    """
+    Infer batch_num_images for student / collator-batched pixel_values.
+
+    HF processor output uses dim0 as batch size (one chart image per row); do not
+    treat dim0 as the image count when it equals batch_rows.
+    """
+    if pixel_values is None or batch_rows <= 0:
+        return None
+    device = pixel_values.device
+    pv_batch = int(pixel_values.shape[0])
+    if pixel_values.ndim >= 4 and pv_batch == batch_rows:
+        return torch.ones(batch_rows, device=device, dtype=torch.long)
+    n_img = int(max(1, pv_batch))
+    return torch.tensor([n_img] * batch_rows, device=device, dtype=torch.long)
+
+
 def _image_feature_row_count(result) -> int:
     """Total vision placeholder rows from LLaVA-OV get_image_features return value."""
     if hasattr(result, "pooler_output") and result.pooler_output is not None:

@@ -6,6 +6,7 @@ from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
     as_batch_num_images_tensor,
     get_teacher_vision_for_sample,
+    student_batch_num_images_tensor,
 )
 
 
@@ -179,12 +180,9 @@ def compute_vlm_opsd_loss(
             tuple(teacher_pixel_values.shape) if teacher_pixel_values is not None else None
         ),
     )
-    student_batch_num_images = None
-    if student_pixel_values is not None:
-        n_student_img = int(max(1, student_pixel_values.shape[0]))
-        student_batch_num_images = as_batch_num_images_tensor(
-            n_student_img, student_pixel_values, batch_rows=student_prompt_ids.shape[0]
-        )
+    student_batch_num_images = student_batch_num_images_tensor(
+        student_pixel_values, student_prompt_ids.shape[0]
+    )
     if processor is not None and student_pixel_values is not None:
         student_prompt_ids, student_prompt_mask = align_teacher_prompt_image_tokens(
             model,

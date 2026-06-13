@@ -562,6 +562,10 @@ class DyMETrainer(Trainer):
     @profiling_decorator
     def _get_per_token_logps(self, model, input_ids, attention_mask, pixel_values, image_sizes, logits_to_keep, batch_size=None) -> torch.Tensor:
         from opsd_utils.opsd_loss import _slice_image_sizes_batch
+        from opsd_utils.teacher_batching import (
+            align_teacher_prompt_image_tokens,
+            student_batch_num_images_tensor,
+        )
 
         batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
@@ -569,16 +573,43 @@ class DyMETrainer(Trainer):
             end = i + batch_size
             input_ids_batch = input_ids[i:end]
             attention_mask_batch = attention_mask[i:end]
-            pixel_values_batch = pixel_values[i:end]
+            pixel_values_batch = pixel_values[i:end] if pixel_values is not None else None
             image_sizes_batch = _slice_image_sizes_batch(image_sizes, i, end)
-            # pixel_attention_mask_batch = pixel_attention_mask[i : i + batch_size]
+            batch_rows = input_ids_batch.size(0)
+            prompt_len = input_ids_batch.size(1) - logits_to_keep
+            prompt_ids_batch = input_ids_batch[:, :prompt_len]
+            prompt_mask_batch = attention_mask_batch[:, :prompt_len]
+            completion_ids_batch = input_ids_batch[:, prompt_len:]
+            completion_mask_batch = attention_mask_batch[:, prompt_len:]
+
+            batch_num_images = student_batch_num_images_tensor(pixel_values_batch, batch_rows)
+            if (
+                pixel_values_batch is not None
+                and self.processing_class is not None
+                and batch_num_images is not None
+            ):
+                prompt_ids_batch, prompt_mask_batch = align_teacher_prompt_image_tokens(
+                    model,
+                    self.processing_class,
+                    prompt_ids_batch,
+                    prompt_mask_batch,
+                    pixel_values_batch,
+                    image_sizes_batch,
+                    batch_num_images=batch_num_images,
+                )
+                input_ids_batch = torch.cat([prompt_ids_batch, completion_ids_batch], dim=1)
+                attention_mask_batch = torch.cat([prompt_mask_batch, completion_mask_batch], dim=1)
+
+            forward_kwargs: dict[str, Any] = {
+                "input_ids": input_ids_batch,
+                "attention_mask": attention_mask_batch,
+            }
+            if pixel_values_batch is not None:
+                forward_kwargs["pixel_values"] = pixel_values_batch
+                forward_kwargs["image_sizes"] = image_sizes_batch
+                forward_kwargs["batch_num_images"] = batch_num_images
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            logits = model(
-                input_ids=input_ids_batch,
-                pixel_values=pixel_values_batch,
-                image_sizes=image_sizes_batch,
-                attention_mask=attention_mask_batch,
-            ).logits
+            logits = model(**forward_kwargs).logits
             # logits = logits[:, :-1, :]  # (B, L-1, H)
             if logits_to_keep is not None:
                 logits = logits[:, -logits_to_keep-1:, :]  # (B, logits_to_keep, H)
