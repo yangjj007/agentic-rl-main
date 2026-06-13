@@ -1157,6 +1157,12 @@ def log_opsd_jsd_diagnostics(
     batch_size = inputs["prompt_ids"].shape[0]
     teacher_img_counts = _teacher_image_counts(inputs, batch_size)
 
+    # Run diagnostics forwards on the *unwrapped* module so they do not trigger
+    # DDP buffer-broadcast / reduction collectives. The number of diagnostics
+    # forwards depends on per-rank opsd_indices, which would otherwise desync
+    # NCCL collectives across ranks on detail-logging steps.
+    fwd_model = getattr(model, "module", model)
+
     for k, global_idx in enumerate(opsd_indices[:max_samples]):
         local = global_idx
         prompt_ids = inputs["prompt_ids"][local : local + 1]
@@ -1214,14 +1220,14 @@ def log_opsd_jsd_diagnostics(
         }
 
         with torch.no_grad():
-            student_logits = model(
+            student_logits = fwd_model(
                 input_ids=student_input,
                 attention_mask=student_attn,
                 pixel_values=pixel_values,
                 image_sizes=img_sizes,
                 batch_num_images=student_batch_num_images,
             ).logits[:, -logits_to_keep - 1 : -1, :]
-            teacher_logits = model(**teacher_forward_kwargs).logits[:, -logits_to_keep - 1 : -1, :]
+            teacher_logits = fwd_model(**teacher_forward_kwargs).logits[:, -logits_to_keep - 1 : -1, :]
 
         stats = jsd_token_stats(student_logits, teacher_logits, completion_mask.float(), beta=beta)
         decoded = tokenizer.decode(

@@ -238,10 +238,21 @@ def compute_vlm_opsd_loss_masked_batch(
     processor=None,
     teacher_model=None,
     acc_gate: bool = True,
+    pad_to_count: int | None = None,
 ) -> torch.Tensor:
-    """Compute mean OPSD loss over opsd_indices within a batch."""
-    if not opsd_indices:
-        opsd_debug.log("opsd_loss", "compute_vlm_opsd_loss_masked_batch skipped (empty opsd_indices)")
+    """Compute mean OPSD loss over opsd_indices within a batch.
+
+    Under DDP every rank must run the *same* number of student/teacher
+    forwards, otherwise the per-forward buffer broadcast (and gradient
+    reduction) collectives desync across ranks and NCCL eventually times out.
+    ``pad_to_count`` is the global-max OPSD sample count across ranks; ranks
+    with fewer (or zero) real samples run extra zero-weighted "dummy" forwards
+    on a valid local row so the collective sequence stays aligned.
+    """
+    real_count = len(opsd_indices)
+    target_count = pad_to_count if pad_to_count is not None else real_count
+    if target_count <= 0:
+        opsd_debug.log("opsd_loss", "compute_vlm_opsd_loss_masked_batch skipped (no OPSD samples)")
         return torch.tensor(0.0, device=inputs["prompt_ids"].device, requires_grad=True)
 
     opsd_debug.log(
@@ -250,13 +261,19 @@ def compute_vlm_opsd_loss_masked_batch(
         opsd_indices=opsd_indices,
         all_indices=all_indices,
         beta=beta,
+        real_count=real_count,
+        target_count=target_count,
     )
     losses = []
     idx_map = {g: i for i, g in enumerate(all_indices)}
     batch_size = inputs["prompt_ids"].shape[0]
     teacher_img_counts = _teacher_image_counts(inputs, batch_size)
 
-    for global_idx in opsd_indices:
+    for step_idx in range(target_count):
+        is_real = step_idx < real_count
+        # Dummy iterations reuse the first available row so shapes stay valid;
+        # their contribution is zeroed out below.
+        global_idx = opsd_indices[step_idx] if is_real else all_indices[0]
         local = idx_map[global_idx]
         student_sizes = _slice_image_sizes(inputs.get("img_sizes"), local)
         t_pixel, teacher_sizes = get_teacher_vision_for_sample(
@@ -295,11 +312,22 @@ def compute_vlm_opsd_loss_masked_batch(
                 teacher_batch_num_images=teacher_batch_num_images,
                 teacher_model=teacher_model,
             )
-            if acc_gate and "acc_rewards" in inputs:
+            if not is_real:
+                # Keep the autograd graph / DDP collective alive but contribute nothing.
+                loss = loss * 0.0
+            elif acc_gate and "acc_rewards" in inputs:
                 acc_val = float(inputs["acc_rewards"][global_idx].item())
                 loss = loss * max(0.0, 1.0 - acc_val)
         losses.append(loss)
 
-    mean_loss = torch.stack(losses).mean()
-    opsd_debug.log("opsd_loss", "compute_vlm_opsd_loss_masked_batch done", mean_loss=float(mean_loss.detach().item()))
+    # Mean over real samples only; dummy (zero-weighted) forwards keep the
+    # collective sequence aligned across ranks without skewing the loss scale.
+    mean_loss = torch.stack(losses).sum() / max(real_count, 1)
+    opsd_debug.log(
+        "opsd_loss",
+        "compute_vlm_opsd_loss_masked_batch done",
+        mean_loss=float(mean_loss.detach().item()),
+        real_count=real_count,
+        target_count=target_count,
+    )
     return mean_loss

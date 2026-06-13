@@ -1432,6 +1432,25 @@ class DyMETrainer(Trainer):
             opsd_indices: list[int] = []
             if opsd_mask.any():
                 opsd_indices = opsd_mask.nonzero(as_tuple=True)[0].tolist()
+
+            # DDP safety: every rank must run the same number of student/teacher
+            # forwards inside the OPSD loop, otherwise the per-forward buffer
+            # broadcast / gradient reduction collectives desync across ranks and
+            # NCCL times out (rank A on _ALLGATHER_BASE vs rank B on BROADCAST at
+            # the same seq). Synchronise the per-rank OPSD sample count to the
+            # global max and pad short/empty ranks with zero-weighted forwards.
+            local_opsd_count = len(opsd_indices)
+            global_max_opsd = local_opsd_count
+            if self.accelerator.num_processes > 1:
+                count_tensor = torch.tensor(
+                    [local_opsd_count], device=loss.device, dtype=torch.long
+                )
+                torch.distributed.all_reduce(
+                    count_tensor, op=torch.distributed.ReduceOp.MAX
+                )
+                global_max_opsd = int(count_tensor.item())
+
+            if global_max_opsd > 0:
                 opsd_debug.log(
                     "opsd_loss",
                     "compute_vlm_opsd_loss_masked_batch args",
@@ -1440,6 +1459,8 @@ class DyMETrainer(Trainer):
                     opsd_weight=opsd_weight,
                     grpo_weight=grpo_weight,
                     grpo_loss=float(loss.detach().item()),
+                    local_opsd_count=local_opsd_count,
+                    global_max_opsd=global_max_opsd,
                 )
                 with opsd_debug.timed("opsd_loss", "compute_vlm_opsd_loss_masked_batch"):
                     acc_gate = self.opsd_config.get("loss", {}).get("acc_gate", True)
@@ -1452,6 +1473,7 @@ class DyMETrainer(Trainer):
                         processor=self.processing_class,
                         teacher_model=self.teacher_model,
                         acc_gate=acc_gate,
+                        pad_to_count=global_max_opsd,
                     )
                 opsd_loss_tensor = opsd_loss
                 loss = grpo_weight * loss + opsd_weight * opsd_loss
@@ -1463,7 +1485,7 @@ class DyMETrainer(Trainer):
                     combined_loss=float(loss.detach().item()),
                 )
             else:
-                opsd_debug.log("opsd_loss", "opsd_mask empty on this batch, skip OPSD loss")
+                opsd_debug.log("opsd_loss", "opsd_mask empty on all ranks, skip OPSD loss")
 
             # Every rank must enter this collective; skipping on empty local mask deadlocks NCCL.
             opsd_metric_value = (
