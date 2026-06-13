@@ -231,6 +231,63 @@ def test_align_passes_batch_num_images():
     assert out_mask.shape == mask.shape
 
 
+def test_align_batched_per_row_not_global():
+    """Two-row batch must align each row independently."""
+    captured: dict = {"calls": []}
+
+    class _Core:
+        config = type(
+            "C",
+            (),
+            {
+                "vision_feature_layer": -1,
+                "vision_feature_select_strategy": "full",
+                "vision_aspect_ratio": "anyres_max_9",
+            },
+        )()
+
+        def get_image_features(self, pixel_values, image_sizes, **kwargs):
+            captured["calls"].append(tuple(pixel_values.shape))
+            return [torch.zeros(3, 64)]
+
+    class _Model:
+        model = _Core()
+
+    class _Tok:
+        pad_token_id = 0
+        image_token_id = 151646
+
+    class _Proc:
+        tokenizer = _Tok()
+        image_token = "<image>"
+
+    img_id = 151646
+    proc = _Proc()
+    ids = torch.tensor(
+        [
+            [img_id] * 5 + [1, 2, 0, 0],
+            [img_id] + [3, 4, 0, 0, 0, 0, 0, 0],
+        ]
+    )
+    mask = torch.ones_like(ids)
+    pv = torch.zeros(2, 1, 3, 4, 4)
+    bn = student_batch_num_images_tensor(pv, batch_rows=2)
+    out_ids, _out_mask = align_teacher_prompt_image_tokens(
+        _Model(),
+        proc,
+        ids,
+        mask,
+        pv,
+        None,
+        batch_num_images=bn,
+    )
+    assert len(captured["calls"]) == 2
+    assert captured["calls"][0] == (1, 1, 3, 4, 4)
+    assert captured["calls"][1] == (1, 1, 3, 4, 4)
+    assert int((out_ids[0] == img_id).sum().item()) == 3
+    assert int((out_ids[1] == img_id).sum().item()) == 1
+
+
 def test_truncate_image_tokens_keeps_first_n():
     img_id = 151646
     pad_id = 0

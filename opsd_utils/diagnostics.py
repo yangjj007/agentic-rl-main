@@ -1138,6 +1138,7 @@ def log_opsd_jsd_diagnostics(
     opsd_indices: list[int],
     beta: float,
     tokenizer,
+    processor=None,
     max_samples: int = 2,
 ) -> None:
     if not opsd_debug.should_log_detail(global_step) or not opsd_indices:
@@ -1150,6 +1151,7 @@ def log_opsd_jsd_diagnostics(
         align_teacher_prompt_image_tokens,
         as_batch_num_images_tensor,
         get_teacher_vision_for_sample,
+        student_batch_num_images_tensor,
     )
 
     batch_size = inputs["prompt_ids"].shape[0]
@@ -1173,9 +1175,6 @@ def log_opsd_jsd_diagnostics(
             t_pixel = pixel_values
             teacher_sizes = img_sizes
 
-        student_input = torch.cat([prompt_ids, completion_ids], dim=1)
-        student_attn = torch.cat([prompt_mask, completion_mask], dim=1)
-        processor = inputs.get("processor")
         n_img = teacher_img_counts[local]
         teacher_batch_num_images = as_batch_num_images_tensor(n_img, t_pixel)
         if processor is not None:
@@ -1192,6 +1191,20 @@ def log_opsd_jsd_diagnostics(
         teacher_attn = torch.cat([teacher_prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)
 
+        student_batch_num_images = student_batch_num_images_tensor(pixel_values, 1)
+        if processor is not None and pixel_values is not None:
+            prompt_ids, prompt_mask = align_teacher_prompt_image_tokens(
+                model,
+                processor,
+                prompt_ids,
+                prompt_mask,
+                pixel_values,
+                img_sizes,
+                batch_num_images=student_batch_num_images,
+            )
+        student_input = torch.cat([prompt_ids, completion_ids], dim=1)
+        student_attn = torch.cat([prompt_mask, completion_mask], dim=1)
+
         teacher_forward_kwargs = {
             "input_ids": teacher_input,
             "attention_mask": teacher_attn,
@@ -1206,6 +1219,7 @@ def log_opsd_jsd_diagnostics(
                 attention_mask=student_attn,
                 pixel_values=pixel_values,
                 image_sizes=img_sizes,
+                batch_num_images=student_batch_num_images,
             ).logits[:, -logits_to_keep - 1 : -1, :]
             teacher_logits = model(**teacher_forward_kwargs).logits[:, -logits_to_keep - 1 : -1, :]
 

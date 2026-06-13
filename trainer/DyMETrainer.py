@@ -567,10 +567,12 @@ class DyMETrainer(Trainer):
             student_batch_num_images_tensor,
         )
 
-        batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
+        batch_size = batch_size or input_ids.size(0)
+        # LLaVA-OV: always forward one sample at a time when vision tensors are present.
+        chunk_size = 1 if pixel_values is not None else batch_size
         all_logps = []
-        for i in range(0, input_ids.size(0), batch_size):
-            end = i + batch_size
+        for i in range(0, input_ids.size(0), chunk_size):
+            end = i + chunk_size
             input_ids_batch = input_ids[i:end]
             attention_mask_batch = attention_mask[i:end]
             pixel_values_batch = pixel_values[i:end] if pixel_values is not None else None
@@ -1481,6 +1483,7 @@ class DyMETrainer(Trainer):
                     opsd_indices=opsd_indices,
                     beta=beta,
                     tokenizer=self.processing_class.tokenizer,
+                    processor=self.processing_class,
                 )
             if self.accelerator.num_processes > 1:
                 opsd_debug.log_sync_point("dist", "wait_for_everyone after OPSD compute_loss")

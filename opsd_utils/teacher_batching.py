@@ -339,7 +339,35 @@ def truncate_image_tokens(
     )
 
 
-def align_teacher_prompt_image_tokens(
+def _slice_row_image_sizes(image_sizes, index: int):
+    if image_sizes is None:
+        return None
+    if isinstance(image_sizes, torch.Tensor):
+        if image_sizes.dim() == 0:
+            return image_sizes
+        if image_sizes.shape[0] > index:
+            return image_sizes[index : index + 1]
+        return image_sizes
+    if isinstance(image_sizes, (list, tuple)) and len(image_sizes) > index:
+        return image_sizes[index]
+    return image_sizes
+
+
+def _row_batch_num_images(
+    batch_num_images: Optional[torch.Tensor],
+    index: int,
+    pixel_values_row,
+) -> Optional[torch.Tensor]:
+    if batch_num_images is None:
+        return student_batch_num_images_tensor(pixel_values_row, 1)
+    if batch_num_images.numel() == 1:
+        return batch_num_images
+    if batch_num_images.shape[0] > index:
+        return batch_num_images[index : index + 1]
+    return batch_num_images
+
+
+def _align_prompt_image_tokens_one_row(
     model,
     processor,
     input_ids: torch.Tensor,
@@ -348,7 +376,7 @@ def align_teacher_prompt_image_tokens(
     image_sizes,
     batch_num_images: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sync image placeholder count in input_ids to vision feature count."""
+    """Align image placeholders for a single batch row (shape [1, L])."""
     if pixel_values is None:
         return input_ids, attention_mask
     img_id = image_token_id(processor)
@@ -360,13 +388,79 @@ def align_teacher_prompt_image_tokens(
         return input_ids, attention_mask
     opsd_debug.log(
         "teacher_batching",
-        "align teacher image tokens to vision features",
+        "align image tokens to vision features (one row)",
         image_tokens=n_tokens,
         image_features=n_features,
         delta=n_tokens - n_features,
+        batch_num_images=batch_num_images.detach().cpu().tolist() if batch_num_images is not None else None,
     )
     pad_id = int(processor.tokenizer.pad_token_id)
     return truncate_image_tokens(input_ids, attention_mask, img_id, n_features, pad_id)
+
+
+def _pad_aligned_batch_rows(
+    ids_rows: list[torch.Tensor],
+    mask_rows: list[torch.Tensor],
+    pad_id: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    max_len = max(int(row.shape[1]) for row in ids_rows)
+    out_ids: list[torch.Tensor] = []
+    out_masks: list[torch.Tensor] = []
+    for ids, mask in zip(ids_rows, mask_rows):
+        pad_len = max_len - ids.shape[1]
+        if pad_len > 0:
+            ids = F.pad(ids, (0, pad_len), value=pad_id)
+            mask = F.pad(mask, (0, pad_len), value=0)
+        out_ids.append(ids)
+        out_masks.append(mask)
+    return torch.cat(out_ids, dim=0), torch.cat(out_masks, dim=0)
+
+
+def align_teacher_prompt_image_tokens(
+    model,
+    processor,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    pixel_values,
+    image_sizes,
+    batch_num_images: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sync image placeholder count in input_ids to vision feature count (per sample)."""
+    if pixel_values is None:
+        return input_ids, attention_mask
+
+    batch_rows = int(input_ids.shape[0])
+    if batch_rows <= 1:
+        return _align_prompt_image_tokens_one_row(
+            model,
+            processor,
+            input_ids,
+            attention_mask,
+            pixel_values,
+            image_sizes,
+            batch_num_images=batch_num_images,
+        )
+
+    # Batched prompts must be aligned per row; global token/feature totals hide per-row mismatch.
+    pad_id = int(processor.tokenizer.pad_token_id)
+    ids_rows: list[torch.Tensor] = []
+    mask_rows: list[torch.Tensor] = []
+    for row in range(batch_rows):
+        row_pv = pixel_values[row : row + 1]
+        row_sizes = _slice_row_image_sizes(image_sizes, row)
+        row_bn = _row_batch_num_images(batch_num_images, row, row_pv)
+        row_ids, row_mask = _align_prompt_image_tokens_one_row(
+            model,
+            processor,
+            input_ids[row : row + 1],
+            attention_mask[row : row + 1],
+            row_pv,
+            row_sizes,
+            batch_num_images=row_bn,
+        )
+        ids_rows.append(row_ids)
+        mask_rows.append(row_mask)
+    return _pad_aligned_batch_rows(ids_rows, mask_rows, pad_id)
 
 
 def get_teacher_vision_for_sample(
