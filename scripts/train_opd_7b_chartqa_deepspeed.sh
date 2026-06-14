@@ -26,8 +26,8 @@ export DYME_TEACHER_DEVICE_MAP="${DYME_TEACHER_DEVICE_MAP:-auto}"
 export DYME_OPSD_DETAIL_MIN_FREE_GB="${DYME_OPSD_DETAIL_MIN_FREE_GB:-4.0}"
 export DYME_OPSD_DETAIL_EVERY="${DYME_OPSD_DETAIL_EVERY:-0}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-export DYME_GRADIENT_CHECKPOINTING="${DYME_GRADIENT_CHECKPOINTING:-1}"
-# DeepSpeed ZeRO-1/2 requires non-reentrant checkpointing (set automatically in main.py).
+export DYME_GRADIENT_CHECKPOINTING="${DYME_GRADIENT_CHECKPOINTING:-0}"
+# ZeRO-1/2: one student forward/step (auto); ZeRO-3 or DDP may set DYME_GRADIENT_CHECKPOINTING=1.
 
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan

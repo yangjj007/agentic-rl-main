@@ -104,3 +104,38 @@ def gradient_checkpointing_enable_kwargs(config_name: Optional[str] = None) -> O
     if override in ("0", "false", "no", "off"):
         return {"use_reentrant": False}
     return {"use_reentrant": False}
+
+
+def deepspeed_requires_single_student_forward(config_name: Optional[str] = None) -> bool:
+    """
+    DeepSpeed ZeRO-1/2 cannot reduce gradients when the student runs multiple
+    forwards in one backward (GRPO micro-chunks + OPSD loop).
+    """
+    stage = deepspeed_zero_stage(config_name)
+    return stage is not None and stage <= 2
+
+
+def should_disable_gradient_checkpointing(config_name: Optional[str] = None) -> bool:
+    """Gradient checkpointing also triggers double reduction under ZeRO-1/2."""
+    return deepspeed_requires_single_student_forward(config_name)
+
+
+def student_forward_chunk_size(
+    batch_size: int,
+    has_vision: bool,
+    config_name: Optional[str] = None,
+) -> int:
+    """
+    Micro-batch size for student forwards in ``_get_per_token_logps``.
+
+    Under ZeRO-1/2 we must use one forward per backward (full local batch by default).
+    Override with ``DYME_STUDENT_FORWARD_CHUNK`` only if you accept ZeRO-3+ or OOM risk.
+    """
+    if not has_vision:
+        return batch_size
+    if not deepspeed_requires_single_student_forward(config_name):
+        return 1
+    override = os.environ.get("DYME_STUDENT_FORWARD_CHUNK", "").strip()
+    if override.isdigit():
+        return max(1, min(batch_size, int(override)))
+    return batch_size

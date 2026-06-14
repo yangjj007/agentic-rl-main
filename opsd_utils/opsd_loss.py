@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from opsd_utils import debug_log as opsd_debug
+from opsd_utils.deepspeed_utils import deepspeed_requires_single_student_forward
 from opsd_utils import diagnostics as opsd_diagnostics
 from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
@@ -182,6 +182,13 @@ def _teacher_logits_with_oom_retry(
                 raise
 
 
+def slice_student_completion_logits(full_logits: torch.Tensor, logits_to_keep: int) -> torch.Tensor:
+    """Completion-token logits aligned with ``_get_per_token_logps`` / OPSD JSD."""
+    logits = full_logits[:, -logits_to_keep - 1 :, :]
+    logits = logits[:, :-1, :]
+    return logits[:, -logits_to_keep:, :]
+
+
 def compute_vlm_opsd_loss(
     model,
     student_prompt_ids,
@@ -201,6 +208,7 @@ def compute_vlm_opsd_loss(
     global_idx: int | None = None,
     capture_jsd_detail: bool = False,
     tokenizer=None,
+    student_logits=None,
 ) -> torch.Tensor:
     """
     OPSD / OPD: student vs teacher prompt, shared student completion.
@@ -238,14 +246,21 @@ def compute_vlm_opsd_loss(
 
     logits_to_keep = completion_ids.size(1)
 
-    with opsd_debug.timed("opsd_loss", "student forward (grad)"):
-        student_logits = model(
-            input_ids=student_input,
-            attention_mask=student_attn,
-            pixel_values=student_pixel_values,
-            image_sizes=student_image_sizes,
-            batch_num_images=student_batch_num_images,
-        ).logits[:, -logits_to_keep - 1 : -1, :]
+    if student_logits is None:
+        with opsd_debug.timed("opsd_loss", "student forward (grad)"):
+            student_logits = model(
+                input_ids=student_input,
+                attention_mask=student_attn,
+                pixel_values=student_pixel_values,
+                image_sizes=student_image_sizes,
+                batch_num_images=student_batch_num_images,
+            ).logits[:, -logits_to_keep - 1 : -1, :]
+    else:
+        opsd_debug.log(
+            "opsd_loss",
+            "reuse GRPO student completion logits (DeepSpeed single-forward)",
+            student_logits_shape=tuple(student_logits.shape),
+        )
 
     t_pixel = teacher_pixel_values if teacher_pixel_values is not None else student_pixel_values
     t_sizes = teacher_image_sizes if teacher_image_sizes is not None else student_image_sizes
@@ -308,6 +323,7 @@ def compute_vlm_opsd_loss_masked_batch(
     global_step: int | None = None,
     tokenizer=None,
     detail_max_samples: int = 2,
+    student_completion_logits=None,
 ) -> torch.Tensor:
     """Compute mean OPSD loss over opsd_indices within a batch.
 
@@ -372,6 +388,13 @@ def compute_vlm_opsd_loss_masked_batch(
         )
         n_img = teacher_img_counts[local]
         teacher_batch_num_images = as_batch_num_images_tensor(n_img, t_pixel)
+        if not is_real and deepspeed_requires_single_student_forward():
+            # ZeRO-1/2: avoid extra student forwards (even loss*0 still backprops).
+            losses.append(torch.zeros((), device=inputs["prompt_ids"].device, requires_grad=True))
+            continue
+        precomputed_student_logits = None
+        if student_completion_logits is not None:
+            precomputed_student_logits = student_completion_logits[local : local + 1]
         with opsd_debug.timed("opsd_loss", f"sample_opsd_loss idx={global_idx}"):
             loss = compute_vlm_opsd_loss(
                 model,
@@ -392,6 +415,7 @@ def compute_vlm_opsd_loss_masked_batch(
                 global_idx=global_idx if is_real else None,
                 capture_jsd_detail=capture_jsd_detail and is_real,
                 tokenizer=tokenizer,
+                student_logits=precomputed_student_logits,
             )
             if not is_real:
                 # Keep the autograd graph / DDP collective alive but contribute nothing.

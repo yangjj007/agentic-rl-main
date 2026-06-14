@@ -35,6 +35,7 @@ from opsd_utils.deepspeed_utils import (
     deepspeed_zero_stage,
     gradient_checkpointing_enable_kwargs,
     is_deepspeed_accelerate_config,
+    should_disable_gradient_checkpointing,
     uses_deepspeed_json_file,
 )
 
@@ -417,18 +418,27 @@ def main():
 
     model, processor = load_model_and_processor(model_config)
     if os.environ.get("DYME_GRADIENT_CHECKPOINTING", "").strip().lower() in ("1", "true", "yes", "on"):
-        gc_kwargs = gradient_checkpointing_enable_kwargs()
-        if gc_kwargs:
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gc_kwargs)
+        if should_disable_gradient_checkpointing():
+            if accelerator.is_main_process:
+                print(
+                    "[DyME] gradient checkpointing skipped: incompatible with DeepSpeed ZeRO-1/2 "
+                    "(multiple student forwards / checkpoint backward). "
+                    "Use ZeRO-3, DDP, or DYME_GRADIENT_CHECKPOINTING=0.",
+                    flush=True,
+                )
         else:
-            model.gradient_checkpointing_enable()
-        if accelerator.is_main_process:
-            mode = f"use_reentrant={gc_kwargs['use_reentrant']}" if gc_kwargs else "default"
-            print(
-                f"[DyME] gradient checkpointing enabled on student "
-                f"(DYME_GRADIENT_CHECKPOINTING, {mode})",
-                flush=True,
-            )
+            gc_kwargs = gradient_checkpointing_enable_kwargs()
+            if gc_kwargs:
+                model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gc_kwargs)
+            else:
+                model.gradient_checkpointing_enable()
+            if accelerator.is_main_process:
+                mode = f"use_reentrant={gc_kwargs['use_reentrant']}" if gc_kwargs else "default"
+                print(
+                    f"[DyME] gradient checkpointing enabled on student "
+                    f"(DYME_GRADIENT_CHECKPOINTING, {mode})",
+                    flush=True,
+                )
 
     teacher_model = load_teacher_model(
         model_config,

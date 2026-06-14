@@ -66,8 +66,13 @@ from opsd_utils.leakage import completion_has_leakage_pattern
 from opsd_utils.mode_router import route_prompt_modes, route_completion_modes
 from opsd_utils.recoverability import estimate_recoverable_flags
 from opsd_utils.prompt_builder import build_teacher_prompt_batch
-from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch
-from opsd_utils.deepspeed_utils import gradient_checkpointing_enable_kwargs, is_deepspeed_accelerate_config
+from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch, slice_student_completion_logits
+from opsd_utils.deepspeed_utils import (
+    deepspeed_requires_single_student_forward,
+    gradient_checkpointing_enable_kwargs,
+    is_deepspeed_accelerate_config,
+    student_forward_chunk_size,
+)
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils import diagnostics as opsd_diagnostics
 from opsd_utils.health_monitor import TrainingHealthMonitor
@@ -584,7 +589,17 @@ class DyMETrainer(Trainer):
 
     # Get the per-token log probabilities for the completions for the model and the reference model
     @profiling_decorator
-    def _get_per_token_logps(self, model, input_ids, attention_mask, pixel_values, image_sizes, logits_to_keep, batch_size=None) -> torch.Tensor:
+    def _get_per_token_logps(
+        self,
+        model,
+        input_ids,
+        attention_mask,
+        pixel_values,
+        image_sizes,
+        logits_to_keep,
+        batch_size=None,
+        return_completion_logits: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         from opsd_utils.opsd_loss import _slice_image_sizes_batch
         from opsd_utils.teacher_batching import (
             align_teacher_prompt_image_tokens,
@@ -592,9 +607,17 @@ class DyMETrainer(Trainer):
         )
 
         batch_size = batch_size or input_ids.size(0)
-        # LLaVA-OV: always forward one sample at a time when vision tensors are present.
-        chunk_size = 1 if pixel_values is not None else batch_size
+        has_vision = pixel_values is not None
+        chunk_size = student_forward_chunk_size(batch_size, has_vision)
+        if deepspeed_requires_single_student_forward() and chunk_size > 1 and self.accelerator.is_main_process:
+            opsd_debug.log(
+                "opsd_loss",
+                "DeepSpeed ZeRO-1/2: single student forward for full local batch",
+                chunk_size=chunk_size,
+                batch_size=batch_size,
+            )
         all_logps = []
+        all_completion_logits = [] if return_completion_logits else None
         for i in range(0, input_ids.size(0), chunk_size):
             end = i + chunk_size
             input_ids_batch = input_ids[i:end]
@@ -635,20 +658,18 @@ class DyMETrainer(Trainer):
                 forward_kwargs["image_sizes"] = image_sizes_batch
                 forward_kwargs["batch_num_images"] = batch_num_images
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            logits = model(**forward_kwargs).logits
-            # logits = logits[:, :-1, :]  # (B, L-1, H)
-            if logits_to_keep is not None:
-                logits = logits[:, -logits_to_keep-1:, :]  # (B, logits_to_keep, H)
-
-            logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+            raw_logits = model(**forward_kwargs).logits
+            completion_logits = slice_student_completion_logits(raw_logits, logits_to_keep)
             input_ids_batch = input_ids_batch[:, -logits_to_keep:]
-            # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
-            # See https://github.com/huggingface/trl/issues/2770
-            logits = logits[:, -logits_to_keep:]
-            logits = logits / self.temperature
+            logits = completion_logits / self.temperature
             logps = selective_log_softmax(logits, input_ids_batch)  # compute logprobs for the input tokens
             all_logps.append(logps)
-        return torch.cat(all_logps, dim=0)
+            if all_completion_logits is not None:
+                all_completion_logits.append(completion_logits)
+        logps_out = torch.cat(all_logps, dim=0)
+        if return_completion_logits:
+            return logps_out, torch.cat(all_completion_logits, dim=0)
+        return logps_out
 
     @profiling_decorator
     def _prepare_inputs(
@@ -1389,9 +1410,28 @@ class DyMETrainer(Trainer):
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+        opsd_active = (
+            self.opsd_config.get("enabled", False)
+            and inputs.get("opsd_mask") is not None
+            and self.teacher_model is not None
+        )
+        cache_logits_for_opsd = opsd_active and deepspeed_requires_single_student_forward()
         try:
-            per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, pixel_values, image_sizes,
-                                               logits_to_keep)
+            if cache_logits_for_opsd:
+                per_token_logps, student_completion_logits = self._get_per_token_logps(
+                    model,
+                    input_ids,
+                    attention_mask,
+                    pixel_values,
+                    image_sizes,
+                    logits_to_keep,
+                    return_completion_logits=True,
+                )
+            else:
+                per_token_logps = self._get_per_token_logps(
+                    model, input_ids, attention_mask, pixel_values, image_sizes, logits_to_keep
+                )
+                student_completion_logits = None
         except Exception as e:
             print(f"Error in _get_per_token_logps: {e}")
             raise e
@@ -1500,6 +1540,7 @@ class DyMETrainer(Trainer):
                         pad_to_count=global_max_opsd,
                         global_step=global_step,
                         tokenizer=self.processing_class.tokenizer,
+                        student_completion_logits=student_completion_logits,
                     )
                 opsd_loss_tensor = opsd_loss
                 loss = grpo_weight * loss + opsd_weight * opsd_loss
