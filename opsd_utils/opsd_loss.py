@@ -11,6 +11,7 @@ from opsd_utils.teacher_batching import (
     move_pixel_values_to_model_device,
     student_batch_num_images_tensor,
 )
+from opsd_utils.vocab_align import align_cross_model_logits
 
 
 def _slice_image_sizes(image_sizes, index: int):
@@ -72,27 +73,6 @@ def slice_teacher_vision_inputs(
     return t_pixel, t_sizes
 
 
-def align_cross_model_logits(student_logits: torch.Tensor, teacher_logits: torch.Tensor):
-    """
-    Align vocab dimension for cross-model OPD (e.g. 0.5B vs 7B LLaVA-OneVision).
-
-    Same tokenizer family; smaller checkpoint may expose fewer logits columns.
-    """
-    vs = student_logits.size(-1)
-    vt = teacher_logits.size(-1)
-    if vs == vt:
-        return student_logits, teacher_logits
-    shared = min(vs, vt)
-    opsd_debug.log(
-        "opsd_loss",
-        "align_cross_model_logits vocab slice",
-        student_vocab=vs,
-        teacher_vocab=vt,
-        shared_vocab=shared,
-    )
-    return student_logits[..., :shared], teacher_logits[..., :shared]
-
-
 def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
     """Token-level generalized JSD on completion positions."""
     if teacher_logits.device != student_logits.device:
@@ -100,6 +80,14 @@ def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
     student_logits, teacher_logits = align_cross_model_logits(student_logits, teacher_logits)
     student_log_probs = F.log_softmax(student_logits, dim=-1)
     teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
+    opsd_debug.log(
+        "vocab_align",
+        "generalized_jsd_loss log_softmax on aligned vocab",
+        student_log_prob_shape=tuple(student_log_probs.shape),
+        teacher_log_prob_shape=tuple(teacher_log_probs.shape),
+        student_exp_sum=float(torch.exp(student_log_probs[0, 0]).sum().item()) if student_log_probs.numel() else None,
+        teacher_exp_sum=float(torch.exp(teacher_log_probs[0, 0]).sum().item()) if teacher_log_probs.numel() else None,
+    )
 
     if beta == 0:
         jsd = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)

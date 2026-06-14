@@ -575,6 +575,7 @@ bash scripts/train_rlsd_chartqa.sh
 ```bash
 # Default: teacher on each rank's GPU (cuda:LOCAL_RANK). 2-GPU: student+teacher share the same card per rank.
 # Optional dedicated teacher GPU: export DYME_TEACHER_DEVICE_MAP=cuda:1
+# Vocab alignment debug at startup: DYME_VOCAB_ALIGN_FULL=1 (exhaustive) or DYME_VOCAB_ALIGN_STRIDE=500
 bash scripts/train_opd_7b_chartqa.sh
 ```
 

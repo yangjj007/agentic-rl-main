@@ -30,6 +30,38 @@ from opsd_utils import debug_log as opsd_debug
 from opsd_utils.teacher_batching import model_inference_device
 
 
+def _run_cross_model_vocab_checks(model, processor, teacher_model, model_config: Dict[str, Any]) -> None:
+    """Startup checks for cross-model OPD vocab slice + tokenizer alignment."""
+    from transformers import AutoProcessor
+
+    from opsd_utils.vocab_align import print_vocab_align_report, verify_shared_tokenizer_alignment
+
+    student_vocab = getattr(model.config, "vocab_size", len(processor.tokenizer))
+    teacher_vocab = getattr(teacher_model.config, "vocab_size", student_vocab)
+    shared = min(student_vocab, teacher_vocab)
+    print(
+        f"[OPSD-VOCAB] lm_head widths: student={student_vocab} teacher={teacher_vocab} "
+        f"shared_slice={shared}",
+        flush=True,
+    )
+    if student_vocab == teacher_vocab:
+        print("[OPSD-VOCAB] vocab sizes match — no slice needed", flush=True)
+        return
+
+    teacher_path = model_config.get("teacher_model_path")
+    teacher_processor = AutoProcessor.from_pretrained(teacher_path)
+    full_scan = os.environ.get("DYME_VOCAB_ALIGN_FULL", "0").strip().lower() in ("1", "true", "yes")
+    stride = int(os.environ.get("DYME_VOCAB_ALIGN_STRIDE", "500"))
+    report = verify_shared_tokenizer_alignment(
+        processor.tokenizer,
+        teacher_processor.tokenizer,
+        shared_vocab=shared,
+        full_scan=full_scan,
+        sample_stride=stride,
+    )
+    print_vocab_align_report(report)
+
+
 def _wandb_disabled_by_env() -> bool:
     if os.environ.get("WANDB_DISABLED", "").lower() in ("true", "1", "yes", "on"):
         return True
@@ -364,7 +396,14 @@ def main():
         tdev = model_inference_device(teacher_model)
         print(
             f"[DyME] Frozen teacher loaded from {model_config.get('teacher_model_path')} "
-            f"on {tdev} (override: DYME_TEACHER_DEVICE_MAP or model.teacher_device_map)"
+            f"on {tdev} (override: DYME_TEACHER_DEVICE_MAP or model.teacher_device_map)",
+            flush=True,
+        )
+        _run_cross_model_vocab_checks(
+            model,
+            processor,
+            teacher_model,
+            model_config,
         )
 
     # 4. Prepare Datasets

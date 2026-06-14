@@ -8,8 +8,8 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from opsd_utils.vocab_align import align_cross_model_logits
 from opsd_utils.opsd_loss import (
-    align_cross_model_logits,
     compute_vlm_opsd_loss_masked_batch,
     generalized_jsd_loss,
 )
