@@ -10,9 +10,12 @@ export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-}"
 export DYME_OPSD_PRIVILEGE_PROFILE="${DYME_OPSD_PRIVILEGE_PROFILE:-text}"
 export DYME_TEACHER_MODEL="${DYME_TEACHER_MODEL:-llava-hf/llava-onevision-qwen2-7b-ov-hf}"
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa}"
-# Optional: pin teacher to a dedicated GPU, e.g. export DYME_TEACHER_DEVICE_MAP=cuda:1
-# Default (unset): teacher loads on each rank's LOCAL_RANK GPU
-export DYME_TEACHER_DEVICE_MAP="${DYME_TEACHER_DEVICE_MAP:-}"
+# Optional ZeRO-2 student sharding (HF Accelerate + DeepSpeed JSON). Pair with DYME_TEACHER_DEVICE_MAP=same.
+# ZeRO-2 (default) or ZeRO-3 colocate for tighter memory:
+#   ACCELERATE_CONFIG=default_config_zero3_colocate.yaml
+export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-default_config.yaml}"
+# DDP default: complement GPUs. DeepSpeed script uses default_config_zero2.yaml instead.
+export DYME_TEACHER_DEVICE_MAP="${DYME_TEACHER_DEVICE_MAP:-auto}"
 # OPSD-DETAIL: skip JSD decomposition when free GPU memory (GiB) is below this threshold
 export DYME_OPSD_DETAIL_MIN_FREE_GB="${DYME_OPSD_DETAIL_MIN_FREE_GB:-4.0}"
 

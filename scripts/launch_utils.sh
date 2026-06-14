@@ -68,6 +68,8 @@ resolve_accelerate_config() {
   num_gpus="$(detect_num_gpus)"
 
   # Default: native PyTorch DDP (MULTI_GPU). No DeepSpeed install required.
+  # DeepSpeed ZeRO (student sharding, teacher colocated):
+  #   ACCELERATE_CONFIG=default_config_zero2.yaml bash scripts/train_opd_7b_chartqa_deepspeed.sh
   # Optional ZeRO-0 (no sharding): set ACCELERATE_CONFIG=default_config_deepspeed.yaml
   if [[ "${num_gpus}" -ge 8 ]]; then
     echo "default_config_8gpu.yaml"

@@ -76,8 +76,21 @@ def slice_teacher_vision_inputs(
 
 def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
     """Token-level generalized JSD on completion positions."""
-    if teacher_logits.device != student_logits.device:
-        teacher_logits = teacher_logits.to(device=student_logits.device)
+    # Cross-model OPD: teacher logits already live on the teacher GPU; avoid
+    # copying them onto the student GPU (vocab × seq is multi-hundred MiB per sample).
+    jsd_device = teacher_logits.device
+    if student_logits.device != jsd_device:
+        student_logits = student_logits.to(jsd_device, non_blocking=True)
+    mask = mask.to(device=jsd_device, non_blocking=True)
+
+    comp_dtype = student_logits.dtype
+    if comp_dtype == torch.float32:
+        comp_dtype = torch.bfloat16
+    if student_logits.dtype != comp_dtype:
+        student_logits = student_logits.to(comp_dtype)
+    if teacher_logits.dtype != comp_dtype:
+        teacher_logits = teacher_logits.to(comp_dtype)
+
     student_logits, teacher_logits = align_cross_model_logits(student_logits, teacher_logits)
     student_log_probs = F.log_softmax(student_logits, dim=-1)
     teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
@@ -273,6 +286,10 @@ def compute_vlm_opsd_loss(
             student_prompt_len=int(student_prompt_mask.sum().item()),
             teacher_prompt_len=int(teacher_prompt_mask.sum().item()),
         )
+
+    del teacher_logits
+    if cross_model and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     opsd_debug.log("opsd_loss", "compute_vlm_opsd_loss done", loss=float(loss.detach().item()))
     return loss

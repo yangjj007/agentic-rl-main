@@ -1,6 +1,7 @@
 """Helpers for LLaVA-OV teacher batches (per-sample vision tensors)."""
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 import torch
@@ -8,6 +9,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from opsd_utils import debug_log as opsd_debug
+from opsd_utils.deepspeed_utils import should_colocate_teacher_with_student
 
 # Legacy stacked tensors (dim0 = total images). Prefer *_list keys.
 TEACHER_IMAGE_STACKED_KEYS = frozenset({"teacher_pixel_values", "teacher_image_sizes"})
@@ -217,6 +219,66 @@ def _unwrap_model(model):
     if hasattr(model, "module"):
         return model.module
     return model
+
+
+def resolve_teacher_device_map(
+    device_map: Optional[str],
+    *,
+    local_rank: int,
+    num_gpus: int,
+) -> str:
+    """
+    Place frozen teacher relative to this rank's trainable student.
+
+    Modes:
+    - ``same`` / ``colocate`` / ``local``: teacher on ``cuda:{local_rank}`` (use with DeepSpeed ZeRO).
+    - ``auto`` (default DDP): complementary GPU when ``num_gpus >= 2``.
+    - ``auto`` + DeepSpeed Accelerate config: colocate on ``cuda:{local_rank}``.
+    - explicit ``cuda:N``: honored unless it collides with the student device.
+    """
+    student_dev = f"cuda:{local_rank}"
+    raw = (device_map or os.environ.get("DYME_TEACHER_DEVICE_MAP", "")).strip()
+
+    if raw.lower() in ("same", "colocate", "local"):
+        return student_dev
+
+    if should_colocate_teacher_with_student(raw):
+        return student_dev
+
+    if raw.lower() in ("", "auto", "complement", "opposite"):
+        if num_gpus >= 2:
+            return f"cuda:{(local_rank + 1) % num_gpus}"
+        return student_dev
+
+    if raw == student_dev and num_gpus >= 2:
+        resolved = f"cuda:{(local_rank + 1) % num_gpus}"
+        opsd_debug.log(
+            "teacher_placement",
+            "teacher device collides with student; using complement GPU",
+            requested=raw,
+            local_rank=local_rank,
+            resolved=resolved,
+        )
+        return resolved
+    return raw
+
+
+def log_teacher_placement(
+    *,
+    local_rank: int,
+    num_gpus: int,
+    teacher_path: str,
+    resolved_device: str,
+    requested_map: Optional[str],
+) -> None:
+    student_dev = f"cuda:{local_rank}"
+    req = requested_map or os.environ.get("DYME_TEACHER_DEVICE_MAP", "") or "auto"
+    print(
+        f"[DyME] rank={local_rank}/{num_gpus}: frozen teacher "
+        f"{teacher_path} on {resolved_device} "
+        f"(student DDP device {student_dev}, requested_map={req!r})",
+        flush=True,
+    )
 
 
 def _as_torch_device(dev) -> Optional[torch.device]:

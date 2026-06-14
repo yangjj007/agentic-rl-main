@@ -30,6 +30,9 @@ DyME/
 ├── opsd_utils/           # Privileged-context OPSD / TriMode extensions for DyMETrainer
 ├── default_config.yaml   # Default DDP (MULTI_GPU, no DeepSpeed required)
 ├── default_config_deepspeed.yaml  # Optional ZeRO-0 only (no sharding); needs pip install deepspeed
+├── default_config_zero2.yaml      # ZeRO-2 student sharding (OPD 7B colocate)
+├── default_config_zero3_colocate.yaml  # ZeRO-3 + CPU optimizer offload (tight VRAM)
+├── configs/deepspeed/             # DeepSpeed JSON templates (HF official "auto" fields)
 ├── main.py               # Entry point for DyME training
 ├── main_*.py             # Additional experimental variants (e.g., 7B, LLM-only)
 ├── requirements.txt      # Python dependencies
@@ -376,7 +379,19 @@ All training scripts are launched using `accelerate`. Pass `--config` as a **Pyt
 
 **Important:** `num_processes` must match the number of visible GPUs on your node. Helper scripts auto-detect GPU count and use **native PyTorch DDP** (`default_config.yaml`, `distributed_type: MULTI_GPU`) — **DeepSpeed is not required** for 0.5B multi-GPU training.
 
-Optional: if you already have `deepspeed` installed and want the Accelerate integration without parameter sharding, use ZeRO-0 (`default_config_deepspeed.yaml`, `zero_stage: 0`). Do **not** use ZeRO-2/3 offload for 0.5B — it slows training without benefit.
+Optional: if you already have `deepspeed` installed and want the Accelerate integration without parameter sharding, use ZeRO-0 (`default_config_deepspeed.yaml`, `zero_stage: 0`). Do **not** use ZeRO-2/3 for 0.5B-only RLSD unless you need the integration path.
+
+**7B OPD (student + frozen teacher on each GPU):** use DeepSpeed ZeRO to shard the **trainable 0.5B student**; the frozen 7B teacher stays outside DeepSpeed on `cuda:{LOCAL_RANK}`.
+
+```bash
+# ZeRO-2 colocate (recommended first try on 2×80G)
+bash scripts/train_opd_7b_chartqa_deepspeed.sh
+
+# Tighter memory: ZeRO-3 + CPU optimizer offload
+ACCELERATE_CONFIG=default_config_zero3_colocate.yaml bash scripts/train_opd_7b_chartqa_deepspeed.sh
+```
+
+Refs: [Transformers DeepSpeed](https://huggingface.co/docs/transformers/deepspeed), [Accelerate DeepSpeed](https://huggingface.co/docs/accelerate/usage_guides/deepspeed).
 
 ```bash
 # 4-GPU node (default DDP, recommended)

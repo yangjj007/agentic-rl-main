@@ -27,7 +27,11 @@ from trainer.DyMETrainer import DyMETrainer
 from reward_utils.checker import RewardCalculator, RewardCalculatorLocal
 from reward_utils.refiner import ContextRefiner, ContextRefinerLocal
 from opsd_utils import debug_log as opsd_debug
-from opsd_utils.teacher_batching import model_inference_device
+from opsd_utils.teacher_batching import (
+    log_teacher_placement,
+    resolve_teacher_device_map,
+)
+from opsd_utils.deepspeed_utils import deepspeed_zero_stage, is_deepspeed_accelerate_config
 
 
 def _run_cross_model_vocab_checks(model, processor, teacher_model, model_config: Dict[str, Any]) -> None:
@@ -133,7 +137,7 @@ def load_model_and_processor(model_config: Dict[str, Any]):
     return model, processor
 
 
-def load_teacher_model(model_config: Dict[str, Any]):
+def load_teacher_model(model_config: Dict[str, Any], *, local_rank: int = 0, num_gpus: int = 1):
     """Load optional frozen teacher for cross-model OPD (e.g. LLaVA-OneVision 7B)."""
     teacher_path = model_config.get("teacher_model_path")
     if not teacher_path:
@@ -141,18 +145,30 @@ def load_teacher_model(model_config: Dict[str, Any]):
 
     dtype_name = model_config.get("teacher_dtype", model_config.get("torch_dtype", "bfloat16"))
     torch_dtype = getattr(torch, dtype_name)
-    device_map = model_config.get("teacher_device_map")
-    if not device_map:
+    requested_map = model_config.get("teacher_device_map")
+    if not requested_map:
         env_map = os.environ.get("DYME_TEACHER_DEVICE_MAP", "").strip()
         if env_map:
-            device_map = env_map
+            requested_map = env_map
+
+    device_map = resolve_teacher_device_map(
+        requested_map,
+        local_rank=local_rank,
+        num_gpus=max(1, num_gpus),
+    )
+    log_teacher_placement(
+        local_rank=local_rank,
+        num_gpus=max(1, num_gpus),
+        teacher_path=teacher_path,
+        resolved_device=device_map,
+        requested_map=requested_map,
+    )
 
     load_kwargs: Dict[str, Any] = {
         "torch_dtype": torch_dtype,
         "low_cpu_mem_usage": True,
+        "device_map": device_map,
     }
-    if device_map:
-        load_kwargs["device_map"] = device_map
 
     teacher = LlavaOnevisionForConditionalGeneration.from_pretrained(
         teacher_path,
@@ -163,11 +179,6 @@ def load_teacher_model(model_config: Dict[str, Any]):
     teacher.requires_grad_(False)
     if hasattr(teacher, "base_model") and hasattr(teacher.base_model, "vision_tower"):
         teacher.base_model.vision_tower.requires_grad_(False)
-
-    if not device_map and torch.cuda.is_available():
-        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-        target = torch.device(f"cuda:{local_rank}")
-        teacher = teacher.to(target)
 
     return teacher
 
@@ -390,15 +401,26 @@ def main():
         )
 
     # 3. Initialize Model and Processor
-    model, processor = load_model_and_processor(model_config)
-    teacher_model = load_teacher_model(model_config)
-    if accelerator.is_main_process and teacher_model is not None:
-        tdev = model_inference_device(teacher_model)
+    ds_zero_stage = deepspeed_zero_stage()
+    if accelerator.is_main_process and is_deepspeed_accelerate_config():
         print(
-            f"[DyME] Frozen teacher loaded from {model_config.get('teacher_model_path')} "
-            f"on {tdev} (override: DYME_TEACHER_DEVICE_MAP or model.teacher_device_map)",
+            f"[DyME] DeepSpeed enabled via ACCELERATE_CONFIG "
+            f"({os.environ.get('ACCELERATE_CONFIG', '<unset>')}), ZeRO stage={ds_zero_stage}",
             flush=True,
         )
+
+    model, processor = load_model_and_processor(model_config)
+    if os.environ.get("DYME_GRADIENT_CHECKPOINTING", "").strip().lower() in ("1", "true", "yes", "on"):
+        model.gradient_checkpointing_enable()
+        if accelerator.is_main_process:
+            print("[DyME] gradient checkpointing enabled on student (DYME_GRADIENT_CHECKPOINTING)", flush=True)
+
+    teacher_model = load_teacher_model(
+        model_config,
+        local_rank=local_rank,
+        num_gpus=visible_gpus,
+    )
+    if accelerator.is_main_process and teacher_model is not None:
         _run_cross_model_vocab_checks(
             model,
             processor,
@@ -417,6 +439,8 @@ def main():
     refiner = ContextRefinerLocal(rl_config, client_config.copy(), gpu_id=device_id)
     # 6. Define Training Arguments
     dyme_args = dict(training_config['dyme_args'])
+    if ds_zero_stage is not None and ds_zero_stage >= 3:
+        dyme_args.setdefault("ds3_gather_for_generation", True)
     if not use_wandb:
         dyme_args["report_to"] = "none"
     training_args = GRPOConfig(**dyme_args)
@@ -443,6 +467,11 @@ def main():
 
     output_dir = training_args.output_dir
     output_dir = os.path.join(output_dir, "final_checkpoint")
+    if accelerator.is_main_process and is_deepspeed_accelerate_config():
+        print(
+            "[DyME] Saving consolidated student checkpoint (DeepSpeed ZeRO gather if configured)...",
+            flush=True,
+        )
     dyme_trainer.save_model(output_dir)
     if accelerator.is_main_process:
         processor.save_pretrained(output_dir)

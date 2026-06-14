@@ -448,6 +448,21 @@ class DyMETrainer(Trainer):
             health_log_alerts_immediately=health_cfg.get("log_alerts_immediately", True),
         )
         opsd_debug.log_config("init", "DyMETrainer OPSD config loaded", self.opsd_config)
+        try:
+            from opsd_utils.deepspeed_utils import deepspeed_zero_stage, is_deepspeed_accelerate_config
+
+            if is_deepspeed_accelerate_config():
+                opsd_debug.log(
+                    "init",
+                    "DeepSpeed accelerate layout",
+                    zero_stage=deepspeed_zero_stage(),
+                    teacher_colocated=bool(self.teacher_model is not None),
+                    ds3_gather_for_generation=getattr(self.args, "ds3_gather_for_generation", None),
+                )
+        except Exception:
+            pass
+        if self.teacher_model is not None:
+            self.teacher_model.eval()
         if self.accelerator.is_main_process and detail_every > 0:
             print(
                 f"[OPSD-DETAIL] periodic full diagnostics every {detail_every} global steps "
