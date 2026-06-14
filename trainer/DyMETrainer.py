@@ -209,6 +209,8 @@ def split_tensor_dict(
     """
     Splits a dictionary of tensors along the first dimension into `num_chunks` equal parts.
 
+    Non-tensor metadata (e.g. ``sft_cold_start``) is copied into every chunk unchanged.
+
     When teacher vision tensors are present, uses teacher_num_images-aware slicing
     (LLaVA-OV stacks images on dim 0, not batch size).
     """
@@ -221,14 +223,20 @@ def split_tensor_dict(
 
         return split_tensor_dict_for_opsd(tensor_dict, num_chunks)
 
-    first_tensor = next(tensor for tensor in tensor_dict.values() if tensor is not None)
+    first_tensor = next(
+        tensor for tensor in tensor_dict.values() if isinstance(tensor, torch.Tensor)
+    )
     chunk_size = first_tensor.shape[0] // num_chunks
     l1 = []
     for i in range(num_chunks):
-        dt = {
-            key: tensor[i * chunk_size : (i + 1) * chunk_size] if tensor is not None else None
-            for key, tensor in tensor_dict.items()
-        }
+        dt = {}
+        for key, tensor in tensor_dict.items():
+            if tensor is None:
+                dt[key] = None
+            elif isinstance(tensor, torch.Tensor):
+                dt[key] = tensor[i * chunk_size : (i + 1) * chunk_size]
+            else:
+                dt[key] = tensor
         l1.append(dt)
 
     return l1
@@ -905,6 +913,7 @@ class DyMETrainer(Trainer):
             sample_count=self._opsd_probe_sample_count,
             generate_call_index=generate_call_index,
             answer_flag=getattr(self.checker, "answer_flag", "Answer:"),
+            source="sft_cold_start",
         )
         self._last_generate_probe_stats = probe_stats
         self._generate_call_index += 1

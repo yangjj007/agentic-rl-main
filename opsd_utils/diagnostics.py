@@ -690,6 +690,7 @@ def log_generate_probe(
     sample_count: int = 4,
     generate_call_index: Optional[int] = None,
     answer_flag: str = "Answer:",
+    source: str = "generate",
 ) -> dict[str, Any]:
     """Emit [OPSD-PROBE] on every (re)generate — catches 1-token / empty completions early."""
     stats = summarize_generate_probe_stats(
@@ -720,9 +721,10 @@ def log_generate_probe(
 
     opsd_debug.log_probe(
         "generate",
-        "raw generate summary",
+        "sft cold-start GT batch" if source == "sft_cold_start" else "raw generate summary",
         trainer_step=trainer_step,
         global_step=global_step,
+        source=source,
         generate_call_index=generate_call_index,
         prompt_length=prompt_length,
         prompt_completion_shape=tuple(prompt_completion_ids.shape),
