@@ -8,7 +8,11 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch
+from opsd_utils.opsd_loss import (
+    align_cross_model_logits,
+    compute_vlm_opsd_loss_masked_batch,
+    generalized_jsd_loss,
+)
 
 
 def test_opsd_loss_accepts_teacher_model_kwarg():
@@ -62,3 +66,14 @@ def test_opsd_loss_accepts_teacher_model_kwarg():
     assert isinstance(loss, torch.Tensor)
     assert teacher.called, "cross-model OPD must forward through teacher_model"
     assert student.called, "OPSD must forward through student model"
+
+
+def test_generalized_jsd_loss_mismatched_vocab_sizes():
+    student = torch.randn(1, 5, 152000, requires_grad=True)
+    teacher = torch.randn(1, 5, 152128)
+    mask = torch.ones(1, 5)
+    s, t = align_cross_model_logits(student, teacher)
+    assert s.shape[-1] == t.shape[-1] == 152000
+    loss = generalized_jsd_loss(s, t, mask)
+    assert loss.ndim == 0
+    assert loss.requires_grad

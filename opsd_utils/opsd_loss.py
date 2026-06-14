@@ -72,8 +72,32 @@ def slice_teacher_vision_inputs(
     return t_pixel, t_sizes
 
 
+def align_cross_model_logits(student_logits: torch.Tensor, teacher_logits: torch.Tensor):
+    """
+    Align vocab dimension for cross-model OPD (e.g. 0.5B vs 7B LLaVA-OneVision).
+
+    Same tokenizer family; smaller checkpoint may expose fewer logits columns.
+    """
+    vs = student_logits.size(-1)
+    vt = teacher_logits.size(-1)
+    if vs == vt:
+        return student_logits, teacher_logits
+    shared = min(vs, vt)
+    opsd_debug.log(
+        "opsd_loss",
+        "align_cross_model_logits vocab slice",
+        student_vocab=vs,
+        teacher_vocab=vt,
+        shared_vocab=shared,
+    )
+    return student_logits[..., :shared], teacher_logits[..., :shared]
+
+
 def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
     """Token-level generalized JSD on completion positions."""
+    if teacher_logits.device != student_logits.device:
+        teacher_logits = teacher_logits.to(device=student_logits.device)
+    student_logits, teacher_logits = align_cross_model_logits(student_logits, teacher_logits)
     student_log_probs = F.log_softmax(student_logits, dim=-1)
     teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
 
@@ -232,6 +256,15 @@ def compute_vlm_opsd_loss(
             t_sizes,
             logits_to_keep,
             teacher_batch_num_images=teacher_batch_num_images,
+        )
+
+    cross_model = teacher_model is not model
+    if cross_model:
+        opsd_debug.log(
+            "opsd_loss",
+            "cross-model OPD logits",
+            student_vocab=student_logits.size(-1),
+            teacher_vocab=teacher_logits.size(-1),
         )
 
     loss = generalized_jsd_loss(student_logits, teacher_logits, completion_mask.float(), beta=beta)
