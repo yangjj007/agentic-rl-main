@@ -67,6 +67,7 @@ from opsd_utils.mode_router import route_prompt_modes, route_completion_modes
 from opsd_utils.recoverability import estimate_recoverable_flags
 from opsd_utils.prompt_builder import build_teacher_prompt_batch
 from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch
+from opsd_utils.deepspeed_utils import gradient_checkpointing_enable_kwargs, is_deepspeed_accelerate_config
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils import diagnostics as opsd_diagnostics
 from opsd_utils.health_monitor import TrainingHealthMonitor
@@ -546,17 +547,25 @@ class DyMETrainer(Trainer):
         # Ensure use_cache is disabled
         model.config.use_cache = False
 
-        # Enable gradient checkpointing on the base model for PEFT
-        if is_peft_model(model):
-            model.base_model.gradient_checkpointing_enable()
-        # Enable gradient checkpointing for non-PEFT models
-        else:
-            model.gradient_checkpointing_enable()
-
         gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs or {}
+        ds_gc_kwargs = gradient_checkpointing_enable_kwargs()
+        if ds_gc_kwargs is not None:
+            gradient_checkpointing_kwargs = {**gradient_checkpointing_kwargs, **ds_gc_kwargs}
         use_reentrant = (
             "use_reentrant" not in gradient_checkpointing_kwargs or gradient_checkpointing_kwargs["use_reentrant"]
         )
+
+        enable_kwargs = (
+            {"gradient_checkpointing_kwargs": gradient_checkpointing_kwargs}
+            if gradient_checkpointing_kwargs
+            else {}
+        )
+        # Enable gradient checkpointing on the base model for PEFT
+        if is_peft_model(model):
+            model.base_model.gradient_checkpointing_enable(**enable_kwargs)
+        # Enable gradient checkpointing for non-PEFT models
+        else:
+            model.gradient_checkpointing_enable(**enable_kwargs)
 
         if use_reentrant:
             model.enable_input_require_grads()

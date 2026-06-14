@@ -87,3 +87,20 @@ def should_colocate_teacher_with_student(device_map: Optional[str] = None) -> bo
     if is_deepspeed_accelerate_config() and raw in ("", "auto"):
         return True
     return False
+
+
+def gradient_checkpointing_enable_kwargs(config_name: Optional[str] = None) -> Optional[dict]:
+    """
+    Kwargs for ``model.gradient_checkpointing_enable``.
+
+    DeepSpeed ZeRO-1/2 + reentrant checkpointing runs backward twice per segment and
+    hits: "parameter ... has already been reduced".
+    """
+    if not is_deepspeed_accelerate_config(config_name):
+        return None
+    override = os.environ.get("DYME_GRADIENT_CHECKPOINTING_USE_REENTRANT", "").strip().lower()
+    if override in ("1", "true", "yes", "on"):
+        return {"use_reentrant": True}
+    if override in ("0", "false", "no", "off"):
+        return {"use_reentrant": False}
+    return {"use_reentrant": False}
