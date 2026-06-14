@@ -31,7 +31,11 @@ from opsd_utils.teacher_batching import (
     log_teacher_placement,
     resolve_teacher_device_map,
 )
-from opsd_utils.deepspeed_utils import deepspeed_zero_stage, is_deepspeed_accelerate_config
+from opsd_utils.deepspeed_utils import (
+    deepspeed_zero_stage,
+    is_deepspeed_accelerate_config,
+    uses_deepspeed_json_file,
+)
 
 
 def _run_cross_model_vocab_checks(model, processor, teacher_model, model_config: Dict[str, Any]) -> None:
@@ -102,7 +106,8 @@ def setup_accelerator_and_wandb(bf16, want_wandb: bool) -> tuple[Accelerator, bo
         use_wandb = _try_wandb_login()
 
     accel_kwargs: dict = {}
-    if bf16:
+    # bf16 for DDP/MULTI_GPU only; with deepspeed_config_file, precision lives in the JSON.
+    if bf16 and not uses_deepspeed_json_file():
         accel_kwargs["mixed_precision"] = "bf16"
     if use_wandb:
         accel_kwargs["log_with"] = "wandb"

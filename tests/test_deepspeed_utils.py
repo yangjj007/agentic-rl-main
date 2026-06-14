@@ -8,12 +8,14 @@ from opsd_utils.deepspeed_utils import (
     deepspeed_zero_stage,
     is_deepspeed_accelerate_config,
     should_colocate_teacher_with_student,
+    uses_deepspeed_json_file,
 )
 
 
 def test_zero2_config_detected(monkeypatch):
     monkeypatch.setenv("ACCELERATE_CONFIG", "default_config_zero2.yaml")
     assert is_deepspeed_accelerate_config()
+    assert uses_deepspeed_json_file()
     assert deepspeed_zero_stage() == 2
     assert should_colocate_teacher_with_student("auto")
 

@@ -13,13 +13,30 @@ def _project_root() -> Path:
 
 
 def resolve_accelerate_config_path(config_name: Optional[str] = None) -> Optional[Path]:
-    raw = (config_name or os.environ.get("ACCELERATE_CONFIG", "")).strip()
-    if not raw:
-        return None
-    path = Path(raw)
-    if not path.is_file():
-        path = _project_root() / raw
-    return path if path.is_file() else None
+    candidates: list[str] = []
+    if config_name:
+        candidates.append(str(config_name).strip())
+    for env_key in ("ACCELERATE_CONFIG", "ACCELERATE_CONFIG_FILE"):
+        val = os.environ.get(env_key, "").strip()
+        if val:
+            candidates.append(val)
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw)
+        if not path.is_file():
+            path = _project_root() / raw
+        if path.is_file():
+            return path
+    return None
+
+
+def uses_deepspeed_json_file(config_name: Optional[str] = None) -> bool:
+    """True when Accelerate loads DeepSpeed settings from an external JSON file."""
+    path = resolve_accelerate_config_path(config_name)
+    if path is None:
+        return False
+    return "deepspeed_config_file" in path.read_text(encoding="utf-8")
 
 
 def _yaml_get_str(path: Path, key: str) -> Optional[str]:
