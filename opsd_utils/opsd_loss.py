@@ -1,8 +1,9 @@
 import torch
 import torch.nn.functional as F
 
-from opsd_utils.deepspeed_utils import deepspeed_requires_single_student_forward
+from opsd_utils import debug_log as opsd_debug
 from opsd_utils import diagnostics as opsd_diagnostics
+from opsd_utils.deepspeed_utils import deepspeed_requires_single_student_forward
 from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
     as_batch_num_images_tensor,
