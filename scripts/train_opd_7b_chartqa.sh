@@ -13,6 +13,8 @@ export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa}"
 # Optional: pin teacher to a dedicated GPU, e.g. export DYME_TEACHER_DEVICE_MAP=cuda:1
 # Default (unset): teacher loads on each rank's LOCAL_RANK GPU
 export DYME_TEACHER_DEVICE_MAP="${DYME_TEACHER_DEVICE_MAP:-}"
+# OPSD-DETAIL: skip JSD decomposition when free GPU memory (GiB) is below this threshold
+export DYME_OPSD_DETAIL_MIN_FREE_GB="${DYME_OPSD_DETAIL_MIN_FREE_GB:-4.0}"
 
 ACCELERATE_CONFIG="$(resolve_accelerate_config)"
 NUM_PROCESSES="$(detect_num_gpus)"

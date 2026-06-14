@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from opsd_utils import debug_log as opsd_debug
+from opsd_utils import diagnostics as opsd_diagnostics
 from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
     as_batch_num_images_tensor,
@@ -184,6 +185,9 @@ def compute_vlm_opsd_loss(
     processor=None,
     teacher_batch_num_images=None,
     teacher_model=None,
+    global_idx: int | None = None,
+    capture_jsd_detail: bool = False,
+    tokenizer=None,
 ) -> torch.Tensor:
     """
     OPSD / OPD: student vs teacher prompt, shared student completion.
@@ -256,6 +260,20 @@ def compute_vlm_opsd_loss(
         )
 
     loss = generalized_jsd_loss(student_logits, teacher_logits, completion_mask.float(), beta=beta)
+
+    if capture_jsd_detail and global_idx is not None:
+        opsd_diagnostics.maybe_capture_opsd_jsd_detail(
+            global_idx=global_idx,
+            student_logits=student_logits,
+            teacher_logits=teacher_logits,
+            completion_mask=completion_mask,
+            completion_ids=completion_ids,
+            beta=beta,
+            tokenizer=tokenizer,
+            student_prompt_len=int(student_prompt_mask.sum().item()),
+            teacher_prompt_len=int(teacher_prompt_mask.sum().item()),
+        )
+
     opsd_debug.log("opsd_loss", "compute_vlm_opsd_loss done", loss=float(loss.detach().item()))
     return loss
 
@@ -270,6 +288,9 @@ def compute_vlm_opsd_loss_masked_batch(
     teacher_model=None,
     acc_gate: bool = True,
     pad_to_count: int | None = None,
+    global_step: int | None = None,
+    tokenizer=None,
+    detail_max_samples: int = 2,
 ) -> torch.Tensor:
     """Compute mean OPSD loss over opsd_indices within a batch.
 
@@ -295,6 +316,15 @@ def compute_vlm_opsd_loss_masked_batch(
         real_count=real_count,
         target_count=target_count,
     )
+    capture_jsd_detail = (
+        global_step is not None and opsd_debug.should_log_detail(global_step)
+    )
+    if capture_jsd_detail:
+        opsd_diagnostics.begin_opsd_jsd_detail_capture(
+            global_step,
+            opsd_indices,
+            max_samples=detail_max_samples,
+        )
     losses = []
     idx_map = {g: i for i, g in enumerate(all_indices)}
     batch_size = inputs["prompt_ids"].shape[0]
@@ -342,6 +372,9 @@ def compute_vlm_opsd_loss_masked_batch(
                 processor=processor,
                 teacher_batch_num_images=teacher_batch_num_images,
                 teacher_model=teacher_model,
+                global_idx=global_idx if is_real else None,
+                capture_jsd_detail=capture_jsd_detail and is_real,
+                tokenizer=tokenizer,
             )
             if not is_real:
                 # Keep the autograd graph / DDP collective alive but contribute nothing.

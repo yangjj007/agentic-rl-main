@@ -1474,6 +1474,8 @@ class DyMETrainer(Trainer):
                         teacher_model=self.teacher_model,
                         acc_gate=acc_gate,
                         pad_to_count=global_max_opsd,
+                        global_step=global_step,
+                        tokenizer=self.processing_class.tokenizer,
                     )
                 opsd_loss_tensor = opsd_loss
                 loss = grpo_weight * loss + opsd_weight * opsd_loss
@@ -1498,15 +1500,7 @@ class DyMETrainer(Trainer):
                 self.accelerator.gather_for_metrics(opsd_metric_value).mean().item()
             )
             if opsd_indices and opsd_debug.should_log_detail(global_step):
-                opsd_diagnostics.log_opsd_jsd_diagnostics(
-                    global_step=global_step,
-                    model=model,
-                    inputs=inputs,
-                    opsd_indices=opsd_indices,
-                    beta=beta,
-                    tokenizer=self.processing_class.tokenizer,
-                    processor=self.processing_class,
-                )
+                opsd_diagnostics.log_opsd_jsd_diagnostics(global_step=global_step)
             if self.accelerator.num_processes > 1:
                 opsd_debug.log_sync_point("dist", "wait_for_everyone after OPSD compute_loss")
                 self.accelerator.wait_for_everyone()

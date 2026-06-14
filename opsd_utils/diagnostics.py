@@ -1,6 +1,7 @@
 """Periodic full-detail diagnostics for weak reward / gradient signals."""
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Optional
 
@@ -9,8 +10,151 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from opsd_utils import debug_log as opsd_debug
+from opsd_utils.vocab_align import align_cross_model_logits
 
 PAREN_TOKEN_ID = 340
+
+# Reuse logits from the OPSD loss path instead of running extra forwards.
+_OPSD_JSD_DETAIL_CAPTURE: dict[str, Any] = {
+    "active": False,
+    "global_step": None,
+    "target_indices": set(),
+    "entries": [],
+    "skipped_memory": False,
+    "skip_reason": "",
+    "max_samples": 2,
+}
+
+
+def _detail_min_free_gib() -> float:
+    raw = os.environ.get("DYME_OPSD_DETAIL_MIN_FREE_GB", "").strip()
+    if not raw:
+        return 4.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 4.0
+
+
+def cuda_free_gib(device: Optional[torch.device | int] = None) -> Optional[float]:
+    if not torch.cuda.is_available():
+        return None
+    try:
+        if device is None:
+            free_bytes, _ = torch.cuda.mem_get_info()
+        else:
+            dev = torch.device(device) if not isinstance(device, torch.device) else device
+            with torch.cuda.device(dev):
+                free_bytes, _ = torch.cuda.mem_get_info()
+        return free_bytes / (1024**3)
+    except Exception:
+        return None
+
+
+def check_detail_cuda_memory(
+    min_free_gib: Optional[float] = None,
+    device: Optional[torch.device | int] = None,
+) -> tuple[bool, str, Optional[float]]:
+    """Return (ok, reason, free_gib). Skips heavy detail work when GPU headroom is low."""
+    threshold = _detail_min_free_gib() if min_free_gib is None else max(0.0, float(min_free_gib))
+    if not torch.cuda.is_available():
+        return True, "", None
+    free_gib = cuda_free_gib(device)
+    if free_gib is None:
+        return True, "", None
+    if free_gib < threshold:
+        return (
+            False,
+            f"cuda_free_gib={free_gib:.2f} < min_free_gib={threshold:.2f}",
+            free_gib,
+        )
+    return True, "", free_gib
+
+
+def begin_opsd_jsd_detail_capture(
+    global_step: int,
+    opsd_indices: list[int],
+    max_samples: int = 2,
+) -> None:
+    """Prepare to record JSD stats during OPSD loss (no extra model forwards)."""
+    _OPSD_JSD_DETAIL_CAPTURE.update(
+        active=False,
+        global_step=global_step,
+        target_indices=set(),
+        entries=[],
+        skipped_memory=False,
+        skip_reason="",
+        max_samples=max(1, int(max_samples)),
+    )
+    if not opsd_debug.should_log_detail(global_step) or not opsd_indices:
+        return
+
+    ok, reason, free_gib = check_detail_cuda_memory()
+    if not ok:
+        _OPSD_JSD_DETAIL_CAPTURE["skipped_memory"] = True
+        _OPSD_JSD_DETAIL_CAPTURE["skip_reason"] = reason
+        opsd_debug.log_detail(
+            "opsd_jsd",
+            "skip JSD detail capture (CUDA memory guard)",
+            global_step=global_step,
+            reason=reason,
+            cuda_free_gib=free_gib,
+            min_free_gib=_detail_min_free_gib(),
+        )
+        return
+
+    _OPSD_JSD_DETAIL_CAPTURE["active"] = True
+    _OPSD_JSD_DETAIL_CAPTURE["target_indices"] = set(opsd_indices[: _OPSD_JSD_DETAIL_CAPTURE["max_samples"]])
+
+
+def maybe_capture_opsd_jsd_detail(
+    *,
+    global_idx: int,
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    completion_mask: torch.Tensor,
+    completion_ids: torch.Tensor,
+    beta: float,
+    tokenizer: Any = None,
+    student_prompt_len: Optional[int] = None,
+    teacher_prompt_len: Optional[int] = None,
+) -> None:
+    """Record token-level JSD stats from logits already computed in the loss path."""
+    capture = _OPSD_JSD_DETAIL_CAPTURE
+    if not capture["active"] or global_idx not in capture["target_indices"]:
+        return
+
+    try:
+        with torch.no_grad():
+            s_logits, t_logits = align_cross_model_logits(
+                student_logits.detach(),
+                teacher_logits.detach(),
+            )
+            stats = jsd_token_stats(s_logits, t_logits, completion_mask.float(), beta=beta)
+        stats["sample_index"] = global_idx
+        if student_prompt_len is not None:
+            stats["student_prompt_len"] = int(student_prompt_len)
+        if teacher_prompt_len is not None:
+            stats["teacher_prompt_len"] = int(teacher_prompt_len)
+        if tokenizer is not None:
+            decoded = tokenizer.decode(
+                completion_ids[0][completion_mask[0].bool()],
+                skip_special_tokens=True,
+            )
+            stats["completion_text"] = _preview_text(decoded)
+        capture["entries"].append(stats)
+    except RuntimeError as exc:
+        if "out of memory" in str(exc).lower():
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            opsd_debug.log_detail(
+                "opsd_jsd",
+                f"skip JSD detail for sample[{global_idx}] (OOM during stats)",
+                global_step=capture.get("global_step"),
+                error=repr(exc),
+            )
+            return
+        raise
 
 
 def _tensor_stats(t: torch.Tensor, name: str) -> dict[str, Any]:
@@ -1130,112 +1274,40 @@ def summarize_batch_data_health(
     return out
 
 
-def log_opsd_jsd_diagnostics(
-    *,
-    global_step: int,
-    model,
-    inputs: dict,
-    opsd_indices: list[int],
-    beta: float,
-    tokenizer,
-    processor=None,
-    max_samples: int = 2,
-) -> None:
-    if not opsd_debug.should_log_detail(global_step) or not opsd_indices:
+def log_opsd_jsd_diagnostics(*, global_step: int) -> None:
+    """Emit cached JSD stats recorded during OPSD loss (zero extra model forwards)."""
+    if not opsd_debug.should_log_detail(global_step):
+        return
+
+    capture = _OPSD_JSD_DETAIL_CAPTURE
+    if capture.get("global_step") != global_step:
         return
 
     opsd_debug.log_detail_banner(global_step, "OPSD JSD DECOMPOSITION")
 
-    from opsd_utils.opsd_loss import _slice_image_sizes, _teacher_image_counts
-    from opsd_utils.teacher_batching import (
-        align_teacher_prompt_image_tokens,
-        as_batch_num_images_tensor,
-        get_teacher_vision_for_sample,
-        student_batch_num_images_tensor,
-    )
-
-    batch_size = inputs["prompt_ids"].shape[0]
-    teacher_img_counts = _teacher_image_counts(inputs, batch_size)
-
-    # Run diagnostics forwards on the *unwrapped* module so they do not trigger
-    # DDP buffer-broadcast / reduction collectives. The number of diagnostics
-    # forwards depends on per-rank opsd_indices, which would otherwise desync
-    # NCCL collectives across ranks on detail-logging steps.
-    fwd_model = getattr(model, "module", model)
-
-    for k, global_idx in enumerate(opsd_indices[:max_samples]):
-        local = global_idx
-        prompt_ids = inputs["prompt_ids"][local : local + 1]
-        prompt_mask = inputs["prompt_mask"][local : local + 1]
-        completion_ids = inputs["completion_ids"][local : local + 1]
-        completion_mask = inputs["completion_mask"][local : local + 1]
-        pixel_values = inputs["pixel_values"][local : local + 1]
-        img_sizes = _slice_image_sizes(inputs.get("img_sizes"), local)
-
-        teacher_prompt_ids = inputs["teacher_prompt_ids"][local : local + 1]
-        teacher_prompt_mask = inputs["teacher_prompt_mask"][local : local + 1]
-        t_pixel, teacher_sizes = get_teacher_vision_for_sample(
-            inputs, local, teacher_img_counts
+    if capture.get("skipped_memory"):
+        opsd_debug.log_detail(
+            "opsd_jsd",
+            "JSD detail skipped (CUDA memory guard)",
+            global_step=global_step,
+            reason=capture.get("skip_reason", ""),
+            min_free_gib=_detail_min_free_gib(),
+            cuda_free_gib=cuda_free_gib(),
         )
-        if t_pixel is None:
-            t_pixel = pixel_values
-            teacher_sizes = img_sizes
+        _OPSD_JSD_DETAIL_CAPTURE["active"] = False
+        return
 
-        n_img = teacher_img_counts[local]
-        teacher_batch_num_images = as_batch_num_images_tensor(n_img, t_pixel)
-        if processor is not None:
-            teacher_prompt_ids, teacher_prompt_mask = align_teacher_prompt_image_tokens(
-                model,
-                processor,
-                teacher_prompt_ids,
-                teacher_prompt_mask,
-                t_pixel,
-                teacher_sizes,
-                batch_num_images=teacher_batch_num_images,
-            )
-        teacher_input = torch.cat([teacher_prompt_ids, completion_ids], dim=1)
-        teacher_attn = torch.cat([teacher_prompt_mask, completion_mask], dim=1)
-        logits_to_keep = completion_ids.size(1)
-
-        student_batch_num_images = student_batch_num_images_tensor(pixel_values, 1)
-        if processor is not None and pixel_values is not None:
-            prompt_ids, prompt_mask = align_teacher_prompt_image_tokens(
-                model,
-                processor,
-                prompt_ids,
-                prompt_mask,
-                pixel_values,
-                img_sizes,
-                batch_num_images=student_batch_num_images,
-            )
-        student_input = torch.cat([prompt_ids, completion_ids], dim=1)
-        student_attn = torch.cat([prompt_mask, completion_mask], dim=1)
-
-        teacher_forward_kwargs = {
-            "input_ids": teacher_input,
-            "attention_mask": teacher_attn,
-            "pixel_values": t_pixel,
-            "image_sizes": teacher_sizes,
-            "batch_num_images": teacher_batch_num_images,
-        }
-
-        with torch.no_grad():
-            student_logits = fwd_model(
-                input_ids=student_input,
-                attention_mask=student_attn,
-                pixel_values=pixel_values,
-                image_sizes=img_sizes,
-                batch_num_images=student_batch_num_images,
-            ).logits[:, -logits_to_keep - 1 : -1, :]
-            teacher_logits = fwd_model(**teacher_forward_kwargs).logits[:, -logits_to_keep - 1 : -1, :]
-
-        stats = jsd_token_stats(student_logits, teacher_logits, completion_mask.float(), beta=beta)
-        decoded = tokenizer.decode(
-            completion_ids[0][completion_mask[0].bool()],
-            skip_special_tokens=True,
+    entries = capture.get("entries") or []
+    if not entries:
+        opsd_debug.log_detail(
+            "opsd_jsd",
+            "no JSD detail captured (no OPSD samples on this rank or capture disabled)",
+            global_step=global_step,
         )
-        stats["sample_index"] = global_idx
-        stats["completion_text"] = _preview_text(decoded)
-        stats["student_prompt_len"] = int(prompt_mask.sum().item())
-        stats["teacher_prompt_len"] = int(teacher_prompt_mask.sum().item())
-        opsd_debug.log_detail("opsd_jsd", f"sample[{k}] token-level JSD", **stats)
+        _OPSD_JSD_DETAIL_CAPTURE["active"] = False
+        return
+
+    for k, stats in enumerate(entries):
+        opsd_debug.log_detail("opsd_jsd", f"sample[{k}] token-level JSD", global_step=global_step, **stats)
+
+    _OPSD_JSD_DETAIL_CAPTURE["active"] = False

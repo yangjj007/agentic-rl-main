@@ -197,6 +197,10 @@ def set_detail_step(global_step: Optional[int]) -> None:
     _DETAIL_STEP = global_step
 
 
+def get_detail_step() -> Optional[int]:
+    return _DETAIL_STEP
+
+
 def _next_call_id(stage: str) -> str:
     global _CALL_COUNTER
     _CALL_COUNTER += 1
