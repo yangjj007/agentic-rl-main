@@ -75,7 +75,7 @@ def calculate_rewards_in_parallel(
         # The '*' operator unpacks each tuple from task_args into positional arguments
         # for the get_acc_reward function.
 
-        format_rewards = list(executor.map(checker.get_format_reward, responses))
+        format_rewards = list(executor.map(lambda r: checker.get_format_reward(r, task=task), responses))
         answer_rewards = list(executor.map(lambda args: checker.get_answer_reward(*args), task_answer_args))
         thinking_rewards = list(executor.map(
             lambda args: checker.get_thinking_reward_prompt(*args), task_thinking_args))

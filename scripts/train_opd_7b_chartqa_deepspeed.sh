@@ -17,6 +17,14 @@ export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-}"
 export DYME_OPSD_PRIVILEGE_PROFILE="${DYME_OPSD_PRIVILEGE_PROFILE:-text}"
 export DYME_TEACHER_MODEL="${DYME_TEACHER_MODEL:-llava-hf/llava-onevision-qwen2-7b-ov-hf}"
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa-ds}"
+# RLSD antidegen decode (also in config_rlsd; env overrides for A/B)
+export DYME_MAX_COMPLETION_LENGTH="${DYME_MAX_COMPLETION_LENGTH:-128}"
+export DYME_TEMPERATURE="${DYME_TEMPERATURE:-0.6}"
+export DYME_REPETITION_PENALTY="${DYME_REPETITION_PENALTY:-1.35}"
+export DYME_OPSD_DEGEN_WARMUP_STEPS="${DYME_OPSD_DEGEN_WARMUP_STEPS:-200}"
+export DYME_SFT_WARMUP_STEPS="${DYME_SFT_WARMUP_STEPS:-200}"
+export DYME_SFT_WARMUP_SLOTS="${DYME_SFT_WARMUP_SLOTS:-2}"
+export DYME_FORMAT_MIN_THINKING="${DYME_FORMAT_MIN_THINKING:-8}"
 
 # ZeRO-2 (default) or ZeRO-3 colocate for tighter memory:
 #   ACCELERATE_CONFIG=default_config_zero3_colocate.yaml

@@ -580,9 +580,40 @@ accelerate launch main.py --config config/config.py --mode rl \
 - **Wrong** → same-prompt OPSD / OPD (no `[Reference Answer]` in teacher)
 - **All-wrong group** → online SFT replace on the first generation (DyME cold-start; no separate offline SFT phase)
 
+**Important — online SFT ≠ offline SFT:** From step 0, training is always **RL + sparse online SFT** (typically 1/8 of completions per prompt when the group is all-wrong). There is no dedicated SFT-only phase unless you run a separate offline stage (see below).
+
+**Anti-collapse knobs (ChartQA RLSD / OPD):**
+
+| Env / config | Purpose |
+| --- | --- |
+| `DYME_MAX_COMPLETION_LENGTH`, `DYME_TEMPERATURE`, `DYME_REPETITION_PENALTY` | Antidegen decoding (RLSD defaults: 128 / 0.6 / 1.35) |
+| `DYME_FORMAT_MIN_THINKING` | Minimum chars before `Answer:` for format reward (default 8) |
+| `DYME_OPSD_SKIP_DEGENERATE=0` | Never skip OPSD on degenerate completions |
+| `DYME_OPSD_DEGEN_WARMUP_STEPS` | Before this step, degenerate samples still run OPSD (default 200) |
+| `DYME_SFT_WARMUP_SLOTS` | During warmup, inject GT into first N gens per all-wrong group (default 2) |
+
+**OPD config trap:** `config/config_opd_7b_chartqa.py` must inherit `CONFIG["training"]["dyme_args"]` from `config_rlsd_chartqa` (not stale `TRAINING_CONFIG["dyme_args"]` from antidegen). If logs show `max_new_tokens=150, temperature=0.7`, you are on the wrong decode path — stop and `git pull`.
+
+**Stop-training heuristics:** If after ~200 steps you see `degenerate_rate≈1`, `opsd_mask_true=0`, `grad_norm=0`, and `format_mean≈1` with `accuracy=0`, the run is collapsed — restart from base 0.5B or an early checkpoint.
+
 ```bash
 bash scripts/train_rlsd_chartqa.sh
 # or: --config config/config_rlsd_chartqa.py --opsd_mode rlsd --opsd_providers format_only
+```
+
+**Two-stage cold start (optional offline SFT → RLSD/OPD):**
+
+```bash
+bash scripts/train_chartqa_sft.sh
+export DYME_PRETRAINED_MODEL=./outputs/chartqa-sft/final_checkpoint
+bash scripts/train_opd_7b_chartqa_deepspeed.sh
+```
+
+**200-step smoke (OPD fixes):**
+
+```bash
+bash scripts/train_opd_7b_smoke.sh
+# Success: degenerate_rate<0.5, opsd_mask>8%, advantage_abs_mean>0, grad_norm>0
 ```
 
 **Cross-model OPD (7B frozen teacher + 0.5B student):**
@@ -614,19 +645,24 @@ CHECKPOINT_DIR=./outputs/trimode-chartqa/final_checkpoint bash scripts/run_eval_
 
 ### 3. Reproducing Baselines
 
-To reproduce baseline settings such as standard SFT or RL training, use `main_rebuttal.py` and specify the desired mode through `--mode`.
+To reproduce baseline settings such as standard SFT or RL training, use **`main_sft.py`** (offline ChartQA SFT) or `main.py` with `--opsd_enabled` off for pure DyME.
 
-#### Supervised Fine-Tuning (SFT)
+#### Supervised Fine-Tuning (SFT) — offline two-stage
 
 ```bash
-accelerate launch main_rebuttal.py --config config/config.py --mode sft
+bash scripts/train_chartqa_sft.sh
+# or: accelerate launch main_sft.py --config config/config_rlsd_chartqa.py
 ```
+
+Then point RLSD/OPD at the SFT checkpoint via `DYME_PRETRAINED_MODEL` or `MODEL_CONFIG.pretrained_model_path`.
 
 #### Reinforcement Learning (GRPO / RL)
 
 ```bash
-accelerate launch main_rebuttal.py --config config/config.py --mode grpo
+accelerate launch main.py --config config/config.py --mode rl
 ```
+
+(`main_rebuttal.py` is referenced in the original DyME paper repo but is not shipped here; use `main_sft.py` + `main.py` instead.)
 
 ### 4. Additional Experimental Variants
 

@@ -32,9 +32,9 @@ DYME_OPSD_CONFIG = {
 CONFIG = {
     "model": MODEL_CONFIG,
     "training": {
-        **rlsd.TRAINING_CONFIG,
+        **rlsd.CONFIG["training"],
         "dyme_args": {
-            **rlsd.TRAINING_CONFIG["dyme_args"],
+            **rlsd.CONFIG["training"]["dyme_args"],
             "output_dir": os.environ.get(
                 "DYME_OUTPUT_DIR",
                 os.path.join(OUTPUTS_DIR, "opd-7b-chartqa"),

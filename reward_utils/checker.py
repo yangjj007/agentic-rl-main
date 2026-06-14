@@ -164,7 +164,7 @@ class RewardCalculator:
             print(f"An error occurred during answer reward calculation: {e}")
             return 0.0
 
-    def get_format_reward(self, response: str, min_thinking_length: int = 0) -> float:
+    def get_format_reward(self, response: str, min_thinking_length: int | None = None, task: str = "") -> float:
         """
         Calculates the format reward based on two criteria:
         1. The 'answer:' flag must appear exactly once.
@@ -172,13 +172,25 @@ class RewardCalculator:
 
         Returns 1.0 if the format is correct, 0.0 otherwise.
         """
+        min_len = 0 if min_thinking_length is None else min_thinking_length
+        if "chart" in (task or ""):
+            from reward_utils.format_checks import evaluate_format_reward
+
+            return evaluate_format_reward(
+                response,
+                self.answer_flag,
+                self.count_pattern,
+                min_thinking_length=min_len,
+                task=task,
+            )
+
         # 1. Check if the answer flag appears exactly once.
         if len(self.count_pattern.findall(response)) != 1:
             return 0.0
 
         # 2. Check if the 'thinking' part has sufficient length.
         thinking = response.lower().split(self.answer_flag)[0]
-        if len(thinking.strip()) < min_thinking_length:
+        if len(thinking.strip()) < min_len:
             return 0.0
 
         return 1.0
@@ -340,7 +352,7 @@ class RewardCalculatorLocal:
             print(f"An error occurred during answer reward calculation: {e}")
             return 0.0
 
-    def get_format_reward(self, response: str, min_thinking_length: int = 0) -> float:
+    def get_format_reward(self, response: str, min_thinking_length: int | None = None, task: str = "") -> float:
         """
         Calculates the format reward based on two criteria:
         1. The 'answer:' flag must appear exactly once.
@@ -348,13 +360,25 @@ class RewardCalculatorLocal:
 
         Returns 1.0 if the format is correct, 0.0 otherwise.
         """
+        min_len = 0 if min_thinking_length is None else min_thinking_length
+        if "chart" in (task or ""):
+            from reward_utils.format_checks import evaluate_format_reward
+
+            return evaluate_format_reward(
+                response,
+                self.answer_flag,
+                self.count_pattern,
+                min_thinking_length=min_len,
+                task=task,
+            )
+
         # 1. Check if the answer flag appears exactly once.
         if len(self.count_pattern.findall(response)) != 1:
             return 0.0
 
         # 2. Check if the 'thinking' part has sufficient length.
         thinking = response.lower().split(self.answer_flag)[0]
-        if len(thinking.strip()) < min_thinking_length:
+        if len(thinking.strip()) < min_len:
             return 0.0
 
         return 1.0

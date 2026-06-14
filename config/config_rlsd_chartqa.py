@@ -66,11 +66,51 @@ _max_steps_raw = os.environ.get("DYME_MAX_STEPS", "").strip()
 if _max_steps_raw:
     _dyme_args["max_steps"] = int(_max_steps_raw)
 
+# Keep module-level TRAINING_CONFIG in sync so imports of TRAINING_CONFIG["dyme_args"] match CONFIG.
+TRAINING_CONFIG = {**TRAINING_CONFIG, "dyme_args": _dyme_args}
+
+_skip_degen_env = os.environ.get("DYME_OPSD_SKIP_DEGENERATE", "").strip().lower()
+if _skip_degen_env in ("0", "false", "no", "off"):
+    _skip_degenerate_for_opsd = False
+elif _skip_degen_env in ("1", "true", "yes", "on"):
+    _skip_degenerate_for_opsd = True
+else:
+    _skip_degenerate_for_opsd = True
+
+DYME_OPSD_CONFIG["gate"]["skip_degenerate_for_opsd"] = _skip_degenerate_for_opsd
+DYME_OPSD_CONFIG["gate"]["degen_skip_warmup_steps"] = int(
+    os.environ.get("DYME_OPSD_DEGEN_WARMUP_STEPS", "200")
+)
+DYME_OPSD_CONFIG["gate"]["sft_warmup_steps"] = int(os.environ.get("DYME_SFT_WARMUP_STEPS", "200"))
+DYME_OPSD_CONFIG["gate"]["sft_warmup_slots_per_group"] = int(
+    os.environ.get("DYME_SFT_WARMUP_SLOTS", "2")
+)
+
 CONFIG = {
     "model": MODEL_CONFIG,
     "training": {
         **TRAINING_CONFIG,
         "dyme_args": _dyme_args,
+        "sft_args": {
+            "output_dir": os.environ.get(
+                "DYME_SFT_OUTPUT_DIR",
+                os.path.join(OUTPUTS_DIR, "chartqa-sft"),
+            ),
+            "logging_steps": 10,
+            "per_device_train_batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "num_train_epochs": int(os.environ.get("DYME_SFT_EPOCHS", "2")),
+            "learning_rate": 1e-5,
+            "bf16": True,
+            "gradient_checkpointing": True,
+            "ddp_find_unused_parameters": False,
+            "max_grad_norm": 1.0,
+            "save_strategy": "epoch",
+            "weight_decay": 0.01,
+            "warmup_steps": 0,
+            "seed": 42,
+            "remove_unused_columns": False,
+        },
     },
     "rl": antidegen.CONFIG["rl"],
     "opsd": DYME_OPSD_CONFIG,

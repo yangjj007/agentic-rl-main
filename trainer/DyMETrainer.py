@@ -671,6 +671,21 @@ class DyMETrainer(Trainer):
             return logps_out, torch.cat(all_completion_logits, dim=0)
         return logps_out
 
+    def _current_global_step(self) -> int:
+        from opsd_utils.gate_policy import current_global_step
+
+        return current_global_step(self)
+
+    def _resolve_skip_degenerate_opsd(self) -> bool:
+        from opsd_utils.gate_policy import resolve_skip_degenerate_opsd
+
+        return resolve_skip_degenerate_opsd(self.opsd_config, self._current_global_step())
+
+    def _sft_slots_for_step(self) -> int:
+        from opsd_utils.gate_policy import sft_slots_for_step
+
+        return sft_slots_for_step(self.opsd_config, self._current_global_step())
+
     @profiling_decorator
     def _prepare_inputs(
         self, accumulated_local_batch: dict[str, Union[torch.Tensor, Any]]
@@ -1020,10 +1035,12 @@ class DyMETrainer(Trainer):
 
         format_rewards = format_rewards_flat
 
+        sft_slots = self._sft_slots_for_step()
         sft_check = []
         for i in range(batch_size):
             batch_id = i // self.num_generations
-            sft_check.append((has_correct[batch_id] == 0) & (i % self.num_generations == 0))
+            gen_idx = i % self.num_generations
+            sft_check.append((has_correct[batch_id] == 0) and (gen_idx < sft_slots))
 
         hints = refine_context_in_parallel(self.refiner, question_wo_prompts, hints, answers, task=self.task_name, gpu_id=gpu_id)
         opsd_debug.log("refine", "context refinement finished", num_hints=len(hints))
@@ -1046,7 +1063,7 @@ class DyMETrainer(Trainer):
         opsd_on_correct = 0
         grpo_on_correct = 0
         answer_flag = getattr(self.checker, "answer_flag", "Answer:")
-        skip_degenerate_opsd = self.opsd_config.get("gate", {}).get("skip_degenerate_for_opsd", False)
+        skip_degenerate_opsd = self._resolve_skip_degenerate_opsd()
         opsd_degenerate_require_answer_flag = self.opsd_config.get("gate", {}).get(
             "opsd_degenerate_require_answer_flag", True
         )
@@ -1063,7 +1080,7 @@ class DyMETrainer(Trainer):
             joint_opsd = opsd_active and self.opsd_config.get("mode") == "grpo_opsd_joint" and has_correct[batch_id] > 0
             sft_replaced = False
 
-            if use_sft and sft_check[i]:
+            if sft_check[i]:
                 completion_id_ = torch.cat([sft_padded_ids[i], completion_ids[i][0:0]])
                 completion_mask_ = torch.cat([sft_attn_masks[i], completion_mask[i][0:0]])
                 advantange_ = torch.cat([sft_advantages[i], advantages[i][0:0]])
