@@ -6,6 +6,9 @@ from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
     as_batch_num_images_tensor,
     get_teacher_vision_for_sample,
+    model_inference_device,
+    move_batch_num_images_to_model_device,
+    move_pixel_values_to_model_device,
     student_batch_num_images_tensor,
 )
 
@@ -117,6 +120,13 @@ def _teacher_logits_with_oom_retry(
             t_sizes,
             batch_num_images=teacher_batch_num_images,
         )
+    teacher_device = model_inference_device(model)
+    teacher_prompt_ids = teacher_prompt_ids.to(teacher_device)
+    teacher_prompt_mask = teacher_prompt_mask.to(teacher_device)
+    completion_ids = completion_ids.to(teacher_device)
+    completion_mask = completion_mask.to(teacher_device)
+    t_pixel = move_pixel_values_to_model_device(model, t_pixel)
+    teacher_batch_num_images = move_batch_num_images_to_model_device(model, teacher_batch_num_images)
     teacher_input = torch.cat([teacher_prompt_ids, completion_ids], dim=1)
     teacher_attn = torch.cat([teacher_prompt_mask, completion_mask], dim=1)
     oom_retries = 0

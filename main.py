@@ -27,6 +27,7 @@ from trainer.DyMETrainer import DyMETrainer
 from reward_utils.checker import RewardCalculator, RewardCalculatorLocal
 from reward_utils.refiner import ContextRefiner, ContextRefinerLocal
 from opsd_utils import debug_log as opsd_debug
+from opsd_utils.teacher_batching import model_inference_device
 
 
 def _wandb_disabled_by_env() -> bool:
@@ -109,6 +110,10 @@ def load_teacher_model(model_config: Dict[str, Any]):
     dtype_name = model_config.get("teacher_dtype", model_config.get("torch_dtype", "bfloat16"))
     torch_dtype = getattr(torch, dtype_name)
     device_map = model_config.get("teacher_device_map")
+    if not device_map:
+        env_map = os.environ.get("DYME_TEACHER_DEVICE_MAP", "").strip()
+        if env_map:
+            device_map = env_map
 
     load_kwargs: Dict[str, Any] = {
         "torch_dtype": torch_dtype,
@@ -126,6 +131,12 @@ def load_teacher_model(model_config: Dict[str, Any]):
     teacher.requires_grad_(False)
     if hasattr(teacher, "base_model") and hasattr(teacher.base_model, "vision_tower"):
         teacher.base_model.vision_tower.requires_grad_(False)
+
+    if not device_map and torch.cuda.is_available():
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        target = torch.device(f"cuda:{local_rank}")
+        teacher = teacher.to(target)
+
     return teacher
 
 
@@ -350,7 +361,11 @@ def main():
     model, processor = load_model_and_processor(model_config)
     teacher_model = load_teacher_model(model_config)
     if accelerator.is_main_process and teacher_model is not None:
-        print(f"[DyME] Frozen teacher loaded from {model_config.get('teacher_model_path')}")
+        tdev = model_inference_device(teacher_model)
+        print(
+            f"[DyME] Frozen teacher loaded from {model_config.get('teacher_model_path')} "
+            f"on {tdev} (override: DYME_TEACHER_DEVICE_MAP or model.teacher_device_map)"
+        )
 
     # 4. Prepare Datasets
     train_dataset, eval_dataset = prepare_datasets(task, dataset_config, mode=mode)

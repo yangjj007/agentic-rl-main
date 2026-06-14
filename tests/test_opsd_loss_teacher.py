@@ -20,6 +20,13 @@ def test_opsd_loss_accepts_teacher_model_kwarg():
 
     student = MagicMock()
     teacher = MagicMock()
+    _param = torch.nn.Parameter(torch.zeros(1, device=device))
+
+    def _parameters():
+        return iter([_param])
+
+    student.parameters = _parameters
+    teacher.parameters = _parameters
 
     def _fake_forward(**kwargs):
         logits = torch.zeros(1, seq + 2, vocab, device=device)

@@ -219,6 +219,64 @@ def _unwrap_model(model):
     return model
 
 
+def _as_torch_device(dev) -> Optional[torch.device]:
+    return dev if isinstance(dev, torch.device) else None
+
+
+def model_inference_device(model) -> torch.device:
+    """Device for teacher/student forward inputs (embeddings or vision tower)."""
+    inner = _unwrap_model(model)
+    get_emb = getattr(inner, "get_input_embeddings", None)
+    if callable(get_emb):
+        emb = get_emb()
+        if emb is not None and hasattr(emb, "weight"):
+            dev = _as_torch_device(emb.weight.device)
+            if dev is not None:
+                return dev
+    core = getattr(inner, "model", inner)
+    tower = getattr(core, "vision_tower", None)
+    if tower is not None:
+        params_fn = getattr(tower, "parameters", None)
+        if callable(params_fn):
+            for p in params_fn():
+                dev = _as_torch_device(p.device)
+                if dev is not None and dev.type != "meta":
+                    return dev
+    params_fn = getattr(inner, "parameters", None)
+    if callable(params_fn):
+        for p in params_fn():
+            dev = _as_torch_device(p.device)
+            if dev is not None and dev.type != "meta":
+                return dev
+    return torch.device("cpu")
+
+
+def model_inference_dtype(model) -> torch.dtype:
+    inner = _unwrap_model(model)
+    params_fn = getattr(inner, "parameters", None)
+    if callable(params_fn):
+        for p in params_fn():
+            dev = _as_torch_device(p.device)
+            if dev is not None and dev.type != "meta":
+                return p.dtype
+    return torch.bfloat16
+
+
+def move_pixel_values_to_model_device(model, pixel_values):
+    """Align vision tensor device/dtype with the model (cross-model OPD safety)."""
+    if pixel_values is None or not isinstance(pixel_values, torch.Tensor):
+        return pixel_values
+    device = model_inference_device(model)
+    dtype = model_inference_dtype(model)
+    return pixel_values.to(device=device, dtype=dtype)
+
+
+def move_batch_num_images_to_model_device(model, batch_num_images: Optional[torch.Tensor]):
+    if batch_num_images is None or not isinstance(batch_num_images, torch.Tensor):
+        return batch_num_images
+    return batch_num_images.to(device=model_inference_device(model))
+
+
 def as_batch_num_images_tensor(
     num_images: int | None,
     pixel_values: Optional[torch.Tensor],
@@ -277,6 +335,8 @@ def expected_image_feature_count(
     """Vision feature rows after LLaVA-OV pack (matches model forward placeholder count)."""
     if pixel_values is None:
         return 0
+    pixel_values = move_pixel_values_to_model_device(model, pixel_values)
+    batch_num_images = move_batch_num_images_to_model_device(model, batch_num_images)
     inner = _unwrap_model(model)
     if not hasattr(inner, "model"):
         return 0

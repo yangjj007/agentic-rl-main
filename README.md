@@ -573,9 +573,9 @@ bash scripts/train_rlsd_chartqa.sh
 **Cross-model OPD (7B frozen teacher + 0.5B student):**
 
 ```bash
-export DYME_TEACHER_DEVICE_MAP=cuda:0
+# Default: teacher on each rank's GPU (cuda:LOCAL_RANK). 2-GPU: student+teacher share the same card per rank.
+# Optional dedicated teacher GPU: export DYME_TEACHER_DEVICE_MAP=cuda:1
 bash scripts/train_opd_7b_chartqa.sh
-# eval: CHECKPOINT_DIR=./outputs/opd-7b-chartqa/final_checkpoint bash scripts/run_eval_ablation.sh
 ```
 
 Note: `main.py --mode rl --config config/config.py` uses **`dyme_args`** (not the unused `grpo_args` block in the same file). Pure GRPO baselines use `main_rebuttal.py`.

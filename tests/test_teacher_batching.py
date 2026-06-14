@@ -297,3 +297,40 @@ def test_truncate_image_tokens_keeps_first_n():
     assert int((out_ids == img_id).sum()) == 4
     assert out_ids.shape[1] == 7
     assert int(out_mask.sum()) == 7
+
+
+def test_move_pixel_values_to_model_device_cpu_model():
+    from opsd_utils.teacher_batching import (
+        model_inference_device,
+        model_inference_dtype,
+        move_pixel_values_to_model_device,
+    )
+
+    class _Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(3, 4, 1)
+
+    model = _Tiny().to(dtype=torch.bfloat16)
+    if torch.cuda.is_available():
+        pixel = torch.randn(1, 3, 8, 8, device="cuda")
+    else:
+        pixel = torch.randn(1, 3, 8, 8)
+    moved = move_pixel_values_to_model_device(model, pixel)
+    assert moved.device == model_inference_device(model)
+    assert moved.dtype == model_inference_dtype(model)
+
+
+def test_model_inference_device_from_embeddings():
+    from opsd_utils.teacher_batching import model_inference_device
+
+    class _EmbModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = torch.nn.Embedding(16, 8)
+
+        def get_input_embeddings(self):
+            return self.embed
+
+    model = _EmbModel()
+    assert model_inference_device(model) == model.embed.weight.device

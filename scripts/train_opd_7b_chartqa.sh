@@ -10,7 +10,8 @@ export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-}"
 export DYME_OPSD_PRIVILEGE_PROFILE="${DYME_OPSD_PRIVILEGE_PROFILE:-text}"
 export DYME_TEACHER_MODEL="${DYME_TEACHER_MODEL:-llava-hf/llava-onevision-qwen2-7b-ov-hf}"
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa}"
-# Optional: pin teacher to a dedicated GPU, e.g. export DYME_TEACHER_DEVICE_MAP=cuda:3
+# Optional: pin teacher to a dedicated GPU, e.g. export DYME_TEACHER_DEVICE_MAP=cuda:1
+# Default (unset): teacher loads on each rank's LOCAL_RANK GPU
 export DYME_TEACHER_DEVICE_MAP="${DYME_TEACHER_DEVICE_MAP:-}"
 
 ACCELERATE_CONFIG="$(resolve_accelerate_config)"
