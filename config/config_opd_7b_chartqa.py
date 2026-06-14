@@ -2,7 +2,7 @@
 COPSD-style cross-model OPD on ChartQA (Method 2).
 
 Frozen LLaVA-OneVision 7B teacher; student default 0.5B.
-Uses rlsd routing from config_rlsd_chartqa (no offline SFT phase).
+Inherits RLSD routing + embedded SFT cold-start gates from config_rlsd_chartqa.
 """
 import os
 

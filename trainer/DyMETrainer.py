@@ -680,10 +680,22 @@ class DyMETrainer(Trainer):
         return current_global_step(self)
 
     def _max_training_steps(self) -> Optional[int]:
-        max_steps = getattr(self.args, "max_steps", None)
-        if max_steps is not None and int(max_steps) > 0:
-            return int(max_steps)
-        return None
+        from opsd_utils.gate_policy import resolve_max_training_steps, sft_cold_start_steps
+
+        resolved = resolve_max_training_steps(self)
+        if not getattr(self, "_max_steps_logged", False):
+            self._max_steps_logged = True
+            if self.accelerator.is_main_process:
+                cold_steps = sft_cold_start_steps(self.opsd_config, resolved)
+                opsd_debug.log_probe(
+                    "phase",
+                    "resolved training horizon",
+                    global_step=self._current_global_step(),
+                    max_steps=resolved,
+                    cold_start_steps=cold_steps,
+                    sft_cold_start_frac=self.opsd_config.get("gate", {}).get("sft_cold_start_frac"),
+                )
+        return resolved
 
     def _in_sft_cold_start(self) -> bool:
         from opsd_utils.gate_policy import in_sft_cold_start
@@ -723,11 +735,17 @@ class DyMETrainer(Trainer):
         if self._last_training_phase == phase:
             return
         self._last_training_phase = phase
+        from opsd_utils.gate_policy import sft_cold_start_steps
+
         opsd_debug.log_probe(
             "phase",
             f"training_phase={phase}",
             global_step=global_step,
-            cold_start_steps=self.opsd_config.get("gate", {}).get("sft_cold_start_steps"),
+            max_steps=self._max_training_steps(),
+            cold_start_steps=sft_cold_start_steps(
+                self.opsd_config,
+                self._max_training_steps(),
+            ),
         )
 
     def _resolve_skip_degenerate_opsd(self) -> bool:

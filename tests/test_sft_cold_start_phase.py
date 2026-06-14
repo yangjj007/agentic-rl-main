@@ -4,6 +4,7 @@ import re
 from opsd_utils.diagnostics import summarize_generate_probe_stats
 from opsd_utils.gate_policy import (
     in_sft_cold_start,
+    resolve_max_training_steps,
     resolve_skip_degenerate_opsd,
     sft_cold_start_steps,
     sft_slots_for_step,
@@ -41,6 +42,34 @@ def test_sft_slots_zero_during_cold_start():
     cfg = _gate_cfg()
     assert sft_slots_for_step(cfg, 10, 1000) == 0
     assert sft_slots_for_step(cfg, 200, 1000) == 4
+
+
+def test_resolve_max_training_steps_from_state():
+    class _State:
+        max_steps = 5890
+
+    class _Args:
+        max_steps = -1
+        num_train_epochs = 1
+
+    class _Trainer:
+        args = _Args()
+        state = _State()
+
+    assert resolve_max_training_steps(_Trainer()) == 5890
+    assert sft_cold_start_steps(_gate_cfg(), 5890) == 471
+
+
+def test_resolve_max_training_steps_from_args():
+    class _Args:
+        max_steps = 200
+        num_train_epochs = 10
+
+    class _Trainer:
+        args = _Args()
+        state = None
+
+    assert resolve_max_training_steps(_Trainer()) == 200
 
 
 def test_graded_chart_format_partial_credit():

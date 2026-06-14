@@ -25,6 +25,24 @@ except ValueError:
 _providers_raw = os.environ.get("DYME_OPSD_PROVIDERS", "format_only").strip()
 _privileged_providers = [p.strip() for p in _providers_raw.split(",") if p.strip()] if _providers_raw else []
 
+_skip_degen_env = os.environ.get("DYME_OPSD_SKIP_DEGENERATE", "").strip().lower()
+if _skip_degen_env in ("0", "false", "no", "off"):
+    _skip_degenerate_for_opsd = False
+elif _skip_degen_env in ("1", "true", "yes", "on"):
+    _skip_degenerate_for_opsd = True
+else:
+    _skip_degenerate_for_opsd = True
+
+# Embedded SFT cold-start + RLSD warmup gates (env overrides optional).
+_RLSD_GATE_DEFAULTS = {
+    "skip_degenerate_for_opsd": _skip_degenerate_for_opsd,
+    "degen_skip_warmup_steps": 200,
+    "sft_warmup_steps": 500,
+    "sft_warmup_slots_per_group": 4,
+    # First N steps: skip generate, 100% GT injection, pure SFT NLL (no OPSD/GRPO).
+    "sft_cold_start_frac": 0.08,
+}
+
 DYME_OPSD_CONFIG = {
     **antidegen.DYME_OPSD_CONFIG,
     "mode": os.environ.get("DYME_OPSD_MODE", "rlsd"),
@@ -37,10 +55,10 @@ DYME_OPSD_CONFIG = {
         "recoverable_without_privilege": True,
         "require_format_for_opsd": os.environ.get("DYME_OPSD_REQUIRE_FORMAT", "0").strip().lower()
         not in ("0", "false", "no", "off"),
-        "skip_degenerate_for_opsd": True,
         "online_sft_on_all_wrong": True,
         # ChartQA short numeric answers lack "Answer:" — do not block OPSD on format alone
         "opsd_degenerate_require_answer_flag": False,
+        **_RLSD_GATE_DEFAULTS,
     },
     "loss": {
         **antidegen.DYME_OPSD_CONFIG.get("loss", {}),
@@ -58,40 +76,48 @@ _dyme_args = {
         os.path.join(OUTPUTS_DIR, "rlsd-chartqa"),
     ),
     # Mitigate early RL collapse (newline + bare number + immediate EOS)
-    "temperature": float(os.environ.get("DYME_TEMPERATURE", "0.5")),
-    "repetition_penalty": float(os.environ.get("DYME_REPETITION_PENALTY", "1.5")),
-    "max_completion_length": int(os.environ.get("DYME_MAX_COMPLETION_LENGTH", "96")),
+    "max_completion_length": 96,
+    "temperature": 0.5,
+    "repetition_penalty": 1.5,
 }
 _max_steps_raw = os.environ.get("DYME_MAX_STEPS", "").strip()
 if _max_steps_raw:
     _dyme_args["max_steps"] = int(_max_steps_raw)
 
+_temp_raw = os.environ.get("DYME_TEMPERATURE", "").strip()
+if _temp_raw:
+    _dyme_args["temperature"] = float(_temp_raw)
+_rep_raw = os.environ.get("DYME_REPETITION_PENALTY", "").strip()
+if _rep_raw:
+    _dyme_args["repetition_penalty"] = float(_rep_raw)
+_max_len_raw = os.environ.get("DYME_MAX_COMPLETION_LENGTH", "").strip()
+if _max_len_raw:
+    _dyme_args["max_completion_length"] = int(_max_len_raw)
+
 # Keep module-level TRAINING_CONFIG in sync so imports of TRAINING_CONFIG["dyme_args"] match CONFIG.
 TRAINING_CONFIG = {**TRAINING_CONFIG, "dyme_args": _dyme_args}
 
-_skip_degen_env = os.environ.get("DYME_OPSD_SKIP_DEGENERATE", "").strip().lower()
-if _skip_degen_env in ("0", "false", "no", "off"):
-    _skip_degenerate_for_opsd = False
-elif _skip_degen_env in ("1", "true", "yes", "on"):
-    _skip_degenerate_for_opsd = True
-else:
-    _skip_degenerate_for_opsd = True
+# Optional env overrides for gate defaults (see _RLSD_GATE_DEFAULTS above).
+_degen_warmup_raw = os.environ.get("DYME_OPSD_DEGEN_WARMUP_STEPS", "").strip()
+if _degen_warmup_raw:
+    DYME_OPSD_CONFIG["gate"]["degen_skip_warmup_steps"] = int(_degen_warmup_raw)
 
-DYME_OPSD_CONFIG["gate"]["skip_degenerate_for_opsd"] = _skip_degenerate_for_opsd
-DYME_OPSD_CONFIG["gate"]["degen_skip_warmup_steps"] = int(
-    os.environ.get("DYME_OPSD_DEGEN_WARMUP_STEPS", "200")
-)
-DYME_OPSD_CONFIG["gate"]["sft_warmup_steps"] = int(os.environ.get("DYME_SFT_WARMUP_STEPS", "500"))
-DYME_OPSD_CONFIG["gate"]["sft_warmup_slots_per_group"] = int(
-    os.environ.get("DYME_SFT_WARMUP_SLOTS", "4")
-)
+_sft_warmup_raw = os.environ.get("DYME_SFT_WARMUP_STEPS", "").strip()
+if _sft_warmup_raw:
+    DYME_OPSD_CONFIG["gate"]["sft_warmup_steps"] = int(_sft_warmup_raw)
+
+_sft_slots_raw = os.environ.get("DYME_SFT_WARMUP_SLOTS", "").strip()
+if _sft_slots_raw:
+    DYME_OPSD_CONFIG["gate"]["sft_warmup_slots_per_group"] = int(_sft_slots_raw)
+
 _cold_start_steps_raw = os.environ.get("DYME_SFT_COLD_START_STEPS", "").strip()
 if _cold_start_steps_raw:
     DYME_OPSD_CONFIG["gate"]["sft_cold_start_steps"] = int(_cold_start_steps_raw)
+    DYME_OPSD_CONFIG["gate"].pop("sft_cold_start_frac", None)
 else:
-    DYME_OPSD_CONFIG["gate"]["sft_cold_start_frac"] = float(
-        os.environ.get("DYME_SFT_COLD_START_FRAC", "0.08")
-    )
+    _cold_start_frac_raw = os.environ.get("DYME_SFT_COLD_START_FRAC", "").strip()
+    if _cold_start_frac_raw:
+        DYME_OPSD_CONFIG["gate"]["sft_cold_start_frac"] = float(_cold_start_frac_raw)
 
 CONFIG = {
     "model": MODEL_CONFIG,

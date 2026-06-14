@@ -4,6 +4,9 @@
 # Layout (2× GPU, recommended):
 #   Each rank: student (ZeRO-sharded) + frozen 7B teacher on cuda:{LOCAL_RANK}
 #
+# Cold-start / decode / warmup defaults: config/config_rlsd_chartqa.py (inherited by
+# config/config_opd_7b_chartqa.py). Override via DYME_* env only when needed.
+#
 # Official refs:
 #   https://huggingface.co/docs/transformers/deepspeed
 #   https://huggingface.co/docs/accelerate/usage_guides/deepspeed
@@ -17,15 +20,6 @@ export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-}"
 export DYME_OPSD_PRIVILEGE_PROFILE="${DYME_OPSD_PRIVILEGE_PROFILE:-text}"
 export DYME_TEACHER_MODEL="${DYME_TEACHER_MODEL:-llava-hf/llava-onevision-qwen2-7b-ov-hf}"
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa-ds}"
-# RLSD antidegen decode (also in config_rlsd; env overrides for A/B)
-export DYME_MAX_COMPLETION_LENGTH="${DYME_MAX_COMPLETION_LENGTH:-96}"
-export DYME_TEMPERATURE="${DYME_TEMPERATURE:-0.5}"
-export DYME_REPETITION_PENALTY="${DYME_REPETITION_PENALTY:-1.5}"
-export DYME_OPSD_DEGEN_WARMUP_STEPS="${DYME_OPSD_DEGEN_WARMUP_STEPS:-200}"
-export DYME_SFT_WARMUP_STEPS="${DYME_SFT_WARMUP_STEPS:-500}"
-export DYME_SFT_WARMUP_SLOTS="${DYME_SFT_WARMUP_SLOTS:-4}"
-export DYME_SFT_COLD_START_FRAC="${DYME_SFT_COLD_START_FRAC:-0.08}"
-export DYME_FORMAT_MIN_THINKING="${DYME_FORMAT_MIN_THINKING:-8}"
 
 # ZeRO-2 (default) or ZeRO-3 colocate for tighter memory:
 #   ACCELERATE_CONFIG=default_config_zero3_colocate.yaml
@@ -42,6 +36,8 @@ NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
 echo "DeepSpeed ZeRO OPD: ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
 echo "Teacher placement: DYME_TEACHER_DEVICE_MAP=${DYME_TEACHER_DEVICE_MAP} (auto colocates under DeepSpeed)"
+echo "SFT cold-start / warmup: defaults in config/config_rlsd_chartqa.py (sft_cold_start_frac=0.08, etc.)"
+echo "  Optional overrides: DYME_SFT_COLD_START_STEPS, DYME_SFT_COLD_START_FRAC, DYME_MAX_STEPS"
 
 LOG_DIR="${DYME_LOG_DIR:-./outputs/logs}"
 mkdir -p "${LOG_DIR}"

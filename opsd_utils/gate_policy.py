@@ -1,11 +1,58 @@
 """RLSD warmup gates for OPSD degenerate skip, denser online SFT, and embedded SFT cold start."""
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping, Optional
 
 
 def current_global_step(trainer: Any) -> int:
     return int(getattr(getattr(trainer, "state", None), "global_step", getattr(trainer, "_step", 0)) or 0)
+
+
+def resolve_max_training_steps(trainer: Any) -> Optional[int]:
+    """Resolve total optimizer steps for gate math (cold start frac, warmup windows).
+
+    Priority: TrainingArguments.max_steps > Trainer.state.max_steps > epoch estimate.
+    HF sets state.max_steps when max_steps<=0 from num_train_epochs * len(dataloader).
+    """
+    args = getattr(trainer, "args", None)
+    if args is not None:
+        arg_max = getattr(args, "max_steps", None)
+        if arg_max is not None and int(arg_max) > 0:
+            return int(arg_max)
+
+    state = getattr(trainer, "state", None)
+    if state is not None:
+        state_max = getattr(state, "max_steps", None)
+        if state_max is not None and int(state_max) > 0:
+            return int(state_max)
+
+    if args is None:
+        return None
+
+    num_epochs = getattr(args, "num_train_epochs", None)
+    grad_accum = max(1, int(getattr(args, "gradient_accumulation_steps", 1) or 1))
+    if num_epochs is None or float(num_epochs) <= 0:
+        return None
+
+    dataloader = getattr(trainer, "train_dataloader", None)
+    if dataloader is None and hasattr(trainer, "get_train_dataloader"):
+        try:
+            dataloader = trainer.get_train_dataloader()
+        except Exception:
+            dataloader = None
+    if dataloader is None:
+        return None
+
+    try:
+        steps_per_epoch = len(dataloader)
+    except TypeError:
+        return None
+    if steps_per_epoch <= 0:
+        return None
+
+    total = math.ceil(float(num_epochs) * steps_per_epoch / grad_accum)
+    return total if total > 0 else None
 
 
 def sft_cold_start_steps(opsd_config: Mapping[str, Any], max_steps: Optional[int]) -> int:
