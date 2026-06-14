@@ -13,8 +13,9 @@ export DYME_MAX_COMPLETION_LENGTH="${DYME_MAX_COMPLETION_LENGTH:-96}"
 export DYME_TEMPERATURE="${DYME_TEMPERATURE:-0.5}"
 export DYME_REPETITION_PENALTY="${DYME_REPETITION_PENALTY:-1.5}"
 export DYME_OPSD_DEGEN_WARMUP_STEPS="${DYME_OPSD_DEGEN_WARMUP_STEPS:-200}"
-export DYME_SFT_WARMUP_STEPS="${DYME_SFT_WARMUP_STEPS:-200}"
-export DYME_SFT_WARMUP_SLOTS="${DYME_SFT_WARMUP_SLOTS:-2}"
+export DYME_SFT_WARMUP_STEPS="${DYME_SFT_WARMUP_STEPS:-500}"
+export DYME_SFT_WARMUP_SLOTS="${DYME_SFT_WARMUP_SLOTS:-4}"
+export DYME_SFT_COLD_START_FRAC="${DYME_SFT_COLD_START_FRAC:-0.08}"
 export DYME_FORMAT_MIN_THINKING="${DYME_FORMAT_MIN_THINKING:-8}"
 
 ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-default_config_zero2.yaml}"
@@ -31,7 +32,8 @@ echo "  degenerate_rate < 0.5"
 echo "  opsd_mask_true / batch > 0.08"
 echo "  advantage_abs_mean > 0"
 echo "  grad_norm > 0"
-echo "  rewards/accuracy/mean occasionally > 0"
+echo "  phase/sft_cold_start=1 during first ${DYME_SFT_COLD_START_FRAC} of steps"
+echo "  logits/p_answer_first > 0.8 after cold start"
 
 accelerate launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PROCESSES}" main.py \
   --config config/config_opd_7b_chartqa.py \

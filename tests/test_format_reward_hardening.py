@@ -60,9 +60,10 @@ def test_trainer_skip_degenerate_warmup():
             "degen_skip_warmup_steps": 200,
             "sft_warmup_steps": 200,
             "sft_warmup_slots_per_group": 2,
+            "sft_cold_start_frac": 0.0,
         }
     }
-    assert resolve_skip_degenerate_opsd(cfg, 50) is False
-    assert sft_slots_for_step(cfg, 50) == 2
-    assert resolve_skip_degenerate_opsd(cfg, 250) is True
-    assert sft_slots_for_step(cfg, 250) == 1
+    assert resolve_skip_degenerate_opsd(cfg, 50, 1000) is False
+    assert sft_slots_for_step(cfg, 50, 1000) == 2
+    assert resolve_skip_degenerate_opsd(cfg, 250, 1000) is True
+    assert sft_slots_for_step(cfg, 250, 1000) == 1

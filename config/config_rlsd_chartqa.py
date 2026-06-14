@@ -58,9 +58,9 @@ _dyme_args = {
         os.path.join(OUTPUTS_DIR, "rlsd-chartqa"),
     ),
     # Mitigate early RL collapse (newline + bare number + immediate EOS)
-    "temperature": float(os.environ.get("DYME_TEMPERATURE", "0.6")),
-    "repetition_penalty": float(os.environ.get("DYME_REPETITION_PENALTY", "1.35")),
-    "max_completion_length": int(os.environ.get("DYME_MAX_COMPLETION_LENGTH", "128")),
+    "temperature": float(os.environ.get("DYME_TEMPERATURE", "0.5")),
+    "repetition_penalty": float(os.environ.get("DYME_REPETITION_PENALTY", "1.5")),
+    "max_completion_length": int(os.environ.get("DYME_MAX_COMPLETION_LENGTH", "96")),
 }
 _max_steps_raw = os.environ.get("DYME_MAX_STEPS", "").strip()
 if _max_steps_raw:
@@ -81,10 +81,17 @@ DYME_OPSD_CONFIG["gate"]["skip_degenerate_for_opsd"] = _skip_degenerate_for_opsd
 DYME_OPSD_CONFIG["gate"]["degen_skip_warmup_steps"] = int(
     os.environ.get("DYME_OPSD_DEGEN_WARMUP_STEPS", "200")
 )
-DYME_OPSD_CONFIG["gate"]["sft_warmup_steps"] = int(os.environ.get("DYME_SFT_WARMUP_STEPS", "200"))
+DYME_OPSD_CONFIG["gate"]["sft_warmup_steps"] = int(os.environ.get("DYME_SFT_WARMUP_STEPS", "500"))
 DYME_OPSD_CONFIG["gate"]["sft_warmup_slots_per_group"] = int(
-    os.environ.get("DYME_SFT_WARMUP_SLOTS", "2")
+    os.environ.get("DYME_SFT_WARMUP_SLOTS", "4")
 )
+_cold_start_steps_raw = os.environ.get("DYME_SFT_COLD_START_STEPS", "").strip()
+if _cold_start_steps_raw:
+    DYME_OPSD_CONFIG["gate"]["sft_cold_start_steps"] = int(_cold_start_steps_raw)
+else:
+    DYME_OPSD_CONFIG["gate"]["sft_cold_start_frac"] = float(
+        os.environ.get("DYME_SFT_COLD_START_FRAC", "0.08")
+    )
 
 CONFIG = {
     "model": MODEL_CONFIG,

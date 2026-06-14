@@ -71,10 +71,18 @@ def evaluate_format_reward(
         ):
             return 0.0
 
-    if len(count_pattern.findall(response)) != 1:
+    answer_matches = count_pattern.findall(response)
+    if len(answer_matches) != 1:
         return 0.0
 
     thinking = response.lower().split(flag_lower)[0]
+    if "chart" in (task or ""):
+        has_goal = len(re.findall(r"(?i)goal:", response or "")) == 1
+        if has_goal and len(thinking.strip()) >= min_len:
+            return 1.0
+        if has_goal:
+            return 0.5
+
     if len(thinking.strip()) < min_len:
         return 0.0
 

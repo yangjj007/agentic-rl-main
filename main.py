@@ -440,11 +440,27 @@ def main():
                     flush=True,
                 )
 
-    teacher_model = load_teacher_model(
-        model_config,
-        local_rank=local_rank,
-        num_gpus=visible_gpus,
+    cold_start_frac = float(
+        opsd_config.get("gate", {}).get("sft_cold_start_frac", 0.0) or 0.0
     )
+    cold_start_steps = opsd_config.get("gate", {}).get("sft_cold_start_steps")
+    lazy_teacher = bool(cold_start_steps) or cold_start_frac > 0.0
+
+    teacher_model = None
+    teacher_model_config = None
+    if lazy_teacher:
+        teacher_model_config = dict(model_config)
+        if accelerator.is_main_process:
+            print(
+                "[DyME] SFT cold-start enabled: deferring 7B teacher load until RL phase",
+                flush=True,
+            )
+    else:
+        teacher_model = load_teacher_model(
+            model_config,
+            local_rank=local_rank,
+            num_gpus=visible_gpus,
+        )
     if accelerator.is_main_process and teacher_model is not None:
         _run_cross_model_vocab_checks(
             model,
@@ -485,6 +501,7 @@ def main():
         end_flag=rl_config['end_flag'],
         opsd_config=opsd_config,
         teacher_model=teacher_model,
+        teacher_model_config=teacher_model_config,
     )
 
     # 8. Start Training

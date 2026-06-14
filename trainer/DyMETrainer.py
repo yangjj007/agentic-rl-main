@@ -282,9 +282,12 @@ class DyMETrainer(Trainer):
         end_flag: str = '<|im_end|>',
         opsd_config: Optional[dict] = None,
         teacher_model: Optional[PreTrainedModel] = None,
+        teacher_model_config: Optional[dict] = None,
     ):
         self.opsd_config = opsd_config if opsd_config is not None else dict(DEFAULT_OPSD_CONFIG)
         self.teacher_model = teacher_model
+        self._teacher_model_config = teacher_model_config
+        self._last_training_phase: Optional[str] = None
         self.task_name = task_name
         reward_weights = self.opsd_config.get("reward_weights", [1.0, 1.0, 1.0])
         if len(reward_weights) != 3:
@@ -676,15 +679,91 @@ class DyMETrainer(Trainer):
 
         return current_global_step(self)
 
+    def _max_training_steps(self) -> Optional[int]:
+        max_steps = getattr(self.args, "max_steps", None)
+        if max_steps is not None and int(max_steps) > 0:
+            return int(max_steps)
+        return None
+
+    def _in_sft_cold_start(self) -> bool:
+        from opsd_utils.gate_policy import in_sft_cold_start
+
+        return in_sft_cold_start(
+            self.opsd_config,
+            self._current_global_step(),
+            self._max_training_steps(),
+        )
+
+    def _ensure_teacher_model(self) -> None:
+        if self.teacher_model is not None or not self._teacher_model_config:
+            return
+        teacher_path = self._teacher_model_config.get("teacher_model_path")
+        if not teacher_path:
+            return
+        from main import load_teacher_model
+
+        local_rank = self.accelerator.local_process_index
+        num_gpus = max(1, self.accelerator.num_processes)
+        self.teacher_model = load_teacher_model(
+            self._teacher_model_config,
+            local_rank=local_rank,
+            num_gpus=num_gpus,
+        )
+        if self.teacher_model is not None:
+            self.teacher_model.eval()
+        self.accelerator.wait_for_everyone()
+        opsd_debug.log_probe(
+            "phase",
+            "lazy teacher loaded after SFT cold start",
+            global_step=self._current_global_step(),
+            teacher_path=teacher_path,
+        )
+
+    def _log_training_phase(self, phase: str, global_step: int) -> None:
+        if self._last_training_phase == phase:
+            return
+        self._last_training_phase = phase
+        opsd_debug.log_probe(
+            "phase",
+            f"training_phase={phase}",
+            global_step=global_step,
+            cold_start_steps=self.opsd_config.get("gate", {}).get("sft_cold_start_steps"),
+        )
+
     def _resolve_skip_degenerate_opsd(self) -> bool:
         from opsd_utils.gate_policy import resolve_skip_degenerate_opsd
 
-        return resolve_skip_degenerate_opsd(self.opsd_config, self._current_global_step())
+        return resolve_skip_degenerate_opsd(
+            self.opsd_config,
+            self._current_global_step(),
+            self._max_training_steps(),
+        )
 
     def _sft_slots_for_step(self) -> int:
         from opsd_utils.gate_policy import sft_slots_for_step
 
-        return sft_slots_for_step(self.opsd_config, self._current_global_step())
+        return sft_slots_for_step(
+            self.opsd_config,
+            self._current_global_step(),
+            self._max_training_steps(),
+        )
+
+    def _should_force_sft_replace(
+        self,
+        i: int,
+        completions: list[str],
+        answer_flag: str,
+    ) -> bool:
+        if self._in_sft_cold_start():
+            return True
+        text_i = completions[i] if i < len(completions) else ""
+        if opsd_diagnostics._count_answer_flag(text_i, answer_flag) != 1:
+            return True
+        from reward_utils.format_checks import is_digit_spam_after_answer
+
+        if is_digit_spam_after_answer(text_i, answer_flag.lower()):
+            return True
+        return False
 
     @profiling_decorator
     def _prepare_inputs(
@@ -736,6 +815,152 @@ class DyMETrainer(Trainer):
             )
         return inputs
 
+    def _source_row_index(self, row: int, raw_count: int, expanded_count: int) -> int:
+        if raw_count <= 0:
+            return 0
+        if raw_count * self.num_generations == expanded_count:
+            return row // self.num_generations
+        if raw_count == expanded_count:
+            return row
+        return min(row, raw_count - 1)
+
+    def _generate_sft_cold_start_batch(
+        self,
+        *,
+        inputs: list[dict[str, Union[torch.Tensor, Any]]],
+        prompt_ids: torch.Tensor,
+        prompt_mask: torch.Tensor,
+        pixel_values: torch.Tensor,
+        image_sizes: torch.Tensor,
+        global_step: int,
+        generate_call_index: int,
+        mode: str,
+    ) -> dict[str, Union[torch.Tensor, Any]]:
+        """Embedded offline SFT: skip generate, inject GT completions, SFT-only loss."""
+        device = self.accelerator.device
+        raw_count = len(inputs)
+        prompts_count = prompt_ids.size(0)
+        question_wo_prompts = [x["question_wo_prompt"] for x in inputs]
+        hints = [x.get("hint", "") for x in inputs]
+        answers = [x["answer"] for x in inputs]
+        gpu_id = self.accelerator.device.index
+        hints = refine_context_in_parallel(
+            self.refiner,
+            question_wo_prompts,
+            hints,
+            answers,
+            task=self.task_name,
+            gpu_id=gpu_id,
+        )
+        sft_gt_rows = []
+        for i in range(prompts_count):
+            src = self._source_row_index(i, raw_count, prompts_count)
+            sft_gt_rows.append(hints[src] + "\n" + answers[src] + self.end_flag)
+
+        sft_dt = self.processing_class.tokenizer(
+            sft_gt_rows,
+            return_tensors="pt",
+            padding=True,
+            padding_side="right",
+        )
+        completion_ids = sft_dt["input_ids"].to(device)
+        completion_mask = sft_dt["attention_mask"].to(device)
+        completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+        is_eos = completion_ids == self.processing_class.tokenizer.eos_token_id
+        eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
+        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
+
+        probe_stats = opsd_diagnostics.log_generate_probe(
+            global_step=global_step,
+            trainer_step=self._step,
+            prompt_length=prompt_ids.size(1),
+            prompt_completion_ids=torch.cat([prompt_ids, completion_ids], dim=1),
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            is_eos=is_eos,
+            eos_idx=eos_idx,
+            completions=completions,
+            tokenizer=self.processing_class.tokenizer,
+            generation_config=self.generation_config,
+            max_completion_length=self.max_completion_length,
+            num_generations=self.num_generations,
+            sample_count=self._opsd_probe_sample_count,
+            generate_call_index=generate_call_index,
+            answer_flag=getattr(self.checker, "answer_flag", "Answer:"),
+        )
+        self._last_generate_probe_stats = probe_stats
+        self._generate_call_index += 1
+        if self._health_monitor is not None:
+            self._health_monitor.record_generate(global_step, probe_stats, self._last_logits_stats)
+
+        batch_size = completion_ids.size(0)
+        sft_replaced_list = [True] * batch_size
+        opsd_mask_list = [False] * batch_size
+        completion_advantange = completion_mask.float().clone()
+        completion_advantange[:] = 1.0
+
+        if self._health_monitor is not None:
+            self._health_monitor.record_routing(
+                global_step,
+                {
+                    "sft_replaced_ratio": 1.0,
+                    "opsd_skipped_degenerate": 0,
+                    "opsd_skipped_leakage": 0,
+                    "opsd_on_correct_rate": 0.0,
+                    "grpo_on_correct_rate": 0.0,
+                    "opd_teacher_call_rate": 0.0,
+                    "format_mean": 1.0,
+                    "accuracy_mean": 0.0,
+                },
+            )
+
+        input_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1).long()
+        attention_completion_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+        logits_to_keep = completion_ids.size(1)
+        logps_micro_batch = (
+            self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        )
+
+        with torch.no_grad():
+            old_per_token_logps = None
+
+        if mode == "train":
+            self.state.num_input_tokens_seen += self.accelerator.gather_for_metrics(
+                attention_completion_mask.sum()
+            ).sum().item()
+
+        agg_completion_mask = self.accelerator.gather_for_metrics(completion_mask.sum(1))
+        self._metrics[mode]["completions/mean_length"].append(agg_completion_mask.float().mean().item())
+        agg_terminated_with_eos = self.accelerator.gather_for_metrics(is_eos.any(dim=1))
+        term_completion_mask = agg_completion_mask[agg_terminated_with_eos]
+        clipped_completions_ratio = 1 - len(term_completion_mask) / max(len(agg_completion_mask), 1)
+        self._metrics[mode]["completions/clipped_ratio"].append(clipped_completions_ratio)
+        self._metrics[mode].setdefault("phase/sft_cold_start", []).append(1.0)
+        self._metrics[mode]["reward"].append(0.0)
+        self._metrics[mode]["reward_std"].append(0.0)
+        for reward_func_name in self.reward_func_names:
+            self._metrics[mode][f"rewards/{reward_func_name}/mean"].append(0.0)
+
+        result: dict[str, Union[torch.Tensor, Any]] = {
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "pixel_values": pixel_values,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "advantages": completion_advantange,
+            "old_per_token_logps": old_per_token_logps,
+            "img_sizes": image_sizes,
+            "acc_rewards": torch.zeros(batch_size, device=device),
+            "sft_cold_start": True,
+        }
+        opsd_debug.log(
+            "generate",
+            "exit _generate_sft_cold_start_batch",
+            batch_size=batch_size,
+            global_step=global_step,
+        )
+        return result
+
     def _generate_and_score_completions(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
@@ -772,6 +997,13 @@ class DyMETrainer(Trainer):
 
         global_step_for_probe = getattr(self.state, "global_step", self._step)
         generate_call_index = self._generate_call_index
+        in_cold_start = self._in_sft_cold_start()
+        self._log_training_phase(
+            "sft_cold_start" if in_cold_start else "rlsd",
+            global_step_for_probe,
+        )
+        if not in_cold_start:
+            self._ensure_teacher_model()
 
         if self._health_monitor is not None:
             self._health_monitor.reset_step(global_step_for_probe)
@@ -781,6 +1013,18 @@ class DyMETrainer(Trainer):
                 pixel_values=pixel_values,
             )
             self._health_monitor.record_data(global_step_for_probe, data_health)
+
+        if in_cold_start:
+            return self._generate_sft_cold_start_batch(
+                inputs=inputs,
+                prompt_ids=prompt_ids,
+                prompt_mask=prompt_mask,
+                pixel_values=pixel_values,
+                image_sizes=image_sizes,
+                global_step=global_step_for_probe,
+                generate_call_index=generate_call_index,
+                mode=mode,
+            )
 
         # Regular generation path
         with opsd_debug.timed("generate", "model.generate"):
@@ -1080,7 +1324,7 @@ class DyMETrainer(Trainer):
             joint_opsd = opsd_active and self.opsd_config.get("mode") == "grpo_opsd_joint" and has_correct[batch_id] > 0
             sft_replaced = False
 
-            if sft_check[i]:
+            if sft_check[i] or self._should_force_sft_replace(i, completions, answer_flag):
                 completion_id_ = torch.cat([sft_padded_ids[i], completion_ids[i][0:0]])
                 completion_mask_ = torch.cat([sft_attn_masks[i], completion_mask[i][0:0]])
                 advantange_ = torch.cat([sft_advantages[i], advantages[i][0:0]])
@@ -1417,16 +1661,41 @@ class DyMETrainer(Trainer):
             return self._compute_loss(model, inputs)
 
     def _compute_loss(self, model, inputs):
-        # return torch.nn.Parameter(torch.tensor(0.0, device=self.accelerator.device))  # Dummy loss for compatibility
-        # Compute the per-token log probabilities for the model
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         pixel_values = inputs["pixel_values"]
-        # has_correct = inputs["has_correct"]
         image_sizes = inputs["img_sizes"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+        logits_to_keep = completion_ids.size(1)
+
+        if inputs.get("sft_cold_start"):
+            per_token_logps = self._get_per_token_logps(
+                model,
+                input_ids,
+                attention_mask,
+                pixel_values,
+                image_sizes,
+                logits_to_keep,
+            )
+            sft_loss = -(per_token_logps * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+            mode = "train" if self.model.training else "eval"
+            self._metrics[mode].setdefault("loss/sft", []).append(float(sft_loss.detach().item()))
+            self._metrics[mode].setdefault("phase/sft_cold_start", []).append(1.0)
+            global_step = getattr(self.state, "global_step", self._step)
+            if self._health_monitor is not None:
+                self._health_monitor.record_loss(
+                    global_step,
+                    {
+                        "combined_loss_scalar": float(sft_loss.detach().item()),
+                        "grpo_loss_scalar": 0.0,
+                        "grpo_zero_loss_rate": 1.0,
+                        "advantages_abs_mean": 0.0,
+                    },
+                )
+            return sft_loss
+
+        # Compute the per-token log probabilities for the model
         opsd_active = (
             self.opsd_config.get("enabled", False)
             and inputs.get("opsd_mask") is not None

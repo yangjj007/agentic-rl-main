@@ -15,6 +15,8 @@ ALERT_RL_ZERO_SIGNAL = "RL_ZERO_SIGNAL"
 ALERT_REWARD_FORMAT_HACK = "REWARD_FORMAT_HACK"
 ALERT_DATA_EMPTY_VF = "DATA_EMPTY_VF"
 ALERT_LOGIT_MODE_COLLAPSE = "LOGIT_MODE_COLLAPSE"
+ALERT_ANSWER_TOKEN_DRIFT = "ANSWER_TOKEN_DRIFT"
+ALERT_CLIP_FALSE_HEALTHY = "CLIP_FALSE_HEALTHY"
 ALERT_OPSD_LEAKAGE_PATTERN = "OPSD_LEAKAGE_PATTERN"
 ALERT_OPSD_ON_CORRECT = "OPSD_ON_CORRECT"
 
@@ -58,6 +60,7 @@ class TrainingHealthMonitor:
         self._step_fields: dict[str, Any] = {}
         self._step_alerts: list[str] = []
         self._p_greedy_history: deque[float] = deque(maxlen=5)
+        self._p_answer_history: deque[float] = deque(maxlen=5)
         self._eos_history: deque[float] = deque(maxlen=5)
         self._last_step: Optional[int] = None
 
@@ -79,7 +82,16 @@ class TrainingHealthMonitor:
         repeat_loop = int(stats.get("repeat_loop_count", 0) or 0)
         p_greedy = _safe_float(logits.get("p_greedy_first"))
         p_eos = _safe_float(logits.get("p_eos_first"))
+        p_answer = _safe_float(logits.get("p_answer_first"))
 
+        if clipped > 0.8 and degenerate_rate < 0.05:
+            self._emit_alert(
+                step,
+                ALERT_CLIP_FALSE_HEALTHY,
+                clipped_rate=clipped,
+                degenerate_rate=degenerate_rate,
+                hint="high clip with low degenerate_rate often masks Answer-only collapse",
+            )
         if clipped > 0.7 and eos_rate < 0.3:
             self._emit_alert(
                 step,
@@ -113,7 +125,17 @@ class TrainingHealthMonitor:
                     eos_rate=eos_rate,
                     hint="first token collapsed to Goal: template; EOS probability near zero",
                 )
-
+        if p_answer > 0:
+            self._p_answer_history.append(p_answer)
+            if len(self._p_answer_history) >= 3 and all(
+                p < 0.5 for p in list(self._p_answer_history)[-3:]
+            ):
+                self._emit_alert(
+                    step,
+                    ALERT_ANSWER_TOKEN_DRIFT,
+                    p_answer_first=p_answer,
+                    hint="first-token Answer probability low for 3 consecutive generate batches",
+                )
         return list(self._step_alerts)
 
     def record_generate(
@@ -134,7 +156,11 @@ class TrainingHealthMonitor:
                 "char_repeat_count": stats.get("char_repeat_count", 0),
                 "p_greedy_first": logits_stats.get("p_greedy_first"),
                 "p_eos_first": logits_stats.get("p_eos_first"),
+                "p_answer_first": logits_stats.get("p_answer_first"),
                 "entropy_first": logits_stats.get("entropy_first"),
+                "degenerate_rate_format": stats.get("degenerate_rate_format"),
+                "degenerate_rate_repeat": stats.get("degenerate_rate_repeat"),
+                "format_without_thinking_rate": stats.get("format_without_thinking_rate"),
             }
         )
         alerts = self._check_generate_alerts(step, stats, logits_stats)
@@ -370,6 +396,11 @@ class TrainingHealthMonitor:
             "signal/advantage_abs_mean": "advantages_abs_mean",
             "logits/p_greedy_first": "p_greedy_first",
             "logits/p_eos_first": "p_eos_first",
+            "logits/p_answer_first": "p_answer_first",
+            "completions/degenerate_rate_format": "degenerate_rate_format",
+            "completions/degenerate_rate_repeat": "degenerate_rate_repeat",
+            "metrics/format_without_thinking_rate": "format_without_thinking_rate",
+            "phase/sft_cold_start": "phase_sft_cold_start",
             "health/alert_count": "alert_count",
         }
         for metric_key, field_key in mapping.items():

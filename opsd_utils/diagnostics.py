@@ -375,6 +375,9 @@ def summarize_generate_probe_stats(
     unique_ratios: list[float] = []
     answer_flag_ok = 0
     clipped_count = 0
+    degenerate_format_count = 0
+    degenerate_repeat_count = 0
+    format_without_thinking = 0
     for i in range(completion_ids.size(0)):
         eff = int(lengths[i].item())
         if eff <= 0:
@@ -388,11 +391,19 @@ def summarize_generate_probe_stats(
         unique_ratios.append(len(set(ids)) / max(len(ids), 1))
         if _count_answer_flag(text, answer_flag) == 1:
             answer_flag_ok += 1
+            thinking = (text or "").lower().split(answer_flag.lower())[0]
+            if len(thinking.strip()) < 8:
+                format_without_thinking += 1
+        else:
+            degenerate_format_count += 1
         if max_completion_length is not None and eff >= max_completion_length - 1:
             clipped_count += 1
-        is_deg, _ = _detect_degeneration(ids, text, answer_flag=answer_flag)
+        is_deg, reasons = _detect_degeneration(ids, text, answer_flag=answer_flag)
         if is_deg:
             degenerate_count += 1
+        non_flag = [r for r in reasons if not r.startswith("ANSWER_FLAG")]
+        if non_flag:
+            degenerate_repeat_count += 1
     char_repeat_count = _count_char_repeat_samples(completions)
     n = max(completion_ids.size(0), 1)
     return {
@@ -404,6 +415,9 @@ def summarize_generate_probe_stats(
         "eos_terminated_rate": float(has_eos.float().mean().item()),
         "degenerate_count": degenerate_count,
         "degenerate_rate": degenerate_count / n,
+        "degenerate_rate_format": degenerate_format_count / n,
+        "degenerate_rate_repeat": degenerate_repeat_count / n,
+        "format_without_thinking_rate": format_without_thinking / n,
         "max_token_run_mean": float(sum(max_run_lengths) / len(max_run_lengths)) if max_run_lengths else 0.0,
         "unique_token_ratio_mean": float(sum(unique_ratios) / len(unique_ratios)) if unique_ratios else 0.0,
         "answer_flag_exactly_once_rate": answer_flag_ok / n,
@@ -486,19 +500,31 @@ def log_prompt_tail_probe(
 
 
 def summarize_first_token_logits_stats(
-  p_greedy_values: list[float],
-  p_eos_values: list[float],
-  entropy_values: list[float],
+    p_greedy_values: list[float],
+    p_eos_values: list[float],
+    entropy_values: list[float],
+    p_answer_values: Optional[list[float]] = None,
 ) -> dict[str, float]:
     """Aggregate first-token logit probe scalars across samples."""
     def _mean(vals: list[float]) -> float:
         return float(sum(vals) / len(vals)) if vals else 0.0
 
-    return {
+    out = {
         "p_greedy_first": _mean(p_greedy_values),
         "p_eos_first": _mean(p_eos_values),
         "entropy_first": _mean(entropy_values),
     }
+    if p_answer_values:
+        out["p_answer_first"] = _mean(p_answer_values)
+    return out
+
+
+def answer_first_token_id(tokenizer: Any) -> Optional[int]:
+    for piece in ("Answer", "Answer:"):
+        ids = tokenizer.encode(piece, add_special_tokens=False)
+        if ids:
+            return int(ids[0])
+    return None
 
 
 def log_first_token_logits_probe(
@@ -517,11 +543,16 @@ def log_first_token_logits_probe(
     p_greedy_vals: list[float] = []
     p_eos_vals: list[float] = []
     entropy_vals: list[float] = []
+    p_answer_vals: list[float] = []
     if not opsd_debug.should_log_gendbg() or not opsd_debug.probe_first_token_logits():
-        return {"greedy_by_sample": greedy_by_sample, **summarize_first_token_logits_stats([], [], [])}
+        return {
+            "greedy_by_sample": greedy_by_sample,
+            **summarize_first_token_logits_stats([], [], [], []),
+        }
 
     opsd_debug.set_detail_step(global_step)
     eos_id = getattr(tokenizer, "eos_token_id", None)
+    answer_tid = answer_first_token_id(tokenizer)
     forward_inputs = {k: v for k, v in prompt_inputs_generate.items() if k != "labels"}
     batch_size = prompt_mask.size(0)
     n = min(sample_count, batch_size)
@@ -550,6 +581,9 @@ def log_first_token_logits_probe(
                 }
                 if eos_id is not None:
                     fields["p_eos"] = float(probs[eos_id].item())
+                if answer_tid is not None and answer_tid < probs.size(0):
+                    fields["p_answer_first"] = float(probs[answer_tid].item())
+                    p_answer_vals.append(fields["p_answer_first"])
                 if PAREN_TOKEN_ID < probs.size(0):
                     fields["p_token_340"] = float(probs[PAREN_TOKEN_ID].item())
                 topk = torch.topk(probs, k=min(5, probs.size(0)))
@@ -570,7 +604,9 @@ def log_first_token_logits_probe(
             )
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-    logits_stats = summarize_first_token_logits_stats(p_greedy_vals, p_eos_vals, entropy_vals)
+    logits_stats = summarize_first_token_logits_stats(
+        p_greedy_vals, p_eos_vals, entropy_vals, p_answer_vals
+    )
     return {"greedy_by_sample": greedy_by_sample, **logits_stats}
 
 
