@@ -117,6 +117,12 @@ def route_completion_modes(
     require_format = gate.get("require_format_for_opsd", False)
 
     if per_completion and mode_name in _NO_LEAK_MODES:
+        num_prompts = acc_rewards.shape[0]
+        group_has_correct = [
+            (acc_rewards[p] > threshold).any().item() for p in range(num_prompts)
+        ]
+        online_sft_on_all_wrong = gate.get("online_sft_on_all_wrong", True)
+
         completion_modes: list[int] = []
         for i in range(batch_size):
             prompt_idx = i // num_generations
@@ -128,8 +134,17 @@ def route_completion_modes(
             recoverable = (
                 recoverable_flags[prompt_idx] if recoverable_flags and prompt_idx < len(recoverable_flags) else True
             )
+            all_wrong_group = not group_has_correct[prompt_idx]
+
             if acc_ok and fmt_ok:
                 selected = MODE_GRPO
+            elif (
+                online_sft_on_all_wrong
+                and all_wrong_group
+                and gen_idx == 0
+            ):
+                # COPSD path C: online SFT cold-start when entire group is wrong
+                selected = MODE_SFT
             elif not acc_ok and recoverable:
                 selected = MODE_OPSD
             else:

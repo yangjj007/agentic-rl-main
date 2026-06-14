@@ -38,6 +38,7 @@ DYME_OPSD_CONFIG = {
         "require_format_for_opsd": os.environ.get("DYME_OPSD_REQUIRE_FORMAT", "0").strip().lower()
         not in ("0", "false", "no", "off"),
         "skip_degenerate_for_opsd": True,
+        "online_sft_on_all_wrong": True,
         # ChartQA short numeric answers lack "Answer:" — do not block OPSD on format alone
         "opsd_degenerate_require_answer_flag": False,
     },

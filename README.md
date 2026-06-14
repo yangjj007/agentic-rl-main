@@ -563,7 +563,7 @@ accelerate launch main.py --config config/config.py --mode rl \
 
 - **Correct** → GRPO (on-policy self-learning, no privileged suffix)
 - **Wrong** → same-prompt OPSD / OPD (no `[Reference Answer]` in teacher)
-- **All-wrong group** → online SFT replace (DyME cold-start; no separate offline SFT phase)
+- **All-wrong group** → online SFT replace on the first generation (DyME cold-start; no separate offline SFT phase)
 
 ```bash
 bash scripts/train_rlsd_chartqa.sh
