@@ -8,7 +8,34 @@ import sys
 from filelock import FileLock
 
 SPACY_MODEL = "en_core_web_sm"
+# Not on PyPI as ``en-core-web-sm`` — install from GitHub release wheel (spaCy docs).
+SPACY_MODEL_WHEEL = (
+    "https://github.com/explosion/spacy-models/releases/download/"
+    "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+)
+SPACY_MODEL_WHEEL_MIRROR = (
+    "https://ghproxy.com/https://github.com/explosion/spacy-models/releases/download/"
+    "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+)
 _LOCK_PATH = os.path.join(os.path.expanduser("~"), ".cache", "dyme_en_core_web_sm.lock")
+
+
+def _install_spacy_model() -> None:
+    """Install en_core_web_sm: GitHub wheel first (mirror then direct), then spacy CLI."""
+    errors: list[str] = []
+    for label, url in (
+        ("ghproxy wheel", SPACY_MODEL_WHEEL_MIRROR),
+        ("GitHub wheel", SPACY_MODEL_WHEEL),
+    ):
+        print(f"[DyME] Installing {SPACY_MODEL} via {label}...", flush=True)
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", url])
+            return
+        except subprocess.CalledProcessError as exc:
+            errors.append(f"{label}: exit {exc.returncode}")
+
+    print(f"[DyME] Wheel install failed ({'; '.join(errors)}); trying spacy download...", flush=True)
+    subprocess.check_call([sys.executable, "-m", "spacy", "download", SPACY_MODEL])
 
 
 def ensure_spacy_english_model(timeout: float = 600.0) -> None:
@@ -27,8 +54,7 @@ def ensure_spacy_english_model(timeout: float = 600.0) -> None:
             spacy.load(SPACY_MODEL)
             return
         except OSError:
-            print(f"[DyME] Downloading spaCy model {SPACY_MODEL} (single process)...", flush=True)
-            subprocess.check_call([sys.executable, "-m", "spacy", "download", SPACY_MODEL])
+            _install_spacy_model()
             spacy.load(SPACY_MODEL)
 
 
@@ -46,6 +72,5 @@ def load_spacy_english(timeout: float = 600.0):
         try:
             return spacy.load(SPACY_MODEL)
         except OSError:
-            print(f"[DyME] Downloading spaCy model {SPACY_MODEL}...", flush=True)
-            subprocess.check_call([sys.executable, "-m", "spacy", "download", SPACY_MODEL])
+            _install_spacy_model()
             return spacy.load(SPACY_MODEL)
