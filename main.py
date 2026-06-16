@@ -23,7 +23,11 @@ from trl import GRPOConfig
 
 from config.loader import load_config
 from data_utils.commom_util import collate_fn, define_task_data_func
-from data_utils.paths import resolve_model_path, validate_local_model_dir
+from data_utils.paths import (
+    local_pretrained_kwargs,
+    resolve_model_path,
+    validate_local_model_dir,
+)
 from trainer.DyMETrainer import DyMETrainer
 from reward_utils.checker import RewardCalculator, RewardCalculatorLocal
 from reward_utils.refiner import ContextRefiner, ContextRefinerLocal
@@ -131,18 +135,22 @@ def load_model_and_processor(model_config: Dict[str, Any]):
         resolve_model_path(model_config["pretrained_model_path"]),
         role="student",
     )
+    local_kw = local_pretrained_kwargs(model_id)
+    if local_kw and os.environ.get("RANK", "0") == "0":
+        print(f"[DyME] Loading student from local path: {model_id}", flush=True)
 
     model = LlavaOnevisionForConditionalGeneration.from_pretrained(
         model_id,
         torch_dtype=getattr(torch, model_config['torch_dtype']),
         attn_implementation='flash_attention_2' if model_config['use_flash_attention_2'] else 'sdpa',
         low_cpu_mem_usage=True,
+        **local_kw,
     )
 
     # Freeze the vision tower to save memory and computation
     model.base_model.vision_tower.requires_grad_(False)
 
-    processor = AutoProcessor.from_pretrained(model_id)
+    processor = AutoProcessor.from_pretrained(model_id, **local_kw)
     processor.tokenizer.padding_side = "left"
 
     return model, processor
@@ -158,6 +166,9 @@ def load_teacher_model(model_config: Dict[str, Any], *, local_rank: int = 0, num
         resolve_model_path(teacher_path),
         role="teacher",
     )
+    teacher_local_kw = local_pretrained_kwargs(teacher_path)
+    if teacher_local_kw and os.environ.get("RANK", "0") == "0":
+        print(f"[DyME] Loading teacher from local path: {teacher_path}", flush=True)
 
     dtype_name = model_config.get("teacher_dtype", model_config.get("torch_dtype", "bfloat16"))
     torch_dtype = getattr(torch, dtype_name)
@@ -190,6 +201,7 @@ def load_teacher_model(model_config: Dict[str, Any], *, local_rank: int = 0, num
         teacher_path,
         attn_implementation='flash_attention_2' if model_config.get('use_flash_attention_2') else 'sdpa',
         **load_kwargs,
+        **teacher_local_kw,
     )
     teacher.eval()
     teacher.requires_grad_(False)

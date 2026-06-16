@@ -19,13 +19,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source "$(dirname "$0")/launch_utils.sh"
 
+setup_hf_hub_env
+auto_detect_local_llava_models
+
 export DYME_OPSD_MODE="${DYME_OPSD_MODE:-rlsd}"
 export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-}"
 export DYME_OPSD_PRIVILEGE_PROFILE="${DYME_OPSD_PRIVILEGE_PROFILE:-text}"
+# Overridden by auto_detect_local_llava_models when weights exist under ~/deepseek/models
 export DYME_TEACHER_MODEL="${DYME_TEACHER_MODEL:-llava-hf/llava-onevision-qwen2-7b-ov-hf}"
-# Local ModelScope/HF dirs: use absolute paths (``~`` is expanded in config).
-#   export DYME_STUDENT_MODEL=/home/deepseek_VG/deepseek/models/llava-0.5b-ov
-#   export DYME_TEACHER_MODEL=/home/deepseek_VG/deepseek/models/llava-7b-ov
+export DYME_STUDENT_MODEL="${DYME_STUDENT_MODEL:-}"
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa-ds}"
 
 # ZeRO-0 default (8 GPU → default_config_8gpu_deepspeed.yaml; else default_config_deepspeed.yaml)
