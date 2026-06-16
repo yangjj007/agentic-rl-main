@@ -12,6 +12,9 @@ export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/rlsd-chartqa}"
 export DYME_OPSD_REQUIRE_FORMAT="${DYME_OPSD_REQUIRE_FORMAT:-0}"
 export DYME_OPSD_DEBUG="${DYME_OPSD_DEBUG:-0}"
 
+export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-0}"
+ensure_chartqa_vf_full
+
 ACCELERATE_CONFIG="$(resolve_accelerate_config)"
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan

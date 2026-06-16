@@ -19,6 +19,9 @@ export DYME_TEACHER_DEVICE_MAP="${DYME_TEACHER_DEVICE_MAP:-auto}"
 # OPSD-DETAIL: skip JSD decomposition when free GPU memory (GiB) is below this threshold
 export DYME_OPSD_DETAIL_MIN_FREE_GB="${DYME_OPSD_DETAIL_MIN_FREE_GB:-4.0}"
 
+export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-0}"
+ensure_chartqa_vf_full
+
 ACCELERATE_CONFIG="$(resolve_accelerate_config)"
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan

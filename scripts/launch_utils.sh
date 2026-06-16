@@ -113,3 +113,50 @@ PY
   fi
   echo "============================================================"
 }
+
+# Build data/chartqa/train_medium_vf_full.json when missing (gitignored on GitHub).
+# F1: hint → visual_fact_hint; F2: DePlot or placeholder (--no-enabled when DYME_DEPLOT_ENABLED=0).
+ensure_chartqa_vf_full() {
+  local chartqa_raw="${DYME_CHARTQA_RAW:-data/chartqa/train_medium.json}"
+  local chartqa_vf_full="${DYME_CHARTQA_VF_FULL:-data/chartqa/train_medium_vf_full.json}"
+  local chartqa_vf_hint="${DYME_CHARTQA_VF_HINT:-data/chartqa/train_medium_vf_hint.json}"
+  local deplot_enabled="${DYME_DEPLOT_ENABLED:-1}"
+  local deplot_batch="${DYME_DEPLOT_BATCH_SIZE:-8}"
+  local deplot_tokens="${DYME_DEPLOT_MAX_NEW_TOKENS:-384}"
+  local deplot_cache="${DYME_DEPLOT_CACHE:-data/chartqa/deplot_cache.json}"
+
+  if [[ -f "${chartqa_vf_full}" ]]; then
+    echo "ChartQA dataset ready: ${chartqa_vf_full}"
+    return 0
+  fi
+
+  echo "Enriched ChartQA dataset not found at ${chartqa_vf_full}; running preprocessing..."
+  if [[ ! -f "${chartqa_raw}" ]]; then
+    echo "Missing raw dataset: ${chartqa_raw}" >&2
+    echo "Ensure data/chartqa/train_medium.json exists (shipped in repo)." >&2
+    return 1
+  fi
+
+  python scripts/build_visual_facts_chartqa.py \
+    --input "${chartqa_raw}" \
+    --output "${chartqa_vf_hint}" \
+    --also-set-visual-fact
+
+  local deplot_extra=()
+  case "${deplot_enabled}" in
+    0|false|no|off|FALSE|NO|OFF)
+      deplot_extra+=(--no-enabled)
+      echo "DePlot disabled (DYME_DEPLOT_ENABLED=0); writing placeholder visual_fact_deplot."
+      ;;
+  esac
+
+  python scripts/build_visual_facts_chartqa_deplot.py \
+    --input "${chartqa_vf_hint}" \
+    --output "${chartqa_vf_full}" \
+    --batch-size "${deplot_batch}" \
+    --max-new-tokens "${deplot_tokens}" \
+    --cache "${deplot_cache}" \
+    "${deplot_extra[@]}"
+
+  echo "ChartQA dataset ready: ${chartqa_vf_full}"
+}

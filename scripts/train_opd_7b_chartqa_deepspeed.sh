@@ -37,6 +37,10 @@ export DYME_OPSD_DETAIL_EVERY="${DYME_OPSD_DETAIL_EVERY:-0}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export DYME_GRADIENT_CHECKPOINTING="${DYME_GRADIENT_CHECKPOINTING:-0}"
 
+# OPD text profile does not need real DePlot; placeholder vf_full is enough and fast.
+export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-0}"
+ensure_chartqa_vf_full
+
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
 echo "DeepSpeed OPD: ACCELERATE_CONFIG=${ACCELERATE_CONFIG} (ZeRO-0 default; override for ZeRO-2/3)"
