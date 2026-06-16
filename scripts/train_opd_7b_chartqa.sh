@@ -21,6 +21,7 @@ export DYME_OPSD_DETAIL_MIN_FREE_GB="${DYME_OPSD_DETAIL_MIN_FREE_GB:-4.0}"
 
 export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-0}"
 ensure_chartqa_vf_full
+ensure_spacy_model
 
 ACCELERATE_CONFIG="$(resolve_accelerate_config)"
 NUM_PROCESSES="$(detect_num_gpus)"

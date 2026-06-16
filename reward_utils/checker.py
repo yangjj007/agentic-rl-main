@@ -255,9 +255,6 @@ class RewardCalculator:
             return None
 
 
-import spacy
-import string
-import re
 
 
 class RewardCalculatorLocal:
@@ -266,15 +263,10 @@ class RewardCalculatorLocal:
         self.answer_flag = RL_CONFIG["answer_flag"].lower()
         self.count_pattern = re.compile(f'(?i){re.escape(self.answer_flag)}')
 
-        # Load spaCy's small English model
-        # We load once at initialization to avoid repeated loading
-        try:
-            self.nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            print("Downloading spaCy model 'en_core_web_sm'...")
-            from spacy.cli import download
-            download("en_core_web_sm")
-            self.nlp = spacy.load("en_core_web_sm")
+        # Load spaCy's small English model (file-locked; safe under multi-GPU launch)
+        from reward_utils.spacy_model import load_spacy_english
+
+        self.nlp = load_spacy_english()
 
         # Define the POS tags we consider "important":
         # NOUN, PROPN, VERB, ADJ, NUM

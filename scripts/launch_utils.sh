@@ -114,51 +114,6 @@ PY
   echo "============================================================"
 }
 
-# Avoid hf_transfer / xethub failures on restricted networks.
-setup_hf_hub_env() {
-  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY || true
-  export HF_HUB_ENABLE_HF_TRANSFER=0
-  export HF_HUB_DISABLE_XET=1
-  export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-600}"
-  export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-60}"
-}
-
-# Auto-pick ModelScope/HF local dirs under ~/deepseek/models (override with DYME_*_MODEL).
-auto_detect_local_llava_models() {
-  local models_root="${DYME_MODELS_DIR:-${HOME}/deepseek/models}"
-  local student_dir="${models_root}/llava-0.5b-ov"
-  local teacher_dir="${models_root}/llava-7b-ov"
-  local ms_root="${HOME}/.cache/modelscope/hub/models/llava-hf"
-
-  if [[ -z "${DYME_STUDENT_MODEL:-}" ]]; then
-    if [[ -f "${student_dir}/model.safetensors" ]]; then
-      export DYME_STUDENT_MODEL="${student_dir}"
-    elif [[ -f "${ms_root}/llava-onevision-qwen2-0.5b-ov-hf/model.safetensors" ]]; then
-      export DYME_STUDENT_MODEL="${ms_root}/llava-onevision-qwen2-0.5b-ov-hf"
-    fi
-  fi
-
-  if [[ -z "${DYME_TEACHER_MODEL:-}" ]]; then
-    if [[ -f "${teacher_dir}/model.safetensors" ]]; then
-      export DYME_TEACHER_MODEL="${teacher_dir}"
-    elif [[ -f "${ms_root}/llava-onevision-qwen2-7b-ov-hf/model.safetensors" ]]; then
-      export DYME_TEACHER_MODEL="${ms_root}/llava-onevision-qwen2-7b-ov-hf"
-    fi
-  fi
-
-  if [[ -n "${DYME_STUDENT_MODEL:-}" && -d "${DYME_STUDENT_MODEL}" ]] \
-     && [[ -n "${DYME_TEACHER_MODEL:-}" && -d "${DYME_TEACHER_MODEL}" ]]; then
-    export HF_HUB_OFFLINE=1
-    export TRANSFORMERS_OFFLINE=1
-    echo "Local models: student=${DYME_STUDENT_MODEL}"
-    echo "Local models: teacher=${DYME_TEACHER_MODEL}"
-    echo "HF_HUB_OFFLINE=1 (no Hub download during training)"
-  else
-    echo "WARN: local LLaVA weights not found under ${models_root}; will try HuggingFace Hub." >&2
-    echo "  Set DYME_STUDENT_MODEL / DYME_TEACHER_MODEL to absolute local paths." >&2
-  fi
-}
-
 # Build data/chartqa/train_medium_vf_full.json when missing (gitignored on GitHub).
 # F1: hint → visual_fact_hint; F2: DePlot or placeholder (--no-enabled when DYME_DEPLOT_ENABLED=0).
 ensure_chartqa_vf_full() {
@@ -204,4 +159,13 @@ ensure_chartqa_vf_full() {
     "${deplot_extra[@]}"
 
   echo "ChartQA dataset ready: ${chartqa_vf_full}"
+}
+
+# RewardCalculatorLocal needs en_core_web_sm; install once before multi-GPU launch.
+ensure_spacy_model() {
+  python - <<'PY'
+from reward_utils.spacy_model import ensure_spacy_english_model
+ensure_spacy_english_model()
+print("[DyME] spaCy model ready: en_core_web_sm")
+PY
 }

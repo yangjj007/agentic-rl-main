@@ -22,6 +22,7 @@ DYME_CONFIG="${DYME_CONFIG:-config/config_trimode_antidegen.py}"
 
 export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-1}"
 ensure_chartqa_vf_full
+ensure_spacy_model
 
 LOG_DIR="${DYME_LOG_DIR:-./outputs/logs}"
 mkdir -p "${LOG_DIR}"

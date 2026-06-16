@@ -19,15 +19,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source "$(dirname "$0")/launch_utils.sh"
 
-setup_hf_hub_env
-auto_detect_local_llava_models
-
 export DYME_OPSD_MODE="${DYME_OPSD_MODE:-rlsd}"
 export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-}"
 export DYME_OPSD_PRIVILEGE_PROFILE="${DYME_OPSD_PRIVILEGE_PROFILE:-text}"
-# Overridden by auto_detect_local_llava_models when weights exist under ~/deepseek/models
 export DYME_TEACHER_MODEL="${DYME_TEACHER_MODEL:-llava-hf/llava-onevision-qwen2-7b-ov-hf}"
-export DYME_STUDENT_MODEL="${DYME_STUDENT_MODEL:-}"
+# Local ModelScope/HF dirs: use absolute paths (``~`` is expanded in config).
+#   export DYME_STUDENT_MODEL=/home/deepseek_VG/deepseek/models/llava-0.5b-ov
+#   export DYME_TEACHER_MODEL=/home/deepseek_VG/deepseek/models/llava-7b-ov
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa-ds}"
 
 # ZeRO-0 default (8 GPU → default_config_8gpu_deepspeed.yaml; else default_config_deepspeed.yaml)
@@ -42,6 +40,7 @@ export DYME_GRADIENT_CHECKPOINTING="${DYME_GRADIENT_CHECKPOINTING:-0}"
 # OPD text profile does not need real DePlot; placeholder vf_full is enough and fast.
 export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-0}"
 ensure_chartqa_vf_full
+ensure_spacy_model
 
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
