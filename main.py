@@ -23,6 +23,7 @@ from trl import GRPOConfig
 
 from config.loader import load_config
 from data_utils.commom_util import collate_fn, define_task_data_func
+from data_utils.paths import resolve_model_path, validate_local_model_dir
 from trainer.DyMETrainer import DyMETrainer
 from reward_utils.checker import RewardCalculator, RewardCalculatorLocal
 from reward_utils.refiner import ContextRefiner, ContextRefinerLocal
@@ -126,7 +127,10 @@ def load_model_and_processor(model_config: Dict[str, Any]):
     Returns:
         Tuple[LlavaOnevisionForConditionalGeneration, PreTrainedProcessor]: The loaded model and processor.
     """
-    model_id = model_config['pretrained_model_path']
+    model_id = validate_local_model_dir(
+        resolve_model_path(model_config["pretrained_model_path"]),
+        role="student",
+    )
 
     model = LlavaOnevisionForConditionalGeneration.from_pretrained(
         model_id,
@@ -149,6 +153,11 @@ def load_teacher_model(model_config: Dict[str, Any], *, local_rank: int = 0, num
     teacher_path = model_config.get("teacher_model_path")
     if not teacher_path:
         return None
+
+    teacher_path = validate_local_model_dir(
+        resolve_model_path(teacher_path),
+        role="teacher",
+    )
 
     dtype_name = model_config.get("teacher_dtype", model_config.get("torch_dtype", "bfloat16"))
     torch_dtype = getattr(torch, dtype_name)

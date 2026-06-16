@@ -23,6 +23,9 @@ export DYME_OPSD_MODE="${DYME_OPSD_MODE:-rlsd}"
 export DYME_OPSD_PROVIDERS="${DYME_OPSD_PROVIDERS:-}"
 export DYME_OPSD_PRIVILEGE_PROFILE="${DYME_OPSD_PRIVILEGE_PROFILE:-text}"
 export DYME_TEACHER_MODEL="${DYME_TEACHER_MODEL:-llava-hf/llava-onevision-qwen2-7b-ov-hf}"
+# Local ModelScope/HF dirs: use absolute paths (``~`` is expanded in config).
+#   export DYME_STUDENT_MODEL=/home/deepseek_VG/deepseek/models/llava-0.5b-ov
+#   export DYME_TEACHER_MODEL=/home/deepseek_VG/deepseek/models/llava-7b-ov
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa-ds}"
 
 # ZeRO-0 default (8 GPU → default_config_8gpu_deepspeed.yaml; else default_config_deepspeed.yaml)

@@ -7,13 +7,20 @@ Inherits RLSD routing + embedded SFT cold-start gates from config_rlsd_chartqa.
 import os
 
 import config.config_rlsd_chartqa as rlsd
-from data_utils.paths import OUTPUTS_DIR
+from data_utils.paths import OUTPUTS_DIR, validate_local_model_dir
+
+_student_default = rlsd.MODEL_CONFIG["pretrained_model_path"]
+_teacher_default = "llava-hf/llava-onevision-qwen2-7b-ov-hf"
 
 MODEL_CONFIG = {
     **rlsd.MODEL_CONFIG,
-    "teacher_model_path": os.environ.get(
-        "DYME_TEACHER_MODEL",
-        "llava-hf/llava-onevision-qwen2-7b-ov-hf",
+    "pretrained_model_path": validate_local_model_dir(
+        os.environ.get("DYME_STUDENT_MODEL", _student_default),
+        role="student",
+    ),
+    "teacher_model_path": validate_local_model_dir(
+        os.environ.get("DYME_TEACHER_MODEL", _teacher_default),
+        role="teacher",
     ),
     "teacher_dtype": os.environ.get("DYME_TEACHER_DTYPE", "bfloat16"),
     "teacher_device_map": os.environ.get("DYME_TEACHER_DEVICE_MAP") or None,
