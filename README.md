@@ -381,11 +381,14 @@ All training scripts are launched using `accelerate`. Pass `--config` as a **Pyt
 
 Optional: if you already have `deepspeed` installed and want the Accelerate integration without parameter sharding, use ZeRO-0 (`default_config_deepspeed.yaml`, `zero_stage: 0`). Do **not** use ZeRO-2/3 for 0.5B-only RLSD unless you need the integration path.
 
-**7B OPD (student + frozen teacher on each GPU):** use DeepSpeed ZeRO to shard the **trainable 0.5B student**; the frozen 7B teacher stays outside DeepSpeed on `cuda:{LOCAL_RANK}`.
+**7B OPD (student + frozen teacher on each GPU):** default **ZeRO-0** (no student sharding) when VRAM is sufficient — fastest on 8× H800. The frozen 7B teacher stays outside DeepSpeed on `cuda:{LOCAL_RANK}`.
 
 ```bash
-# ZeRO-2 colocate (recommended first try on 2×80G)
+# ZeRO-0 (default on 8 GPU → default_config_8gpu_deepspeed.yaml)
 bash scripts/train_opd_7b_chartqa_deepspeed.sh
+
+# Memory-tight: ZeRO-2 student sharding
+ACCELERATE_CONFIG=default_config_zero2.yaml bash scripts/train_opd_7b_chartqa_deepspeed.sh
 
 # Tighter memory: ZeRO-3 + CPU optimizer offload
 ACCELERATE_CONFIG=default_config_zero3_colocate.yaml bash scripts/train_opd_7b_chartqa_deepspeed.sh

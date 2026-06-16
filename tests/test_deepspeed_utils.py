@@ -16,6 +16,16 @@ from opsd_utils.deepspeed_utils import (
 )
 
 
+def test_zero0_8gpu_config_detected(monkeypatch):
+    monkeypatch.setenv("ACCELERATE_CONFIG", "default_config_8gpu_deepspeed.yaml")
+    assert is_deepspeed_accelerate_config()
+    assert not uses_deepspeed_json_file()
+    assert deepspeed_zero_stage() == 0
+    assert should_colocate_teacher_with_student("auto")
+    assert deepspeed_requires_single_student_forward()
+    assert should_disable_gradient_checkpointing()
+
+
 def test_zero2_config_detected(monkeypatch):
     monkeypatch.setenv("ACCELERATE_CONFIG", "default_config_zero2.yaml")
     assert is_deepspeed_accelerate_config()

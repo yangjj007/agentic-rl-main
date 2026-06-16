@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Cross-model OPD (7B teacher + 0.5B student) with DeepSpeed ZeRO on ChartQA.
+# Cross-model OPD (7B teacher + 0.5B student) with DeepSpeed on ChartQA.
 #
-# Layout (2× GPU, recommended):
-#   Each rank: student (ZeRO-sharded) + frozen 7B teacher on cuda:{LOCAL_RANK}
+# Default: ZeRO-0 (no student sharding) when VRAM is sufficient — fastest on 8× H800.
+#   Each rank: full student + frozen 7B teacher on cuda:{LOCAL_RANK}
+#
+# Memory-tight fallback:
+#   ACCELERATE_CONFIG=default_config_zero2.yaml bash scripts/train_opd_7b_chartqa_deepspeed.sh
+#   ACCELERATE_CONFIG=default_config_zero3_colocate.yaml bash scripts/train_opd_7b_chartqa_deepspeed.sh
 #
 # Cold-start / decode / warmup defaults: config/config_rlsd_chartqa.py (inherited by
 # config/config_opd_7b_chartqa.py). Override via DYME_* env only when needed.
@@ -21,20 +25,18 @@ export DYME_OPSD_PRIVILEGE_PROFILE="${DYME_OPSD_PRIVILEGE_PROFILE:-text}"
 export DYME_TEACHER_MODEL="${DYME_TEACHER_MODEL:-llava-hf/llava-onevision-qwen2-7b-ov-hf}"
 export DYME_OUTPUT_DIR="${DYME_OUTPUT_DIR:-./outputs/opd-7b-chartqa-ds}"
 
-# ZeRO-2 (default) or ZeRO-3 colocate for tighter memory:
-#   ACCELERATE_CONFIG=default_config_zero3_colocate.yaml
-export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-default_config_zero2.yaml}"
+# ZeRO-0 default (8 GPU → default_config_8gpu_deepspeed.yaml; else default_config_deepspeed.yaml)
+export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_deepspeed_zero0_config)}"
 # auto → colocate when DeepSpeed accelerate config is set (see opsd_utils/deepspeed_utils.py)
 export DYME_TEACHER_DEVICE_MAP="${DYME_TEACHER_DEVICE_MAP:-auto}"
 export DYME_OPSD_DETAIL_MIN_FREE_GB="${DYME_OPSD_DETAIL_MIN_FREE_GB:-4.0}"
 export DYME_OPSD_DETAIL_EVERY="${DYME_OPSD_DETAIL_EVERY:-0}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export DYME_GRADIENT_CHECKPOINTING="${DYME_GRADIENT_CHECKPOINTING:-0}"
-# ZeRO-1/2: one student forward/step (auto); ZeRO-3 or DDP may set DYME_GRADIENT_CHECKPOINTING=1.
 
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
-echo "DeepSpeed ZeRO OPD: ACCELERATE_CONFIG=${ACCELERATE_CONFIG}"
+echo "DeepSpeed OPD: ACCELERATE_CONFIG=${ACCELERATE_CONFIG} (ZeRO-0 default; override for ZeRO-2/3)"
 echo "Teacher placement: DYME_TEACHER_DEVICE_MAP=${DYME_TEACHER_DEVICE_MAP} (auto colocates under DeepSpeed)"
 echo "SFT cold-start / warmup: defaults in config/config_rlsd_chartqa.py (sft_cold_start_frac=0.08, etc.)"
 echo "  Optional overrides: DYME_SFT_COLD_START_STEPS, DYME_SFT_COLD_START_FRAC, DYME_MAX_STEPS"

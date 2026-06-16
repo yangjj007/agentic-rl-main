@@ -57,6 +57,17 @@ launch_num_processes_flag() {
   echo "--num_processes ${num_gpus}"
 }
 
+resolve_deepspeed_zero0_config() {
+  # ZeRO-0: no param sharding — fastest when VRAM is sufficient (e.g. 8× H800).
+  local num_gpus
+  num_gpus="$(detect_num_gpus)"
+  if [[ "${num_gpus}" -ge 8 ]]; then
+    echo "default_config_8gpu_deepspeed.yaml"
+  else
+    echo "default_config_deepspeed.yaml"
+  fi
+}
+
 resolve_accelerate_config() {
   # Explicit override always wins.
   if [[ -n "${ACCELERATE_CONFIG:-}" ]]; then
@@ -68,9 +79,10 @@ resolve_accelerate_config() {
   num_gpus="$(detect_num_gpus)"
 
   # Default: native PyTorch DDP (MULTI_GPU). No DeepSpeed install required.
-  # DeepSpeed ZeRO (student sharding, teacher colocated):
+  # DeepSpeed ZeRO-0 (no sharding, fastest when VRAM allows):
+  #   resolve_deepspeed_zero0_config → default_config_8gpu_deepspeed.yaml (8 GPU)
+  # DeepSpeed ZeRO-2/3 (student sharding, lower VRAM):
   #   ACCELERATE_CONFIG=default_config_zero2.yaml bash scripts/train_opd_7b_chartqa_deepspeed.sh
-  # Optional ZeRO-0 (no sharding): set ACCELERATE_CONFIG=default_config_deepspeed.yaml
   if [[ "${num_gpus}" -ge 8 ]]; then
     echo "default_config_8gpu.yaml"
   else
