@@ -3,6 +3,7 @@
 #
 # Usage:
 #   bash scripts/train_opd_7b_dyme_probe.sh
+#   bash scripts/train_opd_7b_dyme_probe_smoke.sh   # 200-step short validation
 #
 # Memory-tight fallback:
 #   ACCELERATE_CONFIG=default_config_zero2.yaml bash scripts/train_opd_7b_dyme_probe.sh
@@ -28,4 +29,5 @@ accelerate launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PR
   --config "${DYME_CONFIG}" \
   --mode rl \
   --opsd_enabled \
+  --no_wandb \
   2>&1 | tee "${LOG_FILE}"

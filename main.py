@@ -112,6 +112,19 @@ def _wandb_disabled_by_env() -> bool:
     return False
 
 
+def _local_rank() -> int:
+    return int(os.environ.get("LOCAL_RANK", os.environ.get("RANK", "0")))
+
+
+def _is_main_process() -> bool:
+    return _local_rank() == 0
+
+
+def _log_startup(message: str) -> None:
+    if _is_main_process():
+        print(f"[DyME] {message}", flush=True)
+
+
 def _try_wandb_login() -> bool:
     """Return True if wandb credentials are available (env, offline, or prior login)."""
     if os.environ.get("WANDB_MODE", "").lower() == "offline":
@@ -126,6 +139,19 @@ def _try_wandb_login() -> bool:
         return bool(key and len(key) >= 40)
     except Exception:
         return False
+
+
+def _resolve_use_wandb(want_wandb: bool) -> bool:
+    """Resolve wandb without interactive prompts on distributed worker ranks."""
+    if not want_wandb or _wandb_disabled_by_env():
+        return False
+    if _local_rank() != 0:
+        # Never call wandb.login() on worker ranks — shared stdin causes multi-process deadlocks.
+        return (
+            os.environ.get("WANDB_MODE", "").lower() == "offline"
+            or bool(os.environ.get("WANDB_API_KEY"))
+        )
+    return _try_wandb_login()
 
 
 def _json_safe(value):
@@ -220,9 +246,7 @@ def setup_accelerator_and_wandb(bf16, want_wandb: bool) -> tuple[Accelerator, bo
     Returns:
         (accelerator, use_wandb)
     """
-    use_wandb = want_wandb and not _wandb_disabled_by_env()
-    if use_wandb:
-        use_wandb = _try_wandb_login()
+    use_wandb = _resolve_use_wandb(want_wandb)
 
     accel_kwargs: dict = {}
     # bf16 for DDP/MULTI_GPU only; with deepspeed_config_file, precision lives in the JSON.
@@ -248,8 +272,7 @@ def load_model_and_processor(model_config: Dict[str, Any]):
         role="student",
     )
     local_kw = local_pretrained_kwargs(model_id)
-    if local_kw and os.environ.get("RANK", "0") == "0":
-        print(f"[DyME] Loading student from local path: {model_id}", flush=True)
+    _log_startup(f"Loading student weights from: {model_id}")
 
     model = LlavaOnevisionForConditionalGeneration.from_pretrained(
         model_id,
@@ -264,6 +287,7 @@ def load_model_and_processor(model_config: Dict[str, Any]):
 
     processor = AutoProcessor.from_pretrained(model_id, **local_kw)
     processor.tokenizer.padding_side = "left"
+    _log_startup("Student model and processor ready")
 
     return model, processor
 
@@ -336,18 +360,26 @@ def prepare_datasets(task: str, dataset_config: Dict[str, Any], mode='rl') -> (D
     """
     data_func = define_task_data_func(task, mode=mode)
 
+    eval_spec = dataset_config.get("eval_dataset")
+    load_eval = eval_spec not in (None, "", False)
+
     # Create training dataset
+    _log_startup(f"Loading training data: {dataset_config['train_dataset']}")
     train_data_list = data_func(json_path=dataset_config['train_dataset'])
     train_dataset = Dataset.from_list(train_data_list)
+    _log_startup(f"Training dataset ready: {len(train_dataset)} samples")
 
     # Create evaluation dataset
-    if 'chart' in task:
-        eval_dataset = load_dataset(dataset_config['eval_dataset'])['test']
+    if 'chart' in task and load_eval:
+        _log_startup(f"Loading eval dataset: {eval_spec}")
+        eval_dataset = load_dataset(eval_spec)['test']
+        _log_startup(f"Eval dataset ready: {len(eval_dataset)} samples")
         # Note: You can uncomment the line below for quick testing/debugging.
         # eval_dataset = eval_dataset.select(range(1000, 1100))
 
     else:
-        # Extend this section for other tasks if needed in the future.
+        if 'chart' in task and not load_eval:
+            _log_startup("Skipping eval dataset load (eval_dataset disabled in config)")
         eval_dataset = None
 
     return train_dataset, eval_dataset
@@ -424,6 +456,10 @@ def main():
 
     args = parser.parse_args()
     mode = args.mode
+    _log_startup(
+        f"Process start: argv={' '.join(sys.argv)} "
+        f"LOCAL_RANK={os.environ.get('LOCAL_RANK', '?')} RANK={os.environ.get('RANK', '?')}"
+    )
 
     # 1. Load Configurations
     CONFIG = load_config(args.config)
@@ -480,7 +516,10 @@ def main():
         opsd_debug.log("main", "training entry", mode=mode, config_path=args.config)
 
     # 2. Setup Environment
-    want_wandb = True if args.wandb is None else args.wandb
+    # Default off unless --wandb or config launch.wandb_enabled / WANDB_API_KEY is set.
+    launch_wandb = bool(launch_config.get("wandb_enabled", False))
+    want_wandb = launch_wandb if args.wandb is None else args.wandb
+    _log_startup("Initializing Accelerator (DeepSpeed/DDP may take a minute)...")
     accelerator, use_wandb = setup_accelerator_and_wandb(
         bf16=training_config['dyme_args']['bf16'],
         want_wandb=want_wandb,
@@ -539,10 +578,11 @@ def main():
     if accelerator.is_main_process:
         print(
             f"[DyME] Distributed launch OK: num_processes={accelerator.num_processes}, "
-            f"visible_gpus={visible_gpus}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}"
+            f"visible_gpus={visible_gpus}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}",
+            flush=True,
         )
 
-    # 3. Initialize Model and Processor
+    _log_startup("Loading student model (CPU staging first; GPU memory rises after DeepSpeed wrap)...")
     ds_zero_stage = deepspeed_zero_stage()
     if accelerator.is_main_process and is_deepspeed_accelerate_config():
         print(
