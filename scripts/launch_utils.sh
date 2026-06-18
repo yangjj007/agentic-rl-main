@@ -169,3 +169,35 @@ ensure_spacy_english_model()
 print("[DyME] spaCy model ready: en_core_web_sm")
 PY
 }
+
+# Read deplot.enabled from the Python training config (fallback: enabled).
+config_deplot_enabled() {
+  local cfg="${1:-}"
+  if [[ -n "${DYME_DEPLOT_ENABLED:-}" ]]; then
+    echo "${DYME_DEPLOT_ENABLED}"
+    return
+  fi
+  if [[ -z "${cfg}" ]]; then
+    echo "1"
+    return
+  fi
+  python -c "
+from config.loader import load_config
+cfg = load_config('${cfg}')
+print(1 if cfg.get('deplot', {}).get('enabled', True) else 0)
+"
+}
+
+prepare_chartqa_training_data() {
+  local cfg="${1:-}"
+  export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-$(config_deplot_enabled "${cfg}")}"
+  ensure_chartqa_vf_full
+  ensure_spacy_model
+}
+
+train_log_path() {
+  local prefix="${1:-train}"
+  local log_dir="${DYME_LOG_DIR:-./outputs/logs}"
+  mkdir -p "${log_dir}"
+  echo "${log_dir}/${prefix}_$(date +%Y%m%d_%H%M%S).log"
+}

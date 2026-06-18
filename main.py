@@ -49,6 +49,29 @@ from opsd_utils.deepspeed_utils import (
 )
 
 
+def apply_launch_config(launch_config: dict[str, Any]) -> None:
+    """Apply optional runtime launch knobs from CONFIG['launch'] when env is unset."""
+    if not launch_config:
+        return
+    env_mappings = {
+        "opsd_detail_min_free_gb": "DYME_OPSD_DETAIL_MIN_FREE_GB",
+        "opsd_detail_every": "DYME_OPSD_DETAIL_EVERY",
+        "pytorch_cuda_alloc_conf": "PYTORCH_CUDA_ALLOC_CONF",
+    }
+    for key, env_name in env_mappings.items():
+        if key in launch_config and env_name not in os.environ:
+            os.environ[env_name] = str(launch_config[key])
+
+
+def resolve_gradient_checkpointing_enabled(
+    launch_config: dict[str, Any],
+) -> bool:
+    env_raw = os.environ.get("DYME_GRADIENT_CHECKPOINTING", "").strip().lower()
+    if env_raw:
+        return env_raw in ("1", "true", "yes", "on")
+    return bool(launch_config.get("gradient_checkpointing_enable", False))
+
+
 def _run_cross_model_vocab_checks(model, processor, teacher_model, model_config: Dict[str, Any]) -> None:
     """Startup checks for cross-model OPD vocab slice + tokenizer alignment."""
     from transformers import AutoProcessor
@@ -409,6 +432,8 @@ def main():
     rl_config = CONFIG['rl']
     client_config = CONFIG['client']
     dataset_config = CONFIG['dataset']
+    launch_config = dict(CONFIG.get("launch", {}))
+    apply_launch_config(launch_config)
     task = training_config['task']
     opsd_config = dict(CONFIG.get('opsd', {"enabled": False, "mode": "dyme"}))
     if args.opsd_enabled:
@@ -443,7 +468,7 @@ def main():
         debug_cfg["probe_first_token_logits"] = probe_first_token_logits
 
     debug_enabled = opsd_debug.configure(
-        enabled=args.opsd_debug or None,
+        enabled=args.opsd_debug if args.opsd_debug else debug_cfg.get("verbose"),
         detail_every=detail_every,
         probe_on_generate=probe_on_generate,
         probe_first_token_logits=probe_first_token_logits,
@@ -527,7 +552,7 @@ def main():
         )
 
     model, processor = load_model_and_processor(model_config)
-    if os.environ.get("DYME_GRADIENT_CHECKPOINTING", "").strip().lower() in ("1", "true", "yes", "on"):
+    if resolve_gradient_checkpointing_enabled(launch_config):
         if should_disable_gradient_checkpointing():
             if accelerator.is_main_process:
                 print(
@@ -546,7 +571,7 @@ def main():
                 mode = f"use_reentrant={gc_kwargs['use_reentrant']}" if gc_kwargs else "default"
                 print(
                     f"[DyME] gradient checkpointing enabled on student "
-                    f"(DYME_GRADIENT_CHECKPOINTING, {mode})",
+                    f"(config launch.gradient_checkpointing_enable, {mode})",
                     flush=True,
                 )
 

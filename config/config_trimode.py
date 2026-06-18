@@ -1,15 +1,18 @@
 import os
 
 from config import CLIENT_CONFIG, DATASET_CONFIG, DYME_OPSD_CONFIG, MODEL_CONFIG, RL_CONFIG, TRAINING_CONFIG
+from config.env_overrides import env_bool, env_str
 from data_utils.paths import OUTPUTS_DIR
 
 MODEL_CONFIG = dict(MODEL_CONFIG)
+
+OUTPUT_DIR = env_str("DYME_OUTPUT_DIR", os.path.join(OUTPUTS_DIR, "trimode-chartqa"))
 
 TRAINING_CONFIG = {
     **TRAINING_CONFIG,
     "dyme_args": {
         **TRAINING_CONFIG["dyme_args"],
-        "output_dir": os.environ.get("DYME_OUTPUT_DIR", os.path.join(OUTPUTS_DIR, "dyme-trimode")),
+        "output_dir": OUTPUT_DIR,
     },
 }
 
@@ -43,9 +46,9 @@ _require_format_for_opsd = _require_format_raw not in ("0", "false", "no", "off"
 DYME_OPSD_CONFIG = {
     **DYME_OPSD_CONFIG,
     "enabled": True,
-    "mode": os.environ.get("DYME_OPSD_MODE", "trimode"),
-    "privileged_profile": os.environ.get("DYME_OPSD_PRIVILEGE_PROFILE", "hybrid"),
-    "privileged_providers": os.environ.get("DYME_OPSD_PROVIDERS", "text,visual_facts").split(","),
+    "mode": env_str("DYME_OPSD_MODE", "trimode"),
+    "privileged_profile": env_str("DYME_OPSD_PRIVILEGE_PROFILE", "hybrid"),
+    "privileged_providers": env_str("DYME_OPSD_PROVIDERS", "text,visual_facts").split(","),
     "privileged_image": {
         **DYME_OPSD_CONFIG.get("privileged_image", {}),
         "mode": os.environ.get("DYME_OPSD_PRIVILEGE_IMAGE_MODE", "single"),
@@ -71,6 +74,7 @@ DYME_OPSD_CONFIG = {
         "probe_first_token_logits": _probe_first_token_logits,
         "probe_prompt_tail_tokens": _probe_prompt_tail_tokens,
         "probe_log_model_context": _probe_log_model_context,
+        "verbose": env_bool("DYME_OPSD_DEBUG", True),
         "health_monitor": {
             **DYME_OPSD_CONFIG.get("debug", {}).get("health_monitor", {}),
             "enabled": _health_monitor_enabled,
