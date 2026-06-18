@@ -75,14 +75,13 @@ def slice_teacher_vision_inputs(
     return t_pixel, t_sizes
 
 
-def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
-    """Token-level generalized JSD on completion positions."""
+def _aligned_log_probs(student_logits, teacher_logits, mask):
     # Cross-model OPD: teacher logits already live on the teacher GPU; avoid
     # copying them onto the student GPU (vocab × seq is multi-hundred MiB per sample).
-    jsd_device = teacher_logits.device
-    if student_logits.device != jsd_device:
-        student_logits = student_logits.to(jsd_device, non_blocking=True)
-    mask = mask.to(device=jsd_device, non_blocking=True)
+    loss_device = teacher_logits.device
+    if student_logits.device != loss_device:
+        student_logits = student_logits.to(loss_device, non_blocking=True)
+    mask = mask.to(device=loss_device, non_blocking=True)
 
     comp_dtype = student_logits.dtype
     if comp_dtype == torch.float32:
@@ -95,6 +94,19 @@ def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
     student_logits, teacher_logits = align_cross_model_logits(student_logits, teacher_logits)
     student_log_probs = F.log_softmax(student_logits, dim=-1)
     teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
+    return student_log_probs, teacher_log_probs, mask
+
+
+def _masked_token_kl(token_loss: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    token_loss = token_loss.sum(dim=-1)
+    token_loss = token_loss * mask
+    denom = mask.sum().clamp(min=1.0)
+    return token_loss.sum() / denom
+
+
+def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
+    """Token-level generalized JSD on completion positions."""
+    student_log_probs, teacher_log_probs, mask = _aligned_log_probs(student_logits, teacher_logits, mask)
     opsd_debug.log(
         "vocab_align",
         "generalized_jsd_loss log_softmax on aligned vocab",
@@ -118,10 +130,64 @@ def generalized_jsd_loss(student_logits, teacher_logits, mask, beta=0.5):
         kl_student = F.kl_div(mixture_log_probs, student_log_probs, reduction="none", log_target=True)
         jsd = beta_t * kl_teacher + (1 - beta_t) * kl_student
 
-    jsd = jsd.sum(dim=-1)
-    jsd = jsd * mask
-    denom = mask.sum().clamp(min=1.0)
-    return jsd.sum() / denom
+    return _masked_token_kl(jsd, mask)
+
+
+def forward_kl_loss(student_logits, teacher_logits, mask):
+    """Forward KL: KL(P_teacher || P_student)."""
+    student_log_probs, teacher_log_probs, mask = _aligned_log_probs(student_logits, teacher_logits, mask)
+    token_loss = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
+    return _masked_token_kl(token_loss, mask)
+
+
+def reverse_kl_loss(student_logits, teacher_logits, mask):
+    """Reverse KL: KL(P_student || P_teacher)."""
+    student_log_probs, teacher_log_probs, mask = _aligned_log_probs(student_logits, teacher_logits, mask)
+    token_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="none", log_target=True)
+    return _masked_token_kl(token_loss, mask)
+
+
+def skew_reverse_kl_loss(student_logits, teacher_logits, mask, alpha=0.1):
+    """Skew reverse KL: KL(P_student || (1-alpha)P_teacher + alpha P_student)."""
+    student_log_probs, teacher_log_probs, mask = _aligned_log_probs(student_logits, teacher_logits, mask)
+    alpha_t = torch.tensor(
+        min(max(float(alpha), 1e-6), 1.0 - 1e-6),
+        dtype=student_log_probs.dtype,
+        device=student_log_probs.device,
+    )
+    mixture_log_probs = torch.logsumexp(
+        torch.stack(
+            [
+                teacher_log_probs + torch.log1p(-alpha_t),
+                student_log_probs + torch.log(alpha_t),
+            ]
+        ),
+        dim=0,
+    )
+    token_loss = F.kl_div(mixture_log_probs, student_log_probs, reduction="none", log_target=True)
+    return _masked_token_kl(token_loss, mask)
+
+
+def token_distillation_loss(
+    student_logits,
+    teacher_logits,
+    mask,
+    *,
+    loss_type: str = "jsd",
+    beta: float = 0.5,
+    srkl_alpha: float = 0.1,
+) -> torch.Tensor:
+    """Dispatch token-level OPD divergence."""
+    loss_name = (loss_type or "jsd").lower()
+    if loss_name == "jsd":
+        return generalized_jsd_loss(student_logits, teacher_logits, mask, beta=beta)
+    if loss_name == "fkl":
+        return forward_kl_loss(student_logits, teacher_logits, mask)
+    if loss_name == "rkl":
+        return reverse_kl_loss(student_logits, teacher_logits, mask)
+    if loss_name == "srkl":
+        return skew_reverse_kl_loss(student_logits, teacher_logits, mask, alpha=srkl_alpha)
+    raise ValueError(f"Unknown OPD loss_type: {loss_type}")
 
 
 def _teacher_logits_with_oom_retry(
@@ -210,6 +276,8 @@ def compute_vlm_opsd_loss(
     capture_jsd_detail: bool = False,
     tokenizer=None,
     student_logits=None,
+    loss_type: str = "jsd",
+    srkl_alpha: float = 0.1,
 ) -> torch.Tensor:
     """
     OPSD / OPD: student vs teacher prompt, shared student completion.
@@ -220,6 +288,8 @@ def compute_vlm_opsd_loss(
         "opsd_loss",
         "compute_vlm_opsd_loss enter",
         beta=beta,
+        loss_type=loss_type,
+        srkl_alpha=srkl_alpha,
         student_prompt_shape=tuple(student_prompt_ids.shape),
         teacher_prompt_shape=tuple(teacher_prompt_ids.shape),
         completion_shape=tuple(completion_ids.shape),
@@ -288,7 +358,14 @@ def compute_vlm_opsd_loss(
             teacher_vocab=teacher_logits.size(-1),
         )
 
-    loss = generalized_jsd_loss(student_logits, teacher_logits, completion_mask.float(), beta=beta)
+    loss = token_distillation_loss(
+        student_logits,
+        teacher_logits,
+        completion_mask.float(),
+        loss_type=loss_type,
+        beta=beta,
+        srkl_alpha=srkl_alpha,
+    )
 
     if capture_jsd_detail and global_idx is not None:
         opsd_diagnostics.maybe_capture_opsd_jsd_detail(
@@ -325,6 +402,8 @@ def compute_vlm_opsd_loss_masked_batch(
     tokenizer=None,
     detail_max_samples: int = 2,
     student_completion_logits=None,
+    loss_type: str = "jsd",
+    srkl_alpha: float = 0.1,
 ) -> torch.Tensor:
     """Compute mean OPSD loss over opsd_indices within a batch.
 
@@ -347,6 +426,8 @@ def compute_vlm_opsd_loss_masked_batch(
         opsd_indices=opsd_indices,
         all_indices=all_indices,
         beta=beta,
+        loss_type=loss_type,
+        srkl_alpha=srkl_alpha,
         real_count=real_count,
         target_count=target_count,
     )
@@ -417,6 +498,8 @@ def compute_vlm_opsd_loss_masked_batch(
                 capture_jsd_detail=capture_jsd_detail and is_real,
                 tokenizer=tokenizer,
                 student_logits=precomputed_student_logits,
+                loss_type=loss_type,
+                srkl_alpha=srkl_alpha,
             )
             if not is_real:
                 # Keep the autograd graph / DDP collective alive but contribute nothing.

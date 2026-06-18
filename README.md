@@ -607,16 +607,9 @@ bash scripts/train_rlsd_chartqa.sh
 **Two-stage cold start (optional offline SFT → RLSD/OPD):**
 
 ```bash
-bash scripts/train_chartqa_sft.sh
-export DYME_PRETRAINED_MODEL=./outputs/chartqa-sft/final_checkpoint
+export DYME_STUDENT_MODEL=/home/deepseek_VG/deepseek/models/llava-0.5b-ov
+export DYME_TEACHER_MODEL=/home/deepseek_VG/deepseek/models/llava-7b-ov
 bash scripts/train_opd_7b_chartqa_deepspeed.sh
-```
-
-**200-step smoke (OPD fixes):**
-
-```bash
-bash scripts/train_opd_7b_smoke.sh
-# Success: degenerate_rate<0.5, opsd_mask>8%, advantage_abs_mean>0, grad_norm>0
 ```
 
 **Cross-model OPD (7B frozen teacher + 0.5B student):**

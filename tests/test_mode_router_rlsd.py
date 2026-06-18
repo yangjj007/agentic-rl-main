@@ -84,6 +84,22 @@ def test_online_sft_on_all_wrong_can_be_disabled():
     assert modes == [MODE_OPSD, MODE_OPSD]
 
 
+def test_teacher_probe_mode_all_wrong_is_all_sft():
+    acc = torch.tensor([[0.0, 0.0, 0.0, 0.0]])
+    cfg = _rlsd_cfg()
+    cfg["mode"] = "dyme_teacher_probe_opd"
+    modes = route_completion_modes(acc, 4, 4, cfg, [True])
+    assert modes == [MODE_SFT, MODE_SFT, MODE_SFT, MODE_SFT]
+
+
+def test_teacher_probe_mode_mixed_group_wrong_goes_to_probe_marker():
+    acc = torch.tensor([[1.0, 0.0, 0.0]])
+    cfg = _rlsd_cfg()
+    cfg["mode"] = "dyme_teacher_probe_opd"
+    modes = route_completion_modes(acc, 3, 3, cfg, [True])
+    assert modes == [MODE_GRPO, MODE_OPSD, MODE_OPSD]
+
+
 if __name__ == "__main__":
     test_rlsd_prompt_correct_grpo()
     test_rlsd_prompt_wrong_opsd_when_recoverable()
@@ -94,4 +110,6 @@ if __name__ == "__main__":
     test_rlsd_all_wrong_two_prompts()
     test_rlsd_partial_correct_no_cold_start_on_wrong()
     test_online_sft_on_all_wrong_can_be_disabled()
+    test_teacher_probe_mode_all_wrong_is_all_sft()
+    test_teacher_probe_mode_mixed_group_wrong_goes_to_probe_marker()
     print("RLSD routing tests passed.")

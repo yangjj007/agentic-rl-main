@@ -5,6 +5,7 @@ from opsd_utils import debug_log as opsd_debug
 
 # Anti-leakage modes: correct → GRPO, wrong → OPSD/OPD, else SFT
 _NO_LEAK_MODES = frozenset({"rlsd", "copsd_opd"})
+_TEACHER_PROBE_MODES = frozenset({"dyme_teacher_probe_opd"})
 
 
 def route_prompt_modes(
@@ -66,6 +67,10 @@ def route_prompt_modes(
                 selected = MODE_OPSD
             else:
                 selected = MODE_SFT
+        elif mode_name in _TEACHER_PROBE_MODES:
+            # Prompt-level fallback: strict DyME memorization for all-wrong
+            # groups; mixed groups are expanded per completion below.
+            selected = MODE_GRPO if any_correct else MODE_SFT
         else:
             # trimode (legacy/leaky): OPSD on correct; wrong → DyME SFT cold-start
             selected = MODE_OPSD if any_correct else MODE_SFT
@@ -115,6 +120,45 @@ def route_completion_modes(
     per_completion = gate.get("per_completion_opsd", False)
     threshold = gate.get("correct_threshold", 0.5)
     require_format = gate.get("require_format_for_opsd", False)
+
+    if per_completion and mode_name in _TEACHER_PROBE_MODES:
+        num_prompts = acc_rewards.shape[0]
+        group_has_correct = [
+            (acc_rewards[p] > threshold).any().item() for p in range(num_prompts)
+        ]
+
+        completion_modes: list[int] = []
+        for i in range(batch_size):
+            prompt_idx = i // num_generations
+            gen_idx = i % num_generations
+            acc_ok = acc_rewards[prompt_idx, gen_idx].item() > threshold
+            fmt_ok = True
+            if require_format and format_rewards is not None:
+                fmt_ok = format_rewards[prompt_idx, gen_idx].item() > 0
+
+            if not group_has_correct[prompt_idx]:
+                # Strict DyME: all completions in an all-wrong group memorize
+                # GT/refined supervision. No OPD is allowed in this branch.
+                selected = MODE_SFT
+            elif acc_ok and fmt_ok:
+                selected = MODE_GRPO
+            else:
+                # Temporary marker: teacher-probe will later decide whether
+                # this wrong completion stays OPD or is converted to SFT.
+                selected = MODE_OPSD
+            completion_modes.append(selected)
+
+        opsd_debug.log(
+            "mode_router",
+            "route_completion_modes dyme_teacher_probe_opd",
+            batch_size=batch_size,
+            num_generations=num_generations,
+            mode_name=mode_name,
+            require_format_for_opsd=require_format,
+            group_has_correct=group_has_correct,
+            completion_modes=[opsd_debug.MODE_NAMES.get(m, m) for m in completion_modes],
+        )
+        return completion_modes
 
     if per_completion and mode_name in _NO_LEAK_MODES:
         num_prompts = acc_rewards.shape[0]

@@ -1,16 +1,76 @@
 """Offline DePlot (google/deplot) batch pipeline for ChartQA visual_fact_deplot."""
 from __future__ import annotations
 
+import glob
 import json
 import os
 from typing import Any, Optional
 
-from data_utils.paths import resolve_image_path
+from data_utils.paths import resolve_image_path, resolve_model_path
 
 DEFAULT_MODEL_ID = "google/deplot"
 DEFAULT_PROMPT = "Generate underlying data table of the figure below:"
 PLACEHOLDER_SOURCE = "deplot_placeholder"
 REAL_SOURCE = "google/deplot"
+HF_FONT_REPO = "ybelkada/fonts"
+HF_FONT_FILE = "Arial.TTF"
+
+
+def _local_pretrained_kwargs(model_id: str) -> dict[str, bool]:
+    resolved = resolve_model_path(model_id)
+    if os.path.isdir(resolved):
+        return {"local_files_only": True}
+    return {}
+
+
+def _hf_hub_font_cache_candidates() -> list[str]:
+    hf_home = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
+    return [
+        os.path.join(hf_home, "hub", "models--ybelkada--fonts", "snapshots", "*", HF_FONT_FILE),
+        os.path.join(hf_home, "hub", "models--ybelkada--fonts", "snapshots", "*", "arial.ttf"),
+    ]
+
+
+def resolve_deplot_font_path(model_dir: str = "") -> Optional[str]:
+    """
+    Pix2Struct renders prompt text onto chart images and defaults to downloading
+    ``ybelkada/fonts/Arial.TTF``. Resolve a local font for offline runs.
+    """
+    for env_key in ("DEPLOT_FONT_PATH", "PIX2STRUCT_FONT_PATH"):
+        env_path = (os.environ.get(env_key) or "").strip()
+        if env_path and os.path.isfile(env_path):
+            return os.path.abspath(env_path)
+
+    if model_dir:
+        for name in (HF_FONT_FILE, "arial.ttf", "Arial.ttf"):
+            candidate = os.path.join(model_dir, name)
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+
+    for pattern in _hf_hub_font_cache_candidates():
+        matches = sorted(glob.glob(pattern))
+        if matches:
+            return os.path.abspath(matches[0])
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        cached = hf_hub_download(HF_FONT_REPO, HF_FONT_FILE, local_files_only=True)
+        if cached and os.path.isfile(cached):
+            return os.path.abspath(cached)
+    except Exception:
+        pass
+
+    for candidate in (
+        "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/arial.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+
+    return None
 
 
 def _parse_vf(raw: Any) -> Optional[dict[str, Any]]:
@@ -150,6 +210,7 @@ class DePlotRunner:
         self._dtype = dtype
         self._processor = None
         self._model = None
+        self._font_path: Optional[str] = None
 
     def _resolve_device(self):
         import torch
@@ -182,13 +243,35 @@ class DePlotRunner:
 
             device = self._resolve_device()
             dtype = self._resolve_dtype(device)
-            self._processor = Pix2StructProcessor.from_pretrained(self.model_id)
-            self._model = Pix2StructForConditionalGeneration.from_pretrained(
-                self.model_id,
-                torch_dtype=dtype,
-            ).to(device)
+            model_id = resolve_model_path(self.model_id)
+            local_kw = _local_pretrained_kwargs(model_id)
+            model_dir = model_id if os.path.isdir(model_id) else ""
+            self._font_path = resolve_deplot_font_path(model_dir)
+            if os.environ.get("HF_HUB_OFFLINE") == "1" and not self._font_path:
+                print(
+                    "[DePlot] offline mode but no local Arial font found; "
+                    "set DEPLOT_FONT_PATH or place Arial.TTF next to the model."
+                )
+            elif self._font_path:
+                print(f"[DePlot] using font: {self._font_path}")
+
+            self._processor = Pix2StructProcessor.from_pretrained(model_id, **local_kw)
+            load_kw = dict(local_kw)
+            try:
+                self._model = Pix2StructForConditionalGeneration.from_pretrained(
+                    model_id,
+                    dtype=dtype,
+                    **load_kw,
+                ).to(device)
+            except TypeError:
+                self._model = Pix2StructForConditionalGeneration.from_pretrained(
+                    model_id,
+                    torch_dtype=dtype,
+                    **load_kw,
+                ).to(device)
             self._model.eval()
             self._device_obj = device
+            self.model_id = model_id
             return True
         except Exception as exc:
             print(f"[DePlot] model load failed: {exc}")
@@ -221,8 +304,11 @@ class DePlotRunner:
 
         device = self._device_obj
         texts = [self.prompt] * len(images)
+        proc_kwargs: dict[str, Any] = {"return_tensors": "pt"}
+        if self._font_path:
+            proc_kwargs["font_path"] = self._font_path
         with torch.inference_mode():
-            inputs = self._processor(images=images, text=texts, return_tensors="pt")
+            inputs = self._processor(images=images, text=texts, **proc_kwargs)
             inputs = {k: v.to(device) for k, v in inputs.items()}
             outputs = self._model.generate(**inputs, max_new_tokens=self.max_new_tokens)
             decoded = self._processor.batch_decode(outputs, skip_special_tokens=True)

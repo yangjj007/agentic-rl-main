@@ -103,3 +103,20 @@ def validate_local_model_dir(path: str, *, role: str = "model") -> str:
             "Download weights first (ModelScope --exclude 'onnx/*' or hf download)."
         )
     return resolved
+
+
+def local_pretrained_kwargs(path: str) -> dict:
+    """Use local_files_only for local model directories; no-op for Hub IDs."""
+    resolved = resolve_model_path(path)
+    if os.path.isdir(resolved):
+        return {"local_files_only": True}
+    return {}
+
+
+def discover_local_model(role: str, default: str) -> str:
+    """Resolve role-specific model override env vars, otherwise return default."""
+    key = f"DYME_{role.upper()}_MODEL"
+    override = os.environ.get(key, "").strip()
+    if override:
+        return validate_local_model_dir(override, role=role)
+    return default

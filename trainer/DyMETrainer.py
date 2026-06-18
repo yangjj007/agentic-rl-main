@@ -60,6 +60,7 @@ from datasets import Dataset, IterableDataset
 from reward_utils import checker
 from reward_utils.checker import RewardCalculator
 from reward_utils.compute_rewards import calculate_rewards_in_parallel, refine_context_in_parallel
+from data_utils.chart.evaluator import eval_one_chart
 
 from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, DEFAULT_OPSD_CONFIG
 from opsd_utils.leakage import completion_has_leakage_pattern
@@ -72,6 +73,14 @@ from opsd_utils.deepspeed_utils import (
     gradient_checkpointing_enable_kwargs,
     is_deepspeed_accelerate_config,
     student_forward_chunk_size,
+)
+from opsd_utils.teacher_batching import (
+    align_teacher_prompt_image_tokens,
+    as_batch_num_images_tensor,
+    get_teacher_vision_for_sample,
+    model_inference_device,
+    move_batch_num_images_to_model_device,
+    move_pixel_values_to_model_device,
 )
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils import diagnostics as opsd_diagnostics
@@ -295,6 +304,7 @@ class DyMETrainer(Trainer):
         self.opsd_config = opsd_config if opsd_config is not None else dict(DEFAULT_OPSD_CONFIG)
         self.teacher_model = teacher_model
         self._teacher_model_config = teacher_model_config
+        self._teacher_vocab_checked = False
         self._last_training_phase: Optional[str] = None
         self.task_name = task_name
         reward_weights = self.opsd_config.get("reward_weights", [1.0, 1.0, 1.0])
@@ -716,6 +726,7 @@ class DyMETrainer(Trainer):
 
     def _ensure_teacher_model(self) -> None:
         if self.teacher_model is not None or not self._teacher_model_config:
+            self._run_teacher_vocab_check_once()
             return
         teacher_path = self._teacher_model_config.get("teacher_model_path")
         if not teacher_path:
@@ -738,6 +749,218 @@ class DyMETrainer(Trainer):
             global_step=self._current_global_step(),
             teacher_path=teacher_path,
         )
+        self._run_teacher_vocab_check_once()
+
+    def _run_teacher_vocab_check_once(self) -> None:
+        if self._teacher_vocab_checked or self.teacher_model is None:
+            return
+        self._teacher_vocab_checked = True
+        if not self.accelerator.is_main_process:
+            return
+        try:
+            from main import _run_cross_model_vocab_checks
+
+            _run_cross_model_vocab_checks(
+                self.model,
+                self.processing_class,
+                self.teacher_model,
+                self._teacher_model_config or {},
+            )
+        except Exception as exc:
+            print(f"[OPSD-VOCAB] WARNING: lazy teacher vocab check failed: {exc}", flush=True)
+
+    def _teacher_probe_config(self) -> dict[str, Any]:
+        cfg = self.opsd_config.get("teacher_probe") or {}
+        return {
+            "enabled": bool(cfg.get("enabled", self.opsd_config.get("mode") == "dyme_teacher_probe_opd")),
+            "context_providers": cfg.get(
+                "context_providers",
+                self.opsd_config.get("privileged_providers", ["format_only", "visual_facts"]),
+            ),
+            "max_per_batch": int(cfg.get("max_per_batch", 0) or 0),
+            "max_new_tokens": int(cfg.get("max_new_tokens", 96)),
+            "do_sample": bool(cfg.get("do_sample", False)),
+            "temperature": float(cfg.get("temperature", 0.0) or 0.0),
+            "top_p": float(cfg.get("top_p", 1.0)),
+            "repetition_penalty": float(cfg.get("repetition_penalty", 1.2)),
+            "max_relative_change": float(cfg.get("max_relative_change", 0.05)),
+        }
+
+    def _teacher_trajectory_config(self) -> dict[str, Any]:
+        cfg = self.opsd_config.get("teacher_trajectory") or {}
+        return {
+            "enabled": bool(cfg.get("enabled", True)),
+            "max_new_tokens": int(cfg.get("max_new_tokens", 128)),
+            "loss_type": (cfg.get("loss_type") or "fkl").lower(),
+            "weight": float(cfg.get("weight", self.opsd_config.get("loss", {}).get("teacher_traj_fkl_weight", 0.5))),
+        }
+
+    def _teacher_generate_from_tensors(
+        self,
+        teacher_tensors: dict[str, Any],
+        row: int,
+        *,
+        max_new_tokens: int,
+        do_sample: bool,
+        temperature: float,
+        top_p: float,
+        repetition_penalty: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, str]:
+        prompt_ids = teacher_tensors["teacher_prompt_ids"][row : row + 1]
+        prompt_mask = teacher_tensors["teacher_prompt_mask"][row : row + 1]
+        t_pixel, t_sizes = get_teacher_vision_for_sample(
+            teacher_tensors,
+            row,
+            teacher_tensors.get("teacher_num_images", None),
+        )
+        n_img = 1
+        if isinstance(teacher_tensors.get("teacher_num_images"), torch.Tensor):
+            n_img = int(max(1, teacher_tensors["teacher_num_images"][row].item()))
+        teacher_batch_num_images = as_batch_num_images_tensor(n_img, t_pixel)
+        prompt_ids, prompt_mask = align_teacher_prompt_image_tokens(
+            self.teacher_model,
+            self.processing_class,
+            prompt_ids,
+            prompt_mask,
+            t_pixel,
+            t_sizes,
+            batch_num_images=teacher_batch_num_images,
+        )
+        teacher_device = model_inference_device(self.teacher_model)
+        prompt_ids = prompt_ids.to(teacher_device)
+        prompt_mask = prompt_mask.to(teacher_device)
+        t_pixel = move_pixel_values_to_model_device(self.teacher_model, t_pixel)
+        teacher_batch_num_images = move_batch_num_images_to_model_device(
+            self.teacher_model, teacher_batch_num_images
+        )
+        gen_kwargs: dict[str, Any] = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "pad_token_id": self.processing_class.tokenizer.pad_token_id,
+            "eos_token_id": self.processing_class.tokenizer.eos_token_id,
+            "repetition_penalty": repetition_penalty,
+        }
+        if do_sample:
+            gen_kwargs["temperature"] = max(temperature, 1e-5)
+            gen_kwargs["top_p"] = top_p
+        with torch.no_grad():
+            generated = self.teacher_model.generate(
+                input_ids=prompt_ids,
+                attention_mask=prompt_mask,
+                pixel_values=t_pixel,
+                image_sizes=t_sizes,
+                batch_num_images=teacher_batch_num_images,
+                **gen_kwargs,
+            )
+        new_ids = generated[:, prompt_ids.shape[1] :].to(self.accelerator.device)
+        if new_ids.numel() == 0:
+            new_ids = torch.tensor(
+                [[self.processing_class.tokenizer.eos_token_id]],
+                device=self.accelerator.device,
+                dtype=torch.long,
+            )
+        is_eos = new_ids == self.processing_class.tokenizer.eos_token_id
+        eos_idx = torch.full(
+            (is_eos.size(0),),
+            is_eos.size(1),
+            dtype=torch.long,
+            device=self.accelerator.device,
+        )
+        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
+        seq_idx = torch.arange(is_eos.size(1), device=self.accelerator.device).expand(is_eos.size(0), -1)
+        mask = (seq_idx <= eos_idx.unsqueeze(1)).int()
+        text = self.processing_class.batch_decode(new_ids, skip_special_tokens=True)[0].strip()
+        return new_ids[0], mask[0], text
+
+    def _apply_teacher_probe_routing(
+        self,
+        *,
+        inputs: list[dict[str, Union[torch.Tensor, Any]]],
+        completion_modes: list[int],
+        acc_rewards: torch.Tensor,
+        answers: list[str],
+        answer_flag: str,
+        global_step: int,
+        device,
+    ) -> tuple[list[int], dict[int, tuple[torch.Tensor, torch.Tensor]], dict[str, Any]]:
+        stats: dict[str, Any] = {
+            "teacher_probe_candidates": 0,
+            "teacher_probe_correct": 0,
+            "teacher_probe_wrong": 0,
+            "teacher_probe_skipped_budget": 0,
+            "teacher_probe_text": {},
+        }
+        if (
+            self.opsd_config.get("mode") != "dyme_teacher_probe_opd"
+            or self.teacher_model is None
+        ):
+            return completion_modes, {}, stats
+
+        probe_cfg = self._teacher_probe_config()
+        if not probe_cfg["enabled"]:
+            return completion_modes, {}, stats
+
+        candidate_indices = [i for i, mode_i in enumerate(completion_modes) if mode_i == MODE_OPSD]
+        stats["teacher_probe_candidates"] = len(candidate_indices)
+        max_per_batch = probe_cfg["max_per_batch"]
+        if max_per_batch > 0 and len(candidate_indices) > max_per_batch:
+            skipped = candidate_indices[max_per_batch:]
+            for idx in skipped:
+                completion_modes[idx] = MODE_SFT
+            stats["teacher_probe_skipped_budget"] = len(skipped)
+            candidate_indices = candidate_indices[:max_per_batch]
+        if not candidate_indices:
+            return completion_modes, {}, stats
+
+        provider_names = probe_cfg["context_providers"]
+        teacher_tensors = build_teacher_prompt_batch(
+            self.processing_class,
+            inputs,
+            candidate_indices,
+            provider_names,
+            device,
+            opsd_config=self.opsd_config,
+            global_step=global_step,
+            output_dir=self.args.output_dir,
+        )
+        teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        for row, global_idx in enumerate(candidate_indices):
+            gen_ids, gen_mask, text = self._teacher_generate_from_tensors(
+                teacher_tensors,
+                row,
+                max_new_tokens=probe_cfg["max_new_tokens"],
+                do_sample=probe_cfg["do_sample"],
+                temperature=probe_cfg["temperature"],
+                top_p=probe_cfg["top_p"],
+                repetition_penalty=probe_cfg["repetition_penalty"],
+            )
+            prompt_idx = global_idx // self.num_generations
+            reference = answers[prompt_idx] if prompt_idx < len(answers) else ""
+            score = float(
+                eval_one_chart(
+                    text,
+                    str(reference).lower().replace(answer_flag.lower(), "").strip(),
+                    probe_cfg["max_relative_change"],
+                    answer_flag=answer_flag.lower(),
+                )
+            )
+            stats["teacher_probe_text"][global_idx] = text[:160].replace("\n", "\\n")
+            if score > 0:
+                stats["teacher_probe_correct"] += 1
+                completion_modes[global_idx] = MODE_OPSD
+                if self._teacher_trajectory_config()["enabled"]:
+                    teacher_trajs[global_idx] = (gen_ids.to(device), gen_mask.to(device))
+            else:
+                stats["teacher_probe_wrong"] += 1
+                completion_modes[global_idx] = MODE_SFT
+
+        opsd_debug.log(
+            "teacher_probe",
+            "teacher answer probe finished",
+            **{k: v for k, v in stats.items() if k != "teacher_probe_text"},
+            sample_text=next(iter(stats["teacher_probe_text"].values()), ""),
+        )
+        return completion_modes, teacher_trajs, stats
 
     def _log_training_phase(self, phase: str, global_step: int) -> None:
         if self._last_training_phase == phase:
@@ -1257,6 +1480,14 @@ class DyMETrainer(Trainer):
         opsd_active = self.opsd_config.get("enabled", False) and self.opsd_config.get("mode", "dyme") != "dyme"
         completion_modes = None
         recoverable_flags = None
+        answer_flag = getattr(self.checker, "answer_flag", "Answer:")
+        teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        teacher_probe_stats: dict[str, Any] = {
+            "teacher_probe_candidates": 0,
+            "teacher_probe_correct": 0,
+            "teacher_probe_wrong": 0,
+            "teacher_probe_skipped_budget": 0,
+        }
         opsd_debug.log(
             "opsd_router",
             "OPSD activation check",
@@ -1287,6 +1518,20 @@ class DyMETrainer(Trainer):
                 for i in range(acc_rewards.shape[0])
             ]
             opsd_debug.log_mode_summary("opsd_router", prompt_modes, completion_modes)
+            completion_modes, teacher_trajs, teacher_probe_stats = self._apply_teacher_probe_routing(
+                inputs=inputs,
+                completion_modes=completion_modes,
+                acc_rewards=acc_rewards,
+                answers=answers,
+                answer_flag=answer_flag,
+                global_step=global_step,
+                device=device,
+            )
+            prompt_modes = [
+                completion_modes[i * self.num_generations]
+                for i in range(acc_rewards.shape[0])
+            ]
+            opsd_debug.log_mode_summary("opsd_router_post_probe", prompt_modes, completion_modes)
 
         format_rewards_flat = format_rewards.reshape(-1)
         acc_rewards_flat = acc_rewards.reshape(-1)
@@ -1333,7 +1578,6 @@ class DyMETrainer(Trainer):
         opsd_skipped_leakage = 0
         opsd_on_correct = 0
         grpo_on_correct = 0
-        answer_flag = getattr(self.checker, "answer_flag", "Answer:")
         skip_degenerate_opsd = self._resolve_skip_degenerate_opsd()
         opsd_degenerate_require_answer_flag = self.opsd_config.get("gate", {}).get(
             "opsd_degenerate_require_answer_flag", True
@@ -1350,8 +1594,14 @@ class DyMETrainer(Trainer):
             use_sft = (not opsd_active) or cm == MODE_SFT
             joint_opsd = opsd_active and self.opsd_config.get("mode") == "grpo_opsd_joint" and has_correct[batch_id] > 0
             sft_replaced = False
+            teacher_probe_correct = i in teacher_trajs
+            force_sft_replace = self._should_force_sft_replace(i, completions, answer_flag)
+            if self.opsd_config.get("mode") == "dyme_teacher_probe_opd" and teacher_probe_correct:
+                # User-selected rule: wrong/degenerate samples may still use OPD
+                # when the no-leak teacher probe answers correctly.
+                force_sft_replace = False
 
-            if sft_check[i] or self._should_force_sft_replace(i, completions, answer_flag):
+            if sft_check[i] or (opsd_active and use_sft) or force_sft_replace:
                 completion_id_ = torch.cat([sft_padded_ids[i], completion_ids[i][0:0]])
                 completion_mask_ = torch.cat([sft_attn_masks[i], completion_mask[i][0:0]])
                 advantange_ = torch.cat([sft_advantages[i], advantages[i][0:0]])
@@ -1363,7 +1613,7 @@ class DyMETrainer(Trainer):
                 completion_mask_ = completion_mask[i]
                 advantange_ = torch.zeros(completion_mask[i].size(0), device=device, dtype=torch.float)
                 run_opsd = True
-                if skip_degenerate_opsd:
+                if skip_degenerate_opsd and not teacher_probe_correct:
                     eff_len = int(completion_mask_.sum().item())
                     if eff_len > 0:
                         ids_eff = completion_ids[i, :eff_len].tolist()
@@ -1435,6 +1685,9 @@ class DyMETrainer(Trainer):
                     "opsd_on_correct_rate": opsd_on_correct / local_routing_n,
                     "grpo_on_correct_rate": grpo_on_correct / local_routing_n,
                     "opd_teacher_call_rate": sum(opsd_mask_list) / local_routing_n,
+                    "teacher_probe_candidate_rate": teacher_probe_stats.get("teacher_probe_candidates", 0) / local_routing_n,
+                    "teacher_probe_correct_rate": teacher_probe_stats.get("teacher_probe_correct", 0) / local_routing_n,
+                    "teacher_probe_wrong_rate": teacher_probe_stats.get("teacher_probe_wrong", 0) / local_routing_n,
                     "format_mean": float(format_rewards.mean().item()),
                     "accuracy_mean": float(acc_rewards.mean().item()),
                 },
@@ -1459,6 +1712,21 @@ class DyMETrainer(Trainer):
         completion_ids = completion_ids.to(device)
         completion_mask = completion_mask.to(device)
         completion_advantange = completion_advantange.to(device)
+
+        teacher_traj_mask_list = []
+        teacher_traj_id_list = []
+        teacher_traj_attn_list = []
+        for i in range(completion_ids.shape[0]):
+            traj = teacher_trajs.get(i)
+            if traj is None:
+                teacher_traj_id_list.append(completion_ids[i][0:0])
+                teacher_traj_attn_list.append(completion_mask[i][0:0])
+                teacher_traj_mask_list.append(False)
+            else:
+                ids_i, mask_i = traj
+                teacher_traj_id_list.append(ids_i)
+                teacher_traj_attn_list.append(mask_i)
+                teacher_traj_mask_list.append(True)
 
         opsd_diagnostics.log_routed_completion_probe(
             global_step=global_step,
@@ -1589,6 +1857,22 @@ class DyMETrainer(Trainer):
         if opsd_active:
             opsd_mask = torch.tensor(opsd_mask_list, dtype=torch.bool, device=device)
             result["opsd_mask"] = opsd_mask
+            if any(teacher_traj_mask_list):
+                result["teacher_traj_mask"] = torch.tensor(
+                    teacher_traj_mask_list,
+                    dtype=torch.bool,
+                    device=device,
+                )
+                result["teacher_traj_completion_ids"] = pad_sequence(
+                    teacher_traj_id_list,
+                    batch_first=True,
+                    padding_value=self.processing_class.tokenizer.pad_token_id,
+                ).long().to(device)
+                result["teacher_traj_completion_mask"] = pad_sequence(
+                    teacher_traj_attn_list,
+                    batch_first=True,
+                    padding_value=0,
+                ).to(device)
             opsd_indices = [i for i, m in enumerate(opsd_mask_list) if m]
             opsd_debug.log_sync_point(
                 "teacher_prompt",
@@ -1806,6 +2090,8 @@ class DyMETrainer(Trainer):
             beta = self.opsd_config.get("loss", {}).get("beta", 0.5)
             opsd_weight = self.opsd_config.get("loss", {}).get("opsd_weight", 1.0)
             grpo_weight = self.opsd_config.get("loss", {}).get("grpo_weight", 1.0)
+            opsd_loss_type = self.opsd_config.get("loss", {}).get("loss_type", "jsd")
+            srkl_alpha = self.opsd_config.get("loss", {}).get("srkl_alpha", 0.1)
             opsd_indices: list[int] = []
             if opsd_mask.any():
                 opsd_indices = opsd_mask.nonzero(as_tuple=True)[0].tolist()
@@ -1833,6 +2119,8 @@ class DyMETrainer(Trainer):
                     "compute_vlm_opsd_loss_masked_batch args",
                     opsd_indices=opsd_indices,
                     beta=beta,
+                    loss_type=opsd_loss_type,
+                    srkl_alpha=srkl_alpha,
                     opsd_weight=opsd_weight,
                     grpo_weight=grpo_weight,
                     grpo_loss=float(loss.detach().item()),
@@ -1854,6 +2142,8 @@ class DyMETrainer(Trainer):
                         global_step=global_step,
                         tokenizer=self.processing_class.tokenizer,
                         student_completion_logits=student_completion_logits,
+                        loss_type=opsd_loss_type,
+                        srkl_alpha=srkl_alpha,
                     )
                 opsd_loss_tensor = opsd_loss
                 loss = grpo_weight * loss + opsd_weight * opsd_loss
@@ -1862,6 +2152,7 @@ class DyMETrainer(Trainer):
                     "opsd_loss",
                     "combined GRPO + OPSD loss",
                     opsd_loss=float(opsd_loss.detach().item()),
+                    loss_type=opsd_loss_type,
                     combined_loss=float(loss.detach().item()),
                 )
             else:
@@ -1877,6 +2168,63 @@ class DyMETrainer(Trainer):
             self._metrics[mode].setdefault("loss/opsd", []).append(
                 self.accelerator.gather_for_metrics(opsd_metric_value).mean().item()
             )
+            if inputs.get("teacher_traj_mask") is not None:
+                teacher_traj_mask = inputs["teacher_traj_mask"]
+                teacher_traj_indices = (
+                    teacher_traj_mask.nonzero(as_tuple=True)[0].tolist()
+                    if teacher_traj_mask.any()
+                    else []
+                )
+                local_traj_count = len(teacher_traj_indices)
+                global_max_traj = local_traj_count
+                if self.accelerator.num_processes > 1:
+                    count_tensor = torch.tensor(
+                        [local_traj_count], device=loss.device, dtype=torch.long
+                    )
+                    torch.distributed.all_reduce(
+                        count_tensor, op=torch.distributed.ReduceOp.MAX
+                    )
+                    global_max_traj = int(count_tensor.item())
+                teacher_traj_loss_tensor = None
+                if global_max_traj > 0:
+                    traj_cfg = self._teacher_trajectory_config()
+                    traj_inputs = dict(inputs)
+                    traj_inputs["completion_ids"] = inputs["teacher_traj_completion_ids"]
+                    traj_inputs["completion_mask"] = inputs["teacher_traj_completion_mask"]
+                    with opsd_debug.timed("opsd_loss", "compute_teacher_traj_fkl_loss"):
+                        teacher_traj_loss_tensor = compute_vlm_opsd_loss_masked_batch(
+                            model,
+                            teacher_traj_indices,
+                            list(range(prompt_ids.size(0))),
+                            traj_inputs,
+                            beta=beta,
+                            processor=self.processing_class,
+                            teacher_model=self.teacher_model,
+                            acc_gate=False,
+                            pad_to_count=global_max_traj,
+                            global_step=global_step,
+                            tokenizer=self.processing_class.tokenizer,
+                            loss_type=traj_cfg["loss_type"],
+                            srkl_alpha=srkl_alpha,
+                        )
+                    loss = loss + traj_cfg["weight"] * teacher_traj_loss_tensor
+                    combined_loss_tensor = loss
+                    opsd_debug.log(
+                        "opsd_loss",
+                        "added teacher trajectory distillation loss",
+                        teacher_traj_loss=float(teacher_traj_loss_tensor.detach().item()),
+                        teacher_traj_weight=traj_cfg["weight"],
+                        teacher_traj_loss_type=traj_cfg["loss_type"],
+                        combined_loss=float(loss.detach().item()),
+                    )
+                metric_value = (
+                    teacher_traj_loss_tensor.detach()
+                    if teacher_traj_loss_tensor is not None
+                    else torch.zeros((), device=loss.device, dtype=loss.dtype)
+                )
+                self._metrics[mode].setdefault("loss/teacher_traj_fkl", []).append(
+                    self.accelerator.gather_for_metrics(metric_value).mean().item()
+                )
             if opsd_indices and opsd_debug.should_log_detail(global_step):
                 opsd_diagnostics.log_opsd_jsd_diagnostics(global_step=global_step)
             if self.accelerator.num_processes > 1:

@@ -12,6 +12,7 @@ from opsd_utils.vocab_align import align_cross_model_logits
 from opsd_utils.opsd_loss import (
     compute_vlm_opsd_loss_masked_batch,
     generalized_jsd_loss,
+    token_distillation_loss,
 )
 
 
@@ -77,3 +78,13 @@ def test_generalized_jsd_loss_mismatched_vocab_sizes():
     loss = generalized_jsd_loss(s, t, mask)
     assert loss.ndim == 0
     assert loss.requires_grad
+
+
+def test_token_distillation_loss_srkl_and_fkl():
+    student = torch.randn(1, 4, 64, requires_grad=True)
+    teacher = torch.randn(1, 4, 64)
+    mask = torch.ones(1, 4)
+    srkl = token_distillation_loss(student, teacher, mask, loss_type="srkl", srkl_alpha=0.1)
+    fkl = token_distillation_loss(student, teacher, mask, loss_type="fkl")
+    assert srkl.ndim == 0 and srkl.requires_grad
+    assert fkl.ndim == 0 and fkl.requires_grad

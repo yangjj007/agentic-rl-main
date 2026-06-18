@@ -11,6 +11,8 @@ _CONFIG_ALIASES: dict[str, str] = {
     "rlsd_chartqa": "config.config_rlsd_chartqa",
     "opd_7b": "config.config_opd_7b_chartqa",
     "opd_7b_chartqa": "config.config_opd_7b_chartqa",
+    "opd_7b_dyme_probe": "config.config_opd_7b_dyme_probe",
+    "opd_7b_probe": "config.config_opd_7b_dyme_probe",
     "llavacot": "config.config_llavacot",
     "low": "config.config_low",
     "aok": "config.config_aok",

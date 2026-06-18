@@ -25,6 +25,11 @@ model_args = {}  # Use {"torch_dtype": torch.bfloat16} if desired and supported
 
 _eval_parser = argparse.ArgumentParser(add_help=False)
 _eval_parser.add_argument("--model_path", default=None)
+_eval_parser.add_argument("--max_new_tokens", type=int, default=int(os.environ.get("DYME_EVAL_MAX_NEW_TOKENS", "1024")))
+_eval_parser.add_argument("--do_sample", action="store_true", default=os.environ.get("DYME_EVAL_DO_SAMPLE", "0").lower() in ("1", "true", "yes", "on"))
+_eval_parser.add_argument("--temperature", type=float, default=float(os.environ.get("DYME_EVAL_TEMPERATURE", "0.0")))
+_eval_parser.add_argument("--top_p", type=float, default=float(os.environ.get("DYME_EVAL_TOP_P", "1.0")))
+_eval_parser.add_argument("--repetition_penalty", type=float, default=float(os.environ.get("DYME_EVAL_REPETITION_PENALTY", "1.0")))
 _eval_args, _ = _eval_parser.parse_known_args()
 model_id = (
     _eval_args.model_path
@@ -109,10 +114,19 @@ def run_kh_batch(batch_data_list):  # Renamed from run_kh, takes a batch
     }
 
     with unwrap_model_for_generation(model, accelerator) as unwrapped_model_instance:
+        gen_kwargs = {
+            "max_new_tokens": _eval_args.max_new_tokens,
+            "do_sample": _eval_args.do_sample,
+            "repetition_penalty": _eval_args.repetition_penalty,
+            "pad_token_id": processor.tokenizer.pad_token_id,
+            "eos_token_id": processor.tokenizer.eos_token_id,
+        }
+        if _eval_args.do_sample:
+            gen_kwargs["temperature"] = max(_eval_args.temperature, 1e-5)
+            gen_kwargs["top_p"] = _eval_args.top_p
         generated_ids = unwrapped_model_instance.generate(
             **inputs,
-            max_new_tokens=1024,
-            do_sample=False,
+            **gen_kwargs,
         )
 
     input_ids_length = inputs['input_ids'].shape[1]
@@ -123,6 +137,20 @@ def run_kh_batch(batch_data_list):  # Renamed from run_kh, takes a batch
         skip_special_tokens=True,  # Special tokens like <eos> are removed. <image> might be too.
     )
     return [text.strip('.').strip() for text in generated_texts]
+
+
+def classify_output_type(text: str) -> str:
+    text = text or ""
+    lower = text.lower()
+    if "光" * 6 in text:
+        return "char_repeat_guang"
+    if "goalie" in lower:
+        return "goalie"
+    if lower.count("answer:") != 1:
+        return "answer_flag"
+    if all(k in lower for k in ("goal", "observation", "reasoning")):
+        return "full_cot"
+    return "other"
 
 
 # --- Main Evaluation Logic ---
@@ -202,6 +230,7 @@ if task == 'chart':
             pbar = tqdm(total=len(eval_datasets_local), desc=f"Eval Proc {process_index}", dynamic_ncols=True)
 
         dt_record_local['res'] = []
+        dt_record_local['output_types'] = {}
         num_local_batches = (len(eval_datasets_local) + BATCH_SIZE - 1) // BATCH_SIZE
 
         for batch_idx_local in range(num_local_batches):
@@ -224,6 +253,8 @@ if task == 'chart':
 
                 score = eval_one_chart(parsed_pred_answer, ground_truth_answer)  # nlp object is global
                 dt_record_local['res'].append(score)
+                out_type = classify_output_type(full_pred_text)
+                dt_record_local['output_types'][out_type] = dt_record_local['output_types'].get(out_type, 0) + 1
 
                 # (Optional) Main process prints a few prediction details
                 if accelerator.is_main_process:
@@ -257,9 +288,12 @@ if task == 'chart':
 
                 if accelerator.is_main_process:
                     current_global_scores_list = []
+                    output_type_counts = {}
                     for process_data_dict in gathered_all_processes_data:
                         if process_data_dict and 'res' in process_data_dict:
                             current_global_scores_list.extend(process_data_dict['res'])
+                            for key, value in process_data_dict.get('output_types', {}).items():
+                                output_type_counts[key] = output_type_counts.get(key, 0) + value
 
                     total_samples_processed_globally = len(current_global_scores_list)
 
@@ -280,6 +314,7 @@ if task == 'chart':
                         if accelerator.is_main_process:
                             print(f"Global samples processed: {total_samples_processed_globally} / {total_items}")
                             print(f"Current Global Mean Accuracy: {mean_acc_global:.4f}")
+                            print(f"Output type counts: {output_type_counts}")
                             if pbar:
                                 pbar.set_description(
                                     f"Global Acc: {mean_acc_global:.4f} ({total_samples_processed_globally}/{total_items})"

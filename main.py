@@ -10,7 +10,11 @@ This script handles:
 5. Setting up and running the GPRO trainer.
 """
 import argparse
+import json
 import os
+import subprocess
+import sys
+from datetime import datetime
 from functools import partial
 from typing import Dict, Any
 
@@ -99,6 +103,91 @@ def _try_wandb_login() -> bool:
         return bool(key and len(key) >= 40)
     except Exception:
         return False
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return repr(value)
+
+
+def _run_text_command(command: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        text = (result.stdout or "") + (result.stderr or "")
+        return text.strip()
+    except Exception as exc:
+        return f"<command failed: {exc!r}>"
+
+
+def write_run_config_snapshot(
+    *,
+    output_dir: str,
+    config_path: str,
+    model_config: Dict[str, Any],
+    training_config: Dict[str, Any],
+    rl_config: Dict[str, Any],
+    client_config: Dict[str, Any],
+    dataset_config: Dict[str, Any],
+    opsd_config: Dict[str, Any],
+    training_args: GRPOConfig,
+    generation_config,
+) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+    resolved = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "config_arg": config_path,
+        "model": model_config,
+        "training": training_config,
+        "rl": rl_config,
+        "client": client_config,
+        "dataset": dataset_config,
+        "opsd": opsd_config,
+        "training_args": training_args.to_dict() if hasattr(training_args, "to_dict") else vars(training_args),
+    }
+    files = {
+        "resolved_config.json": resolved,
+        "run_env.json": {
+            "argv": sys.argv,
+            "cwd": os.getcwd(),
+            "env": {
+                k: v
+                for k, v in sorted(os.environ.items())
+                if k.startswith("DYME_")
+                or k.startswith("CUDA")
+                or k.startswith("ACCELERATE")
+                or k in {"WANDB_MODE", "WANDB_DISABLED"}
+            },
+        },
+        "generation_config.json": (
+            generation_config.to_dict()
+            if hasattr(generation_config, "to_dict")
+            else _json_safe(generation_config)
+        ),
+    }
+    for name, payload in files.items():
+        with open(os.path.join(output_dir, name), "w", encoding="utf-8") as f:
+            json.dump(_json_safe(payload), f, ensure_ascii=False, indent=2, sort_keys=True)
+    with open(os.path.join(output_dir, "git_status.txt"), "w", encoding="utf-8") as f:
+        f.write(_run_text_command(["git", "status", "--short"]))
+        f.write("\n\n")
+        f.write(_run_text_command(["git", "diff", "--stat"]))
+        f.write("\n")
+    with open(os.path.join(output_dir, "training_command.txt"), "w", encoding="utf-8") as f:
+        f.write(" ".join(sys.argv))
+        f.write("\n")
 
 
 def setup_accelerator_and_wandb(bf16, want_wandb: bool) -> tuple[Accelerator, bool]:
@@ -524,6 +613,19 @@ def main():
         teacher_model=teacher_model,
         teacher_model_config=teacher_model_config,
     )
+    if accelerator.is_main_process:
+        write_run_config_snapshot(
+            output_dir=training_args.output_dir,
+            config_path=args.config,
+            model_config=model_config,
+            training_config=training_config,
+            rl_config=rl_config,
+            client_config=client_config,
+            dataset_config=dataset_config,
+            opsd_config=opsd_config,
+            training_args=training_args,
+            generation_config=dyme_trainer.generation_config,
+        )
 
     # 8. Start Training
     dyme_trainer.train()
