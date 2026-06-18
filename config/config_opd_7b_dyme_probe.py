@@ -13,7 +13,7 @@ Teacher context is no-gold by default: format instructions + visual facts.
 import os
 
 import config.config_opd_7b_chartqa as base
-from config.env_overrides import env_bool, env_float, env_int, env_list, env_str
+from config.env_overrides import env_bool, env_float, env_int, env_list, env_optional_int, env_str
 from config.config import DEPLOT_CONFIG as _BASE_DEPLOT_CONFIG
 from data_utils.paths import OUTPUTS_DIR
 
@@ -33,6 +33,9 @@ SRKL_ALPHA = 0.1
 OPSD_WEIGHT = 1.0
 GRPO_WEIGHT = 1.0
 TEACHER_TRAJ_FKL_WEIGHT = 0.5
+
+# Full ChartQA run: follow num_train_epochs unless DYME_MAX_STEPS is explicitly set.
+NUM_TRAIN_EPOCHS = env_int("DYME_NUM_TRAIN_EPOCHS", 10)
 
 # Optional env overrides (ablation / server paths)
 OPSD_MODE = env_str("DYME_OPSD_MODE", OPSD_MODE)
@@ -56,7 +59,13 @@ MODEL_CONFIG = dict(base.MODEL_CONFIG)
 _dyme_args = {
     **base.CONFIG["training"]["dyme_args"],
     "output_dir": OUTPUT_DIR,
+    "num_train_epochs": NUM_TRAIN_EPOCHS,
 }
+# Do not inherit max_steps from a prior smoke shell export; full run uses epochs.
+_dyme_args.pop("max_steps", None)
+_max_steps = env_optional_int("DYME_MAX_STEPS")
+if _max_steps is not None:
+    _dyme_args["max_steps"] = _max_steps
 
 DYME_OPSD_CONFIG = {
     **base.DYME_OPSD_CONFIG,
