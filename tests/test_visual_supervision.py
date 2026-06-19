@@ -11,7 +11,7 @@ import pytest
 from opsd_utils.visual_supervision_log import VisualBatchRecorder
 from reward_utils.template_pool import TemplatePool
 from reward_utils.visual_checker_teacher import TeacherVisualChecker, _score_from_label
-from reward_utils.visual_ic import _parse_ic_json, extract_visual_facts_teacher
+from reward_utils.visual_ic import _parse_ic_json, build_prompt_s1, extract_visual_facts_teacher
 
 
 def test_score_from_label():
@@ -19,6 +19,14 @@ def test_score_from_label():
     assert _score_from_label("medium")[0] == 0.5
     assert _score_from_label("low")[0] == 0.0
     assert _score_from_label("unknown")[0] == 0.0
+
+
+def test_build_prompt_s1_with_json_braces():
+    prompt = build_prompt_s1("What is the ratio between two countries?")
+    assert "__QUESTION__" not in prompt
+    assert "What is the ratio" in prompt
+    assert '"description"' in prompt
+    assert '{"name": "person"' in prompt
 
 
 def test_parse_ic_json_extracts_object():

@@ -26,8 +26,13 @@ Example format:
 
 Analyze the attached image and provide the visual facts in the required JSON format.
 For context, the user will be asked this question about the image (do not answer the question, just use it for context):
-"{question}"
+"__QUESTION__"
 """
+
+
+def build_prompt_s1(question: str) -> str:
+    """Insert question without str.format (JSON braces in template are literal)."""
+    return PROMPT_S1.replace("__QUESTION__", str(question or ""))
 
 
 def _parse_ic_json(text: str) -> tuple[Optional[dict], Optional[str]]:
@@ -108,7 +113,7 @@ def extract_visual_facts_teacher(
             recorder.record_ic(**meta)
         return ic_text, meta
 
-    prompt = PROMPT_S1.format(question=question)
+    prompt = build_prompt_s1(question)
     try:
         output, latency_ms = teacher_generate_one(
             teacher_model,
