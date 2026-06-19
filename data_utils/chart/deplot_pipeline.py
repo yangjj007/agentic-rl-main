@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import glob
 import json
+import multiprocessing as mp
 import os
 from collections import Counter
 from typing import Any, Optional
@@ -473,12 +474,25 @@ def resolve_deplot_devices(
     return ["cpu"]
 
 
+def _worker_cuda_device(device: str) -> str:
+    """Pin a spawned worker to one physical GPU via CUDA_VISIBLE_DEVICES."""
+    dev = (device or "").strip()
+    if dev.startswith("cuda:"):
+        gpu_id = dev.split(":", 1)[1]
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
+        return "cuda"
+    if dev.startswith("cuda"):
+        return dev
+    return dev or "cpu"
+
+
 def _deplot_shard_worker(payload: dict[str, Any]) -> dict[str, Any]:
     """Process one pending shard on a single GPU (spawn-safe entrypoint)."""
     shard: list[tuple[int, str, str]] = payload["shard"]
+    worker_device = _worker_cuda_device(str(payload["device"]))
     runner = DePlotRunner(
         model_id=payload["model_id"],
-        device=payload["device"],
+        device=worker_device,
         max_new_tokens=payload["max_new_tokens"],
     )
     if not runner.load():
@@ -666,7 +680,8 @@ def enrich_entries_with_deplot(
                 disable=not show_progress,
                 dynamic_ncols=True,
             )
-            with ProcessPoolExecutor(max_workers=len(payloads)) as pool:
+            mp_ctx = mp.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=len(payloads), mp_context=mp_ctx) as pool:
                 futures = [pool.submit(_deplot_shard_worker, payload) for payload in payloads]
                 for fut in as_completed(futures):
                     result = fut.result()

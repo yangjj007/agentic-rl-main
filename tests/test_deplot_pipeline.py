@@ -123,6 +123,14 @@ def test_deplot_error_tracker_emit(capsys):
     assert "failure summary" in out
 
 
+def test_worker_cuda_device_sets_visible_devices(monkeypatch):
+    from data_utils.chart.deplot_pipeline import _worker_cuda_device
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    assert _worker_cuda_device("cuda:3") == "cuda"
+    assert os.environ.get("CUDA_VISIBLE_DEVICES") == "3"
+
+
 def test_build_script_disabled(tmp_path):
     import subprocess
 
