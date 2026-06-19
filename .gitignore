@@ -101,6 +101,7 @@ chartqa_output/
 # ChartQA visual-facts enriched JSON (generate on server via scripts/build_visual_facts_*.py)
 data/chartqa/train_medium_vf_hint.json
 data/chartqa/train_medium_vf_full.json
+data/chartqa/train_fast_*.json
 data/chartqa/deplot_cache.json
 data/chartqa/deplot_cache.json.tmp
 aokvqa_output/

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Fast baseline: offline SFT on a small ChartQA subset (1 epoch).
+set -euo pipefail
+
+TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${TEST_DIR}/launch_utils.sh"
+
+DYME_CONFIG="${DYME_CONFIG:-test/config/config_rlsd_chartqa.py}"
+export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_accelerate_config)}"
+
+prepare_fast_test_data
+
+NUM_PROCESSES="$(detect_num_gpus)"
+print_fast_plan "sft" "${DYME_CONFIG}"
+
+LOG_FILE="$(fast_train_log_path train_test_sft)"
+echo "Writing log to: ${LOG_FILE}"
+
+accelerate launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PROCESSES}" main_sft.py \
+  --config "${DYME_CONFIG}" \
+  "$@" \
+  2>&1 | tee "${LOG_FILE}"

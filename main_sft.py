@@ -59,6 +59,10 @@ def main() -> None:
     data_func = define_task_data_func(task, mode="sft")
     train_list = data_func(json_path=config["dataset"]["train_dataset"])
     train_dataset = Dataset.from_list(train_list)
+    max_n = config["dataset"].get("max_train_samples")
+    if max_n is not None and int(max_n) > 0:
+        cap = min(int(max_n), len(train_dataset))
+        train_dataset = train_dataset.select(range(cap))
 
     label_id = processor.tokenizer.convert_tokens_to_ids("<|im_start|>")
     data_collator = partial(collate_fn, processor=processor, label_id=label_id)

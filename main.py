@@ -367,6 +367,11 @@ def prepare_datasets(task: str, dataset_config: Dict[str, Any], mode='rl') -> (D
     _log_startup(f"Loading training data: {dataset_config['train_dataset']}")
     train_data_list = data_func(json_path=dataset_config['train_dataset'])
     train_dataset = Dataset.from_list(train_data_list)
+    max_n = dataset_config.get("max_train_samples")
+    if max_n is not None and int(max_n) > 0:
+        cap = min(int(max_n), len(train_dataset))
+        train_dataset = train_dataset.select(range(cap))
+        _log_startup(f"Training dataset capped: {cap} samples (max_train_samples)")
     _log_startup(f"Training dataset ready: {len(train_dataset)} samples")
 
     # Create evaluation dataset
