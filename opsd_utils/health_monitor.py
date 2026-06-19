@@ -454,6 +454,13 @@ class TrainingHealthMonitor:
             "visual/checker_mean": "visual/checker_mean",
             "visual/refiner_changed_rate": "visual/refiner_changed_rate",
             "visual/pool_updates": "visual/pool_updates",
+            "visual/ic_latency_ms": "visual/ic_latency_ms",
+            "visual/checker_latency_ms": "visual/checker_latency_ms",
+            "visual/refiner_latency_ms": "visual/refiner_latency_ms",
+            "visual/ic_calls": "visual/ic_calls",
+            "visual/checker_calls": "visual/checker_calls",
+            "visual/refiner_calls": "visual/refiner_calls",
+            "visual/teacher_batch_calls": "visual/teacher_batch_calls",
         }
         for metric_key, field_key in mapping.items():
             val = snapshot.get(field_key)

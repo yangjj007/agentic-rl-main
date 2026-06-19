@@ -19,6 +19,7 @@ def build_visual_supervision_config() -> dict:
         "ic_source": env_str("DYME_VISUAL_IC_SOURCE", "teacher_image"),
         "prefetch_ic": env_bool("DYME_VISUAL_PREFETCH_IC", True),
         "dedupe_per_batch": env_bool("DYME_VISUAL_DEDUPE", True),
+        "teacher_batch_size": 4,
         "checker": {
             "enabled": VISUAL_CHECKER_ENABLED,
             "model_source": "loaded_teacher",

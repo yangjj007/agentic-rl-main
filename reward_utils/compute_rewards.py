@@ -1,5 +1,5 @@
 import concurrent.futures
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .checker import RewardCalculator
 
 def split_initial_context(text: str):
@@ -108,17 +108,27 @@ def calculate_rewards_sequential(
     format_rewards = []
     answer_rewards = []
     thinking_rewards = []
+
+    if hasattr(checker, "prepare_thinking_jobs") and hasattr(checker, "batch_score_thinking"):
+        jobs = checker.prepare_thinking_jobs(responses, prompts, answers, hints, task)
+        if jobs:
+            checker.batch_score_thinking(jobs, task)
+
     for i in range(num_samples):
         checker._current_sample_idx = i  # noqa: SLF001 — teacher checker batch context
         format_rewards.append(checker.get_format_reward(responses[i], task=task))
         answer_rewards.append(
             checker.get_answer_reward(predictions[i], in_answers[i], task)
         )
-        thinking_rewards.append(
-            checker.get_thinking_reward_prompt(
-                responses[i], prompts[i], answers[i], hints[i], task
+        cache = getattr(checker, "_thinking_score_cache", None)
+        if cache is not None and i in cache:
+            thinking_rewards.append(cache[i])
+        else:
+            thinking_rewards.append(
+                checker.get_thinking_reward_prompt(
+                    responses[i], prompts[i], answers[i], hints[i], task
+                )
             )
-        )
 
     rewards = [
         0 if f == 0 else f + a + t
@@ -185,6 +195,21 @@ def refine_context_sequential(
     images = getattr(refiner, "_batch_images", None) or []
 
     if not dedupe:
+        if hasattr(refiner, "batch_refine_hints"):
+            from reward_utils.visual_refiner_teacher import _RefinerJob
+
+            jobs = [
+                _RefinerJob(
+                    sample_idx=i,
+                    question=q,
+                    hint=h,
+                    reference_answer=a,
+                )
+                for i, (q, h, a) in enumerate(zip(questions, hints, reference_answers))
+            ]
+            results = refiner.batch_refine_hints(jobs, task)
+            return [results.get(i, hints[i]) for i in range(len(questions))]
+
         refined = []
         for i, (q, h, a) in enumerate(zip(questions, hints, reference_answers)):
             refiner._current_sample_idx = i  # noqa: SLF001
@@ -198,6 +223,33 @@ def refine_context_sequential(
         image = images[i] if i < len(images) else None
         key = refine_dedupe_key(q, h, image)
         groups.setdefault(key, []).append(i)
+
+    if hasattr(refiner, "batch_refine_hints"):
+        from reward_utils.visual_refiner_teacher import _RefinerJob
+
+        leader_jobs = [
+            _RefinerJob(
+                sample_idx=indices[0],
+                question=questions[indices[0]],
+                hint=hints[indices[0]],
+                reference_answer=reference_answers[indices[0]],
+            )
+            for indices in groups.values()
+        ]
+        batch_results = refiner.batch_refine_hints(leader_jobs, task)
+        for indices in groups.values():
+            i0 = indices[0]
+            result = batch_results.get(i0, hints[i0])
+            for i in indices:
+                refined[i] = result
+                if i != i0 and hasattr(refiner, "record_refiner_dedupe"):
+                    refiner.record_refiner_dedupe(
+                        sample_idx=i,
+                        result=result,
+                        hint=hints[i],
+                        source_idx=i0,
+                    )
+        return refined
 
     for indices in groups.values():
         i0 = indices[0]

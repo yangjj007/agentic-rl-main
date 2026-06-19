@@ -98,6 +98,35 @@ class VisualBatchRecorder:
     pool_updates: int = 0
     artifacts: list[dict] = field(default_factory=list)
     route_bindings: list[dict] = field(default_factory=list)
+    ic_latency_ms: float = 0.0
+    checker_latency_ms: float = 0.0
+    refiner_latency_ms: float = 0.0
+    ic_calls: int = 0
+    checker_calls: int = 0
+    refiner_calls: int = 0
+    teacher_batch_calls: int = 0
+
+    def record_teacher_timing(
+        self,
+        kind: str,
+        *,
+        latency_ms: float,
+        n_calls: int = 1,
+        batch_size: int = 1,
+    ) -> None:
+        self.teacher_batch_calls += 1
+        if kind == "ic":
+            self.ic_latency_ms += float(latency_ms)
+            self.ic_calls += int(n_calls)
+        elif kind == "checker":
+            self.checker_latency_ms += float(latency_ms)
+            self.checker_calls += int(n_calls)
+        elif kind == "refiner":
+            self.refiner_latency_ms += float(latency_ms)
+            self.refiner_calls += int(n_calls)
+        else:
+            self.checker_latency_ms += float(latency_ms)
+            self.checker_calls += int(n_calls)
 
     def record_ic(self, **fields: Any) -> None:
         if fields.get("cache_hit"):
@@ -226,6 +255,13 @@ class VisualBatchRecorder:
             "visual/pool_updates": float(self.pool_updates),
             "visual/fallback_checker": float(self.checker_local_fallback),
             "visual/fallback_refiner": float(self.refiner_fallback),
+            "visual/ic_latency_ms": round(self.ic_latency_ms, 1),
+            "visual/checker_latency_ms": round(self.checker_latency_ms, 1),
+            "visual/refiner_latency_ms": round(self.refiner_latency_ms, 1),
+            "visual/ic_calls": float(self.ic_calls),
+            "visual/checker_calls": float(self.checker_calls),
+            "visual/refiner_calls": float(self.refiner_calls),
+            "visual/teacher_batch_calls": float(self.teacher_batch_calls),
         }
         log_visual("VISUAL-BATCH", "generate_summary", cfg=self.log_cfg, **summary)
 

@@ -142,6 +142,8 @@ def extract_visual_facts_teacher(
             max_new_tokens=max_new_tokens,
             do_sample=False,
             repetition_penalty=1.05,
+            recorder=recorder,
+            timing_kind="ic",
         )
         ic_obj, err = _parse_ic_json(output)
         if ic_obj is not None:
