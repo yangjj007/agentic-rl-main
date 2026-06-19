@@ -6,6 +6,7 @@ peft==0.17.0
 qwen_vl_utils
 wandb
 transformers==4.57.1
+tokenizers>=0.21.0,<0.23.0
 deepspeed==0.18.1
 pycocotools
 trl==0.23.1

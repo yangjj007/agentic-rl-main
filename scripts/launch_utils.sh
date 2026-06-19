@@ -181,6 +181,25 @@ print("[DyME] spaCy model ready: en_core_web_sm")
 PY
 }
 
+# transformers imports tokenizers at load time (GGUF integration path).
+ensure_tokenizers() {
+  python - <<'PY'
+import importlib.util
+import subprocess
+import sys
+
+if importlib.util.find_spec("tokenizers") is None:
+    print("[DyME] tokenizers missing; installing (required by transformers)...")
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "tokenizers>=0.21.0,<0.23.0"],
+    )
+
+import tokenizers
+
+print(f"[DyME] tokenizers ready: {tokenizers.__version__}")
+PY
+}
+
 # Read deplot.enabled from the Python training config (fallback: enabled).
 config_deplot_enabled() {
   local cfg="${1:-}"
@@ -205,6 +224,7 @@ prepare_chartqa_training_data() {
   export WANDB_DISABLED="${WANDB_DISABLED:-true}"
   export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-$(config_deplot_enabled "${cfg}")}"
   ensure_chartqa_vf_full
+  ensure_tokenizers
   ensure_spacy_model
 }
 
