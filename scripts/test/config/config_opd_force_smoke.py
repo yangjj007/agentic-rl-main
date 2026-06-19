@@ -54,7 +54,6 @@ _dyme_args = {
     "num_train_epochs": env_int("DYME_NUM_TRAIN_EPOCHS", 1),
     "max_completion_length": env_int("DYME_MAX_COMPLETION_LENGTH", 96),
     "per_device_train_batch_size": env_int("DYME_PER_DEVICE_TRAIN_BATCH_SIZE", 1),
-    "gradient_accumulation_steps": env_int("DYME_GRADIENT_ACCUMULATION_STEPS", 2),
 }
 
 _dataset = {

@@ -45,5 +45,6 @@ accelerate launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PR
   --config "${DYME_CONFIG}" \
   --mode rl \
   --opsd_enabled \
+  --no_wandb \
   "$@" \
   2>&1 | tee "${LOG_FILE}"
