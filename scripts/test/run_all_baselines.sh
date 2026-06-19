@@ -31,7 +31,7 @@ echo "    OPD  -> outputs/test-fast/opd-7b-ds/"
 echo "============================================================"
 
 bash "${TEST_DIR}/train_sft.sh"
-bash "${TEST_DIR}/train_dyme.sh"
 bash "${TEST_DIR}/train_opd.sh"
+bash "${TEST_DIR}/train_dyme.sh"
 
 echo "All fast baselines finished."
