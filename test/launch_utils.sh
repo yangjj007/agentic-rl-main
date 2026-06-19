@@ -26,8 +26,8 @@ fast_train_log_path() {
 print_fast_plan() {
   local baseline="${1:-}"
   local config_path="${2:-}"
-  local rl_epochs="${DYME_FAST_NUM_TRAIN_EPOCHS:-1}"
-  local sft_epochs="${DYME_FAST_SFT_EPOCHS:-1}"
+  local rl_epochs="${DYME_FAST_NUM_TRAIN_EPOCHS:-4}"
+  local sft_epochs="${DYME_FAST_SFT_EPOCHS:-4}"
   local est_steps_per_epoch="${DYME_FAST_EST_STEPS_PER_EPOCH:-600}"
   local cold_frac="${DYME_FAST_COLD_START_FRAC:-0.08}"
   local est_rl_steps=$((rl_epochs * est_steps_per_epoch))

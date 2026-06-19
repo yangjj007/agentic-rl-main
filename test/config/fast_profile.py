@@ -14,8 +14,8 @@ from config.env_overrides import env_float, env_int, env_str
 from data_utils.paths import OUTPUTS_DIR
 
 # Full dataset; reduce epochs instead of subsampling.
-RL_EPOCHS = env_int("DYME_FAST_NUM_TRAIN_EPOCHS", 1)
-SFT_EPOCHS = env_int("DYME_FAST_SFT_EPOCHS", 1)
+RL_EPOCHS = env_int("DYME_FAST_NUM_TRAIN_EPOCHS", 4)
+SFT_EPOCHS = env_int("DYME_FAST_SFT_EPOCHS", 4)
 COLD_START_FRAC = env_float("DYME_FAST_COLD_START_FRAC", 0.08)
 OUTPUT_ROOT = env_str("DYME_FAST_OUTPUT_ROOT", os.path.join(OUTPUTS_DIR, "test-fast"))
 # Gate warmup scaling when total step count is not known at import time.
