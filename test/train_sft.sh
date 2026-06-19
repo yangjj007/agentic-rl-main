@@ -5,7 +5,7 @@ set -euo pipefail
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${TEST_DIR}/launch_utils.sh"
 
-DYME_CONFIG="${DYME_CONFIG:-test/config/config_rlsd_chartqa.py}"
+DYME_CONFIG="${DYME_CONFIG:-test/config_rlsd_chartqa.py}"
 export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_accelerate_config)}"
 
 prepare_fast_test_data "${DYME_CONFIG}"

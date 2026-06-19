@@ -1,16 +1,16 @@
 """
 Fast offline SFT baseline on full ChartQA with fewer epochs.
 
-Usage:
-  bash test/train_sft.sh
-  accelerate launch main_sft.py --config test/config/config_rlsd_chartqa.py
+Usage (from test/):
+  bash train_sft.sh
+  accelerate launch ../main_sft.py --config test/config_rlsd_chartqa.py
 """
 import os
 import sys
 
-_test_cfg_dir = os.path.dirname(os.path.abspath(__file__))
-if _test_cfg_dir not in sys.path:
-    sys.path.insert(0, _test_cfg_dir)
+_test_dir = os.path.dirname(os.path.abspath(__file__))
+if _test_dir not in sys.path:
+    sys.path.insert(0, _test_dir)
 
 import config.config_rlsd_chartqa as base
 from fast_profile import OUTPUT_ROOT, apply_to_config

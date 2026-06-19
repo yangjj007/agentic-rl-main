@@ -9,12 +9,12 @@ cd "${ROOT}"
 source "${ROOT}/scripts/launch_utils.sh"
 
 export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-0}"
-export DYME_LOG_DIR="${DYME_LOG_DIR:-${ROOT}/outputs/test-fast/logs}"
+export DYME_LOG_DIR="${DYME_LOG_DIR:-${TEST_DIR}/outputs/logs}"
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 export WANDB_DISABLED="${WANDB_DISABLED:-true}"
 
 prepare_fast_test_data() {
-  local cfg="${1:-test/config/config_rlsd_chartqa.py}"
+  local cfg="${1:-test/config_rlsd_chartqa.py}"
   prepare_chartqa_training_data "${cfg}"
 }
 
@@ -52,6 +52,6 @@ PY
     echo "OPD cold-start (embedded SFT): ~${cold_steps}/${est_rl_steps} steps (${cold_frac} of total)"
     echo "OPD RL phase after cold start: ~$((est_rl_steps - cold_steps)) steps"
   fi
-  echo "output root: outputs/test-fast/"
+  echo "output root: test/outputs/"
   print_launch_plan
 }
