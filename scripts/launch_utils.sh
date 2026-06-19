@@ -68,6 +68,17 @@ resolve_deepspeed_zero0_config() {
   fi
 }
 
+resolve_deepspeed_zero1_config() {
+  # ZeRO-1: optimizer-state sharding — default when ZeRO-0 OOMs on teacher+student.
+  local num_gpus
+  num_gpus="$(detect_num_gpus)"
+  if [[ "${num_gpus}" -ge 8 ]]; then
+    echo "default_config_8gpu_deepspeed_zero1.yaml"
+  else
+    echo "default_config_deepspeed_zero1.yaml"
+  fi
+}
+
 resolve_accelerate_config() {
   # Explicit override always wins.
   if [[ -n "${ACCELERATE_CONFIG:-}" ]]; then

@@ -22,7 +22,7 @@ if [[ -n "${DYME_TRAIN_MAX_STEPS:-}" ]]; then
   export DYME_MAX_STEPS="${DYME_TRAIN_MAX_STEPS}"
 fi
 
-export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_deepspeed_zero0_config)}"
+export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_deepspeed_zero1_config)}"
 
 prepare_chartqa_training_data "${DYME_CONFIG}"
 
