@@ -42,6 +42,12 @@ def main():
     parser.add_argument("--max-samples", type=int, default=0, help="0 = all entries")
     parser.add_argument("--model-id", default="google/deplot")
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        default=False,
+        help="Disable tqdm progress bars",
+    )
     args = parser.parse_args()
 
     with open(args.input, encoding="utf-8") as f:
@@ -58,6 +64,7 @@ def main():
         only_missing=args.only_missing,
         max_samples=args.max_samples,
         device=None if args.device == "auto" else args.device,
+        show_progress=not args.no_progress,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)

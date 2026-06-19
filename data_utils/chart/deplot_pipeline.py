@@ -6,6 +6,8 @@ import json
 import os
 from typing import Any, Optional
 
+from tqdm import tqdm
+
 from data_utils.paths import resolve_image_path, resolve_model_path
 
 DEFAULT_MODEL_ID = "google/deplot"
@@ -362,6 +364,7 @@ def enrich_entries_with_deplot(
     only_missing: bool = False,
     max_samples: int = 0,
     device: Optional[str] = None,
+    show_progress: bool = True,
 ) -> dict[str, int]:
     """
     Fill visual_fact_deplot on entries in-place.
@@ -384,10 +387,19 @@ def enrich_entries_with_deplot(
     cache = load_deplot_cache(cache_path)
     runner = DePlotRunner(model_id=model_id, device=device, max_new_tokens=max_new_tokens)
     model_ok = runner.load()
+    if model_ok and show_progress:
+        print(f"[DePlot] model ready; scanning {len(work_entries)} records")
 
     pending: list[tuple[int, str, str]] = []
 
-    for idx, entry in enumerate(work_entries):
+    scan_bar = tqdm(
+        work_entries,
+        desc="DePlot prep",
+        unit="rec",
+        disable=not show_progress,
+        dynamic_ncols=True,
+    )
+    for idx, entry in enumerate(scan_bar):
         if not needs_deplot_processing(
             entry, replace_placeholder=replace_placeholder, only_missing=only_missing
         ):
@@ -413,9 +425,31 @@ def enrich_entries_with_deplot(
 
         pending.append((idx, key, key))
 
+        if show_progress:
+            scan_bar.set_postfix(
+                pending=len(pending),
+                cached=stats["cached"],
+                skipped=stats["skipped"],
+                placeholder=stats["placeholder"],
+            )
+
     if pending and model_ok:
         bs = max(1, batch_size)
-        for start in range(0, len(pending), bs):
+        n_pending = len(pending)
+        if show_progress:
+            tqdm.write(
+                f"[DePlot] inference: {n_pending} images "
+                f"(cached={stats['cached']} skipped={stats['skipped']} "
+                f"placeholder={stats['placeholder']}, batch_size={bs})"
+            )
+        infer_bar = tqdm(
+            total=n_pending,
+            desc="DePlot infer",
+            unit="img",
+            disable=not show_progress,
+            dynamic_ncols=True,
+        )
+        for start in range(0, n_pending, bs):
             chunk = pending[start : start + bs]
             paths = [p[2] for p in chunk]
             tables = runner.generate_batch_with_oom_retry(paths, batch_size=bs)
@@ -436,5 +470,14 @@ def enrich_entries_with_deplot(
                     stats["placeholder"] += 1
             if cache_path and cache:
                 save_deplot_cache(cache_path, cache)
+            if show_progress:
+                infer_bar.update(len(chunk))
+                infer_bar.set_postfix(
+                    real=stats["real"],
+                    failed=stats["failed"],
+                    cached=stats["cached"],
+                )
+        if show_progress:
+            infer_bar.close()
 
     return stats
