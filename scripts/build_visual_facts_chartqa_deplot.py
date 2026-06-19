@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_utils.chart.deplot_pipeline import enrich_entries_with_deplot
+from data_utils.chart.deplot_pipeline import enrich_entries_with_deplot, resolve_deplot_devices
 from data_utils.paths import project_path
 
 
@@ -43,6 +43,17 @@ def main():
     parser.add_argument("--model-id", default="google/deplot")
     parser.add_argument("--device", default="auto")
     parser.add_argument(
+        "--devices",
+        default="",
+        help="Comma-separated CUDA devices, e.g. cuda:0,cuda:1 (overrides --device)",
+    )
+    parser.add_argument(
+        "--all-gpus",
+        action="store_true",
+        default=False,
+        help="Use every visible CUDA device (one DePlot worker per GPU)",
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         default=False,
@@ -52,6 +63,12 @@ def main():
 
     with open(args.input, encoding="utf-8") as f:
         data = json.load(f)
+
+    device_list = resolve_deplot_devices(
+        devices=[d.strip() for d in args.devices.split(",") if d.strip()] or None,
+        device=None if args.device == "auto" else args.device,
+        use_all_gpus=args.all_gpus,
+    )
 
     stats = enrich_entries_with_deplot(
         data,
@@ -63,7 +80,7 @@ def main():
         replace_placeholder=args.replace_placeholder,
         only_missing=args.only_missing,
         max_samples=args.max_samples,
-        device=None if args.device == "auto" else args.device,
+        devices=device_list,
         show_progress=not args.no_progress,
     )
 
@@ -76,6 +93,13 @@ def main():
         f"real={stats['real']} cached={stats['cached']} "
         f"placeholder={stats['placeholder']} skipped={stats['skipped']} failed={stats['failed']}"
     )
+    if stats.get("failed", 0) > 0:
+        print(
+            "[DePlot] WARNING: some images failed inference; "
+            "see failure summary above. Placeholder rows were written.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 if __name__ == "__main__":

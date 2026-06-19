@@ -22,6 +22,32 @@ fast_train_log_path() {
   train_log_path "${prefix}"
 }
 
+run_test_baseline() {
+  local name="$1"
+  local script="$2"
+  echo ""
+  echo ">>> [BASELINE] ${name} — bash ${script}"
+  if bash "${script}"; then
+    echo ">>> [BASELINE] ${name} OK"
+    return 0
+  fi
+  local ec=$?
+  echo "!!! [BASELINE] ${name} FAILED (exit ${ec})" >&2
+  local log_dir="${DYME_LOG_DIR:-${ROOT}/outputs/test-fast/logs}"
+  if [[ -d "${log_dir}" ]]; then
+    echo "!!! Recent log tails from ${log_dir}:" >&2
+    local f
+    while IFS= read -r f; do
+      [[ -f "${f}" ]] || continue
+      echo "----- tail -50 ${f} -----" >&2
+      tail -n 50 "${f}" >&2 || true
+    done < <(ls -t "${log_dir}"/*.log 2>/dev/null | head -3)
+  else
+    echo "!!! Log directory not found: ${log_dir}" >&2
+  fi
+  exit "${ec}"
+}
+
 print_fast_plan() {
   local baseline="${1:-}"
   local config_path="${2:-}"

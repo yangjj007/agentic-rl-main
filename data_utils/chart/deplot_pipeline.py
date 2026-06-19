@@ -4,6 +4,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+from collections import Counter
 from typing import Any, Optional
 
 from tqdm import tqdm
@@ -16,6 +17,47 @@ PLACEHOLDER_SOURCE = "deplot_placeholder"
 REAL_SOURCE = "google/deplot"
 HF_FONT_REPO = "ybelkada/fonts"
 HF_FONT_FILE = "Arial.TTF"
+MAX_ERROR_LOG_LINES = 20
+
+
+class DePlotErrorTracker:
+    """Collect inference failure reasons for end-of-run reporting."""
+
+    def __init__(self, *, max_log_lines: int = MAX_ERROR_LOG_LINES):
+        self.counts: Counter[str] = Counter()
+        self.samples: list[str] = []
+        self._max_log_lines = max_log_lines
+
+    def record(self, reason: str, detail: str = "", path: str = "") -> None:
+        self.counts[reason] += 1
+        if len(self.samples) >= self._max_log_lines:
+            return
+        parts = [f"[DePlot][{reason}]"]
+        if path:
+            parts.append(os.path.basename(path))
+        if detail:
+            parts.append(str(detail)[:240])
+        self.samples.append(" ".join(parts))
+
+    def merge(self, other: "DePlotErrorTracker") -> None:
+        self.counts.update(other.counts)
+        for line in other.samples:
+            if len(self.samples) >= self._max_log_lines:
+                break
+            if line not in self.samples:
+                self.samples.append(line)
+
+    def emit(self, *, show_progress: bool = True) -> None:
+        if not self.counts:
+            return
+        writer = tqdm.write if show_progress else print
+        writer("[DePlot] failure summary:")
+        for reason, count in self.counts.most_common():
+            writer(f"  - {reason}: {count}")
+        if self.samples:
+            writer("[DePlot] sample errors (first {}):".format(len(self.samples)))
+            for line in self.samples:
+                writer(f"  {line}")
 
 
 def _local_pretrained_kwargs(model_id: str) -> dict[str, bool]:
@@ -204,6 +246,7 @@ class DePlotRunner:
         dtype: Optional[str] = None,
         prompt: str = DEFAULT_PROMPT,
         max_new_tokens: int = 384,
+        error_tracker: Optional[DePlotErrorTracker] = None,
     ):
         self.model_id = model_id
         self.prompt = prompt
@@ -213,6 +256,7 @@ class DePlotRunner:
         self._processor = None
         self._model = None
         self._font_path: Optional[str] = None
+        self._error_tracker = error_tracker or DePlotErrorTracker()
 
     def _resolve_device(self):
         import torch
@@ -274,11 +318,34 @@ class DePlotRunner:
             self._model.eval()
             self._device_obj = device
             self.model_id = model_id
+            print(f"[DePlot] loaded on {device} (dtype={dtype})")
             return True
         except Exception as exc:
             print(f"[DePlot] model load failed: {exc}")
+            self._error_tracker.record("model_load_failed", str(exc))
             self._model = None
             return False
+
+    def _processor_call(self, images: list[Any], texts: list[str]) -> Any:
+        images_kwargs: dict[str, Any] = {}
+        if self._font_path:
+            images_kwargs["font_path"] = self._font_path
+        try:
+            return self._processor(
+                images=images,
+                text=texts,
+                return_tensors="pt",
+                images_kwargs=images_kwargs,
+            )
+        except TypeError:
+            if self._font_path:
+                return self._processor(
+                    images=images,
+                    text=texts,
+                    return_tensors="pt",
+                    font_path=self._font_path,
+                )
+            return self._processor(images=images, text=texts, return_tensors="pt")
 
     def generate_batch(self, image_paths: list[str]) -> list[str]:
         if not image_paths:
@@ -294,11 +361,13 @@ class DePlotRunner:
         results: list[str] = [""] * len(image_paths)
         for i, path in enumerate(image_paths):
             if not path or not os.path.isfile(path):
+                self._error_tracker.record("image_missing_at_infer", path=path or "<empty>")
                 continue
             try:
                 images.append(Image.open(path).convert("RGB"))
                 valid_indices.append(i)
-            except OSError:
+            except OSError as exc:
+                self._error_tracker.record("image_open_failed", str(exc), path)
                 continue
 
         if not images:
@@ -306,17 +375,38 @@ class DePlotRunner:
 
         device = self._device_obj
         texts = [self.prompt] * len(images)
-        proc_kwargs: dict[str, Any] = {"return_tensors": "pt"}
-        if self._font_path:
-            proc_kwargs["font_path"] = self._font_path
-        with torch.inference_mode():
-            inputs = self._processor(images=images, text=texts, **proc_kwargs)
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            outputs = self._model.generate(**inputs, max_new_tokens=self.max_new_tokens)
-            decoded = self._processor.batch_decode(outputs, skip_special_tokens=True)
+        try:
+            with torch.inference_mode():
+                inputs = self._processor_call(images, texts)
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                outputs = self._model.generate(**inputs, max_new_tokens=self.max_new_tokens)
+                if hasattr(outputs, "sequences"):
+                    outputs = outputs.sequences
+                decoded = self._processor.batch_decode(outputs, skip_special_tokens=True)
+        except Exception as exc:
+            for i, path in enumerate(image_paths):
+                if path:
+                    self._error_tracker.record(
+                        type(exc).__name__,
+                        str(exc)[:240],
+                        path,
+                    )
+            return results
 
-        for idx, text in zip(valid_indices, decoded):
-            results[idx] = (text or "").strip()
+        for out_idx, (img_idx, text) in enumerate(zip(valid_indices, decoded)):
+            cleaned = (text or "").strip()
+            results[img_idx] = cleaned
+            if not cleaned:
+                token_len = 0
+                try:
+                    token_len = int(outputs[out_idx].numel())
+                except Exception:
+                    pass
+                self._error_tracker.record(
+                    "empty_decode",
+                    f"token_len={token_len} preview={repr((text or '')[:80])}",
+                    image_paths[img_idx],
+                )
         return results
 
     def generate_batch_with_oom_retry(
@@ -341,15 +431,101 @@ class DePlotRunner:
                 pos += len(chunk_paths)
                 retries_left = max_retries
             except RuntimeError as exc:
-                if "out of memory" not in str(exc).lower() or bs <= 1 or retries_left <= 0:
-                    out.extend([""] * len(chunk_paths))
-                    pos += len(chunk_paths)
+                msg = str(exc)
+                if "out of memory" in msg.lower() and bs > 1 and retries_left > 0:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    bs = max(1, bs // 2)
+                    retries_left -= 1
+                    self._error_tracker.record(
+                        "oom_retry",
+                        f"reducing batch_size to {bs}: {msg[:160]}",
+                        chunk_paths[0] if chunk_paths else "",
+                    )
                     continue
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                bs = max(1, bs // 2)
-                retries_left -= 1
+                for path in chunk_paths:
+                    self._error_tracker.record("runtime_error", msg[:240], path)
+                out.extend([""] * len(chunk_paths))
+                pos += len(chunk_paths)
         return out
+
+
+def resolve_deplot_devices(
+    *,
+    devices: Optional[list[str]] = None,
+    device: Optional[str] = None,
+    use_all_gpus: bool = False,
+) -> list[str]:
+    """Resolve device list for DePlot inference."""
+    if devices:
+        return [d.strip() for d in devices if d and d.strip()]
+    if device and device != "auto":
+        return [device]
+    try:
+        import torch
+
+        if use_all_gpus and torch.cuda.is_available():
+            return [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+        if torch.cuda.is_available():
+            return ["cuda:0"]
+    except Exception:
+        pass
+    return ["cpu"]
+
+
+def _deplot_shard_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    """Process one pending shard on a single GPU (spawn-safe entrypoint)."""
+    shard: list[tuple[int, str, str]] = payload["shard"]
+    runner = DePlotRunner(
+        model_id=payload["model_id"],
+        device=payload["device"],
+        max_new_tokens=payload["max_new_tokens"],
+    )
+    if not runner.load():
+        return {
+            "rows": [(idx, key, "", "model_load_failed") for idx, key, _ in shard],
+            "counts": {"model_load_failed": len(shard)},
+            "samples": runner._error_tracker.samples,
+        }
+
+    bs = max(1, int(payload["batch_size"]))
+    rows: list[tuple[int, str, str, str]] = []
+    for start in range(0, len(shard), bs):
+        chunk = shard[start : start + bs]
+        paths = [p[2] for p in chunk]
+        tables = runner.generate_batch_with_oom_retry(paths, batch_size=bs)
+        for (entry_idx, key, _), table in zip(chunk, tables):
+            rows.append((entry_idx, key, table, "" if table else "inference_failed"))
+    return {
+        "rows": rows,
+        "counts": dict(runner._error_tracker.counts),
+        "samples": runner._error_tracker.samples,
+    }
+
+
+def _apply_deplot_rows(
+    work_entries: list[dict[str, Any]],
+    rows: list[tuple[int, str, str, str]],
+    *,
+    model_id: str,
+    cache: dict[str, str],
+    stats: dict[str, int],
+) -> None:
+    for entry_idx, key, table, _err in rows:
+        entry = work_entries[entry_idx]
+        if table:
+            entry["visual_fact_deplot"] = build_deplot_visual_fact(
+                entry, table, model_id=model_id
+            )
+            if key:
+                cache[key] = table
+            stats["real"] += 1
+        else:
+            entry["visual_fact_deplot"] = placeholder_deplot_table(
+                entry, error="inference_failed"
+            )
+            stats["failed"] += 1
+            stats["placeholder"] += 1
 
 
 def enrich_entries_with_deplot(
@@ -364,6 +540,8 @@ def enrich_entries_with_deplot(
     only_missing: bool = False,
     max_samples: int = 0,
     device: Optional[str] = None,
+    devices: Optional[list[str]] = None,
+    use_all_gpus: bool = False,
     show_progress: bool = True,
 ) -> dict[str, int]:
     """
@@ -371,6 +549,7 @@ def enrich_entries_with_deplot(
     Returns stats dict: real, placeholder, skipped, failed, cached.
     """
     stats = {"real": 0, "placeholder": 0, "skipped": 0, "failed": 0, "cached": 0}
+    error_tracker = DePlotErrorTracker()
     work_entries = entries[:max_samples] if max_samples > 0 else entries
 
     if not enabled:
@@ -385,8 +564,27 @@ def enrich_entries_with_deplot(
         return stats
 
     cache = load_deplot_cache(cache_path)
-    runner = DePlotRunner(model_id=model_id, device=device, max_new_tokens=max_new_tokens)
-    model_ok = runner.load()
+    device_list = resolve_deplot_devices(
+        devices=devices,
+        device=device,
+        use_all_gpus=use_all_gpus,
+    )
+    if show_progress:
+        print(f"[DePlot] devices: {', '.join(device_list)}")
+
+    runner: Optional[DePlotRunner] = None
+    model_ok = False
+    if len(device_list) == 1:
+        runner = DePlotRunner(
+            model_id=model_id,
+            device=device_list[0],
+            max_new_tokens=max_new_tokens,
+            error_tracker=error_tracker,
+        )
+        model_ok = runner.load()
+    elif device_list:
+        model_ok = True
+
     if model_ok and show_progress:
         print(f"[DePlot] model ready; scanning {len(work_entries)} records")
 
@@ -440,44 +638,98 @@ def enrich_entries_with_deplot(
             tqdm.write(
                 f"[DePlot] inference: {n_pending} images "
                 f"(cached={stats['cached']} skipped={stats['skipped']} "
-                f"placeholder={stats['placeholder']}, batch_size={bs})"
+                f"placeholder={stats['placeholder']}, batch_size={bs}, "
+                f"workers={len(device_list)})"
             )
-        infer_bar = tqdm(
-            total=n_pending,
-            desc="DePlot infer",
-            unit="img",
-            disable=not show_progress,
-            dynamic_ncols=True,
-        )
-        for start in range(0, n_pending, bs):
-            chunk = pending[start : start + bs]
-            paths = [p[2] for p in chunk]
-            tables = runner.generate_batch_with_oom_retry(paths, batch_size=bs)
-            for (entry_idx, key, _), table in zip(chunk, tables):
-                entry = work_entries[entry_idx]
-                if table:
-                    entry["visual_fact_deplot"] = build_deplot_visual_fact(
-                        entry, table, model_id=model_id
+
+        if len(device_list) > 1:
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
+            shards = [[] for _ in device_list]
+            for i, item in enumerate(pending):
+                shards[i % len(device_list)].append(item)
+            payloads = [
+                {
+                    "shard": shard,
+                    "model_id": model_id,
+                    "device": device_list[i],
+                    "max_new_tokens": max_new_tokens,
+                    "batch_size": bs,
+                }
+                for i, shard in enumerate(shards)
+                if shard
+            ]
+            infer_bar = tqdm(
+                total=n_pending,
+                desc="DePlot infer",
+                unit="img",
+                disable=not show_progress,
+                dynamic_ncols=True,
+            )
+            with ProcessPoolExecutor(max_workers=len(payloads)) as pool:
+                futures = [pool.submit(_deplot_shard_worker, payload) for payload in payloads]
+                for fut in as_completed(futures):
+                    result = fut.result()
+                    error_tracker.counts.update(result.get("counts") or {})
+                    for line in result.get("samples") or []:
+                        if len(error_tracker.samples) < error_tracker._max_log_lines:
+                            error_tracker.samples.append(line)
+                    rows = result.get("rows") or []
+                    _apply_deplot_rows(
+                        work_entries,
+                        rows,
+                        model_id=model_id,
+                        cache=cache,
+                        stats=stats,
                     )
-                    if key:
-                        cache[key] = table
-                    stats["real"] += 1
-                else:
-                    entry["visual_fact_deplot"] = placeholder_deplot_table(
-                        entry, error="inference_failed"
-                    )
-                    stats["failed"] += 1
-                    stats["placeholder"] += 1
-            if cache_path and cache:
-                save_deplot_cache(cache_path, cache)
+                    if cache_path and cache:
+                        save_deplot_cache(cache_path, cache)
+                    if show_progress:
+                        infer_bar.update(len(rows))
+                        infer_bar.set_postfix(
+                            real=stats["real"],
+                            failed=stats["failed"],
+                            cached=stats["cached"],
+                        )
             if show_progress:
-                infer_bar.update(len(chunk))
-                infer_bar.set_postfix(
-                    real=stats["real"],
-                    failed=stats["failed"],
-                    cached=stats["cached"],
+                infer_bar.close()
+        else:
+            assert runner is not None
+            infer_bar = tqdm(
+                total=n_pending,
+                desc="DePlot infer",
+                unit="img",
+                disable=not show_progress,
+                dynamic_ncols=True,
+            )
+            for start in range(0, n_pending, bs):
+                chunk = pending[start : start + bs]
+                paths = [p[2] for p in chunk]
+                tables = runner.generate_batch_with_oom_retry(paths, batch_size=bs)
+                rows = [
+                    (entry_idx, key, table, "" if table else "inference_failed")
+                    for (entry_idx, key, _), table in zip(chunk, tables)
+                ]
+                _apply_deplot_rows(
+                    work_entries,
+                    rows,
+                    model_id=model_id,
+                    cache=cache,
+                    stats=stats,
                 )
-        if show_progress:
-            infer_bar.close()
+                if cache_path and cache:
+                    save_deplot_cache(cache_path, cache)
+                if show_progress:
+                    infer_bar.update(len(chunk))
+                    infer_bar.set_postfix(
+                        real=stats["real"],
+                        failed=stats["failed"],
+                        cached=stats["cached"],
+                    )
+            if show_progress:
+                infer_bar.close()
+
+    if stats["failed"] > 0 or error_tracker.counts:
+        error_tracker.emit(show_progress=show_progress)
 
     return stats

@@ -10,6 +10,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_utils.chart.deplot_pipeline import (
+    DePlotErrorTracker,
     build_deplot_visual_fact,
     enrich_entries_with_deplot,
     format_deplot_for_teacher,
@@ -17,6 +18,7 @@ from data_utils.chart.deplot_pipeline import (
     is_deplot_placeholder,
     load_deplot_cache,
     placeholder_deplot_table,
+    resolve_deplot_devices,
     save_deplot_cache,
 )
 from opsd_utils.privileged.providers import VisualFactsProvider
@@ -105,6 +107,20 @@ def test_enrich_with_mock_runner():
         assert has_real_deplot(entries[0]["visual_fact_deplot"])
         assert "Col | Val" in format_deplot_for_teacher(entries[0]["visual_fact_deplot"])
         assert os.path.isfile(cache_path)
+
+
+def test_resolve_deplot_devices_explicit():
+    devices = resolve_deplot_devices(devices=["cuda:1", "cuda:3"], device="cuda:0")
+    assert devices == ["cuda:1", "cuda:3"]
+
+
+def test_deplot_error_tracker_emit(capsys):
+    tracker = DePlotErrorTracker(max_log_lines=3)
+    tracker.record("empty_decode", "token_len=0", "/tmp/a.png")
+    tracker.emit(show_progress=False)
+    out = capsys.readouterr().out
+    assert "empty_decode" in out
+    assert "failure summary" in out
 
 
 def test_build_script_disabled(tmp_path):
