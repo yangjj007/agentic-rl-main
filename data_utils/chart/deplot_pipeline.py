@@ -5,6 +5,8 @@ import glob
 import json
 import multiprocessing as mp
 import os
+import queue as queue_module
+import time
 from collections import Counter
 from typing import Any, Optional
 
@@ -258,6 +260,7 @@ class DePlotRunner:
         self._model = None
         self._font_path: Optional[str] = None
         self._error_tracker = error_tracker or DePlotErrorTracker()
+        self._logged_timing = False
 
     def _resolve_device(self):
         import torch
@@ -378,12 +381,23 @@ class DePlotRunner:
         texts = [self.prompt] * len(images)
         try:
             with torch.inference_mode():
+                t0 = time.perf_counter()
                 inputs = self._processor_call(images, texts)
+                t_prep = time.perf_counter() - t0
                 inputs = {k: v.to(device) for k, v in inputs.items()}
+                t1 = time.perf_counter()
                 outputs = self._model.generate(**inputs, max_new_tokens=self.max_new_tokens)
+                t_gen = time.perf_counter() - t1
                 if hasattr(outputs, "sequences"):
                     outputs = outputs.sequences
                 decoded = self._processor.batch_decode(outputs, skip_special_tokens=True)
+                if not self._logged_timing:
+                    print(
+                        f"[DePlot] batch timing: preprocess={t_prep:.1f}s "
+                        f"generate={t_gen:.1f}s images={len(images)} device={device}",
+                        flush=True,
+                    )
+                    self._logged_timing = True
         except Exception as exc:
             for i, path in enumerate(image_paths):
                 if path:
@@ -489,7 +503,16 @@ def _worker_cuda_device(device: str) -> str:
 def _deplot_shard_worker(payload: dict[str, Any]) -> dict[str, Any]:
     """Process one pending shard on a single GPU (spawn-safe entrypoint)."""
     shard: list[tuple[int, str, str]] = payload["shard"]
-    worker_device = _worker_cuda_device(str(payload["device"]))
+    device_label = str(payload.get("device", "?"))
+    progress_queue = payload.get("progress_queue")
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+    except Exception:
+        pass
+
+    worker_device = _worker_cuda_device(device_label)
     runner = DePlotRunner(
         model_id=payload["model_id"],
         device=worker_device,
@@ -504,12 +527,26 @@ def _deplot_shard_worker(payload: dict[str, Any]) -> dict[str, Any]:
 
     bs = max(1, int(payload["batch_size"]))
     rows: list[tuple[int, str, str, str]] = []
-    for start in range(0, len(shard), bs):
+    for batch_idx, start in enumerate(range(0, len(shard), bs)):
         chunk = shard[start : start + bs]
         paths = [p[2] for p in chunk]
+        t0 = time.perf_counter()
         tables = runner.generate_batch_with_oom_retry(paths, batch_size=bs)
+        elapsed = time.perf_counter() - t0
         for (entry_idx, key, _), table in zip(chunk, tables):
             rows.append((entry_idx, key, table, "" if table else "inference_failed"))
+        if progress_queue is not None:
+            try:
+                progress_queue.put(
+                    {
+                        "n": len(chunk),
+                        "device": device_label,
+                        "elapsed": elapsed,
+                        "first": batch_idx == 0,
+                    }
+                )
+            except Exception:
+                pass
     return {
         "rows": rows,
         "counts": dict(runner._error_tracker.counts),
@@ -657,11 +694,13 @@ def enrich_entries_with_deplot(
             )
 
         if len(device_list) > 1:
-            from concurrent.futures import ProcessPoolExecutor, as_completed
+            from concurrent.futures import ProcessPoolExecutor
 
             shards = [[] for _ in device_list]
             for i, item in enumerate(pending):
                 shards[i % len(device_list)].append(item)
+            mp_ctx = mp.get_context("spawn")
+            progress_queue = mp_ctx.Queue()
             payloads = [
                 {
                     "shard": shard,
@@ -669,6 +708,7 @@ def enrich_entries_with_deplot(
                     "device": device_list[i],
                     "max_new_tokens": max_new_tokens,
                     "batch_size": bs,
+                    "progress_queue": progress_queue,
                 }
                 for i, shard in enumerate(shards)
                 if shard
@@ -680,32 +720,57 @@ def enrich_entries_with_deplot(
                 disable=not show_progress,
                 dynamic_ncols=True,
             )
-            mp_ctx = mp.get_context("spawn")
             with ProcessPoolExecutor(max_workers=len(payloads), mp_context=mp_ctx) as pool:
                 futures = [pool.submit(_deplot_shard_worker, payload) for payload in payloads]
-                for fut in as_completed(futures):
-                    result = fut.result()
-                    error_tracker.counts.update(result.get("counts") or {})
-                    for line in result.get("samples") or []:
-                        if len(error_tracker.samples) < error_tracker._max_log_lines:
-                            error_tracker.samples.append(line)
-                    rows = result.get("rows") or []
-                    _apply_deplot_rows(
-                        work_entries,
-                        rows,
-                        model_id=model_id,
-                        cache=cache,
-                        stats=stats,
-                    )
-                    if cache_path and cache:
-                        save_deplot_cache(cache_path, cache)
-                    if show_progress:
-                        infer_bar.update(len(rows))
-                        infer_bar.set_postfix(
-                            real=stats["real"],
-                            failed=stats["failed"],
-                            cached=stats["cached"],
+                pending_futures = set(futures)
+                while pending_futures:
+                    try:
+                        while True:
+                            msg = progress_queue.get_nowait()
+                            if isinstance(msg, dict):
+                                infer_bar.update(int(msg.get("n", 0)))
+                                if msg.get("first") and show_progress:
+                                    tqdm.write(
+                                        f"[DePlot] {msg.get('device', '?')} first batch "
+                                        f"({msg.get('n', 0)} img) in {float(msg.get('elapsed', 0)):.1f}s"
+                                    )
+                            else:
+                                infer_bar.update(int(msg))
+                            infer_bar.set_postfix(
+                                processed=infer_bar.n,
+                                real=stats["real"],
+                                failed=stats["failed"],
+                            )
+                    except queue_module.Empty:
+                        pass
+
+                    done = [f for f in pending_futures if f.done()]
+                    for fut in done:
+                        pending_futures.remove(fut)
+                        result = fut.result()
+                        error_tracker.counts.update(result.get("counts") or {})
+                        for line in result.get("samples") or []:
+                            if len(error_tracker.samples) < error_tracker._max_log_lines:
+                                error_tracker.samples.append(line)
+                        rows = result.get("rows") or []
+                        _apply_deplot_rows(
+                            work_entries,
+                            rows,
+                            model_id=model_id,
+                            cache=cache,
+                            stats=stats,
                         )
+                        if cache_path and cache:
+                            save_deplot_cache(cache_path, cache)
+                        if show_progress:
+                            infer_bar.set_postfix(
+                                processed=infer_bar.n,
+                                real=stats["real"],
+                                failed=stats["failed"],
+                            )
+
+                    if pending_futures:
+                        time.sleep(0.1)
             if show_progress:
                 infer_bar.close()
         else:
