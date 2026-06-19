@@ -1093,6 +1093,8 @@ class DyMETrainer(Trainer):
         completions: list[str],
         answer_flag: str,
     ) -> bool:
+        if self.opsd_config.get("gate", {}).get("disable_force_sft_replace"):
+            return False
         if self._in_sft_cold_start():
             return True
         text_i = completions[i] if i < len(completions) else ""
@@ -1671,7 +1673,7 @@ class DyMETrainer(Trainer):
 
         format_rewards = format_rewards_flat
 
-        sft_slots = self._sft_slots_for_step()
+        sft_slots = 0 if self.opsd_config.get("gate", {}).get("disable_online_sft_slots") else self._sft_slots_for_step()
         sft_check = []
         for i in range(batch_size):
             batch_id = i // self.num_generations
