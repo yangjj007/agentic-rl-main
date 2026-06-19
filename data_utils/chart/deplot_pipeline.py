@@ -500,17 +500,25 @@ def _worker_cuda_device(device: str) -> str:
     return dev or "cpu"
 
 
-def _deplot_shard_worker(payload: dict[str, Any]) -> dict[str, Any]:
-    """Process one pending shard on a single GPU (spawn-safe entrypoint)."""
-    shard: list[tuple[int, str, str]] = payload["shard"]
-    device_label = str(payload.get("device", "?"))
-    progress_queue = payload.get("progress_queue")
+_DEPLOT_WORKER_STATE: dict[str, Any] = {}
+
+
+def _deplot_pool_init(progress_queue: Any) -> None:
+    """Spawn worker setup: shared Manager queue + limit CPU threads per process."""
+    _DEPLOT_WORKER_STATE["progress_queue"] = progress_queue
     try:
         import torch
 
         torch.set_num_threads(1)
     except Exception:
         pass
+
+
+def _deplot_shard_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    """Process one pending shard on a single GPU (spawn-safe entrypoint)."""
+    shard: list[tuple[int, str, str]] = payload["shard"]
+    device_label = str(payload.get("device", "?"))
+    progress_queue = _DEPLOT_WORKER_STATE.get("progress_queue")
 
     worker_device = _worker_cuda_device(device_label)
     runner = DePlotRunner(
@@ -700,7 +708,6 @@ def enrich_entries_with_deplot(
             for i, item in enumerate(pending):
                 shards[i % len(device_list)].append(item)
             mp_ctx = mp.get_context("spawn")
-            progress_queue = mp_ctx.Queue()
             payloads = [
                 {
                     "shard": shard,
@@ -708,7 +715,6 @@ def enrich_entries_with_deplot(
                     "device": device_list[i],
                     "max_new_tokens": max_new_tokens,
                     "batch_size": bs,
-                    "progress_queue": progress_queue,
                 }
                 for i, shard in enumerate(shards)
                 if shard
@@ -720,57 +726,64 @@ def enrich_entries_with_deplot(
                 disable=not show_progress,
                 dynamic_ncols=True,
             )
-            with ProcessPoolExecutor(max_workers=len(payloads), mp_context=mp_ctx) as pool:
-                futures = [pool.submit(_deplot_shard_worker, payload) for payload in payloads]
-                pending_futures = set(futures)
-                while pending_futures:
-                    try:
-                        while True:
-                            msg = progress_queue.get_nowait()
-                            if isinstance(msg, dict):
-                                infer_bar.update(int(msg.get("n", 0)))
-                                if msg.get("first") and show_progress:
-                                    tqdm.write(
-                                        f"[DePlot] {msg.get('device', '?')} first batch "
-                                        f"({msg.get('n', 0)} img) in {float(msg.get('elapsed', 0)):.1f}s"
-                                    )
-                            else:
-                                infer_bar.update(int(msg))
-                            infer_bar.set_postfix(
-                                processed=infer_bar.n,
-                                real=stats["real"],
-                                failed=stats["failed"],
-                            )
-                    except queue_module.Empty:
-                        pass
+            with mp_ctx.Manager() as manager:
+                progress_queue = manager.Queue()
+                with ProcessPoolExecutor(
+                    max_workers=len(payloads),
+                    mp_context=mp_ctx,
+                    initializer=_deplot_pool_init,
+                    initargs=(progress_queue,),
+                ) as pool:
+                    futures = [pool.submit(_deplot_shard_worker, payload) for payload in payloads]
+                    pending_futures = set(futures)
+                    while pending_futures:
+                        try:
+                            while True:
+                                msg = progress_queue.get_nowait()
+                                if isinstance(msg, dict):
+                                    infer_bar.update(int(msg.get("n", 0)))
+                                    if msg.get("first") and show_progress:
+                                        tqdm.write(
+                                            f"[DePlot] {msg.get('device', '?')} first batch "
+                                            f"({msg.get('n', 0)} img) in {float(msg.get('elapsed', 0)):.1f}s"
+                                        )
+                                else:
+                                    infer_bar.update(int(msg))
+                                infer_bar.set_postfix(
+                                    processed=infer_bar.n,
+                                    real=stats["real"],
+                                    failed=stats["failed"],
+                                )
+                        except queue_module.Empty:
+                            pass
 
-                    done = [f for f in pending_futures if f.done()]
-                    for fut in done:
-                        pending_futures.remove(fut)
-                        result = fut.result()
-                        error_tracker.counts.update(result.get("counts") or {})
-                        for line in result.get("samples") or []:
-                            if len(error_tracker.samples) < error_tracker._max_log_lines:
-                                error_tracker.samples.append(line)
-                        rows = result.get("rows") or []
-                        _apply_deplot_rows(
-                            work_entries,
-                            rows,
-                            model_id=model_id,
-                            cache=cache,
-                            stats=stats,
-                        )
-                        if cache_path and cache:
-                            save_deplot_cache(cache_path, cache)
-                        if show_progress:
-                            infer_bar.set_postfix(
-                                processed=infer_bar.n,
-                                real=stats["real"],
-                                failed=stats["failed"],
+                        done = [f for f in pending_futures if f.done()]
+                        for fut in done:
+                            pending_futures.remove(fut)
+                            result = fut.result()
+                            error_tracker.counts.update(result.get("counts") or {})
+                            for line in result.get("samples") or []:
+                                if len(error_tracker.samples) < error_tracker._max_log_lines:
+                                    error_tracker.samples.append(line)
+                            rows = result.get("rows") or []
+                            _apply_deplot_rows(
+                                work_entries,
+                                rows,
+                                model_id=model_id,
+                                cache=cache,
+                                stats=stats,
                             )
+                            if cache_path and cache:
+                                save_deplot_cache(cache_path, cache)
+                            if show_progress:
+                                infer_bar.set_postfix(
+                                    processed=infer_bar.n,
+                                    real=stats["real"],
+                                    failed=stats["failed"],
+                                )
 
-                    if pending_futures:
-                        time.sleep(0.1)
+                        if pending_futures:
+                            time.sleep(0.1)
             if show_progress:
                 infer_bar.close()
         else:
