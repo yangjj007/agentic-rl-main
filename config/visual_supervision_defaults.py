@@ -16,7 +16,7 @@ def build_visual_supervision_config() -> dict:
     max_refine_tokens = env_int("DYME_VISUAL_MAX_REFINE_TOKENS", 512)
     return {
         "enabled": VISUAL_CHECKER_ENABLED or VISUAL_REFINER_ENABLED,
-        "ic_source": env_str("DYME_VISUAL_IC_SOURCE", "teacher_image"),
+        "ic_source": env_str("DYME_VISUAL_IC_SOURCE", "auto"),
         "prefetch_ic": env_bool("DYME_VISUAL_PREFETCH_IC", True),
         "dedupe_per_batch": env_bool("DYME_VISUAL_DEDUPE", True),
         "teacher_batch_size": 4,

@@ -11,7 +11,12 @@ import pytest
 from opsd_utils.visual_supervision_log import VisualBatchRecorder
 from reward_utils.template_pool import TemplatePool
 from reward_utils.visual_checker_teacher import TeacherVisualChecker, _score_from_label
-from reward_utils.visual_ic import _parse_ic_json, build_prompt_s1, extract_visual_facts_teacher
+from reward_utils.visual_ic import (
+    _parse_ic_json,
+    build_prompt_s1,
+    extract_visual_facts_teacher,
+    ic_text_from_offline_sample,
+)
 
 
 def test_score_from_label():
@@ -276,6 +281,40 @@ def test_teacher_checker_high_triggers_pool(mock_ic, mock_gen_one, mock_gen_batc
     assert stats["visual/checker_high"] == 1.0
 
 
+def test_ic_text_from_offline_prefers_deplot():
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
+    sample = {
+        "visual_fact_hint": "hint-only text",
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Year | Value\n2020 | 10"
+        ),
+    }
+    ic_text, source = ic_text_from_offline_sample(sample)
+    assert source == "deplot"
+    assert "Year | Value" in ic_text
+    assert "hint-only" not in ic_text
+
+
+def test_extract_visual_facts_uses_offline_deplot_without_teacher():
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
+    sample = {
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Col | Val\nA | 1"
+        ),
+    }
+    ic_text, meta = extract_visual_facts_teacher(
+        teacher_model=None,
+        processor=None,
+        sample=sample,
+        question="What?",
+        image="a.png",
+    )
+    assert "Col | Val" in ic_text
+    assert meta.get("ic_source") == "offline_deplot"
+
+
 def test_extract_visual_facts_fallback_without_teacher():
     sample = {"visual_fact_hint": json.dumps({"description": "x", "objects": []})}
     ic_text, meta = extract_visual_facts_teacher(
@@ -286,7 +325,7 @@ def test_extract_visual_facts_fallback_without_teacher():
         image="a.png",
     )
     assert "description" in ic_text
-    assert meta.get("fallback", "").startswith("hint_")
+    assert meta.get("ic_source") == "offline_hint_visual_fact_hint"
 
 
 if __name__ == "__main__":

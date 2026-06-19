@@ -51,7 +51,7 @@ def prefetch_ic_unique(
         if key in seen or key in cache:
             continue
         seen.add(key)
-        if ic_source == "auto":
+        if ic_source in ("auto", "teacher_image"):
             ic_text, fb = _ic_text_from_sample(samples[idx])
             if ic_text:
                 cache[key] = ic_text
@@ -60,7 +60,7 @@ def prefetch_ic_unique(
                     sample_idx=idx,
                     image=image_cache_key(images[idx]),
                     question_preview=questions[idx][:120],
-                    ic_source=f"auto_{fb}",
+                    ic_source=f"offline_{fb}",
                     parse_ok=True,
                     ic_preview=ic_text[:400],
                 )

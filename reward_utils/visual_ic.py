@@ -5,6 +5,7 @@ import json
 import re
 from typing import Any, Optional
 
+from data_utils.chart.deplot_pipeline import format_deplot_for_teacher, is_deplot_placeholder
 from data_utils.privileged_schema import parse_visual_fact
 from reward_utils.teacher_generate import teacher_generate_one
 
@@ -60,12 +61,25 @@ def _parse_ic_json(text: str) -> tuple[Optional[dict], Optional[str]]:
     return None, "json_decode"
 
 
-def _ic_text_from_sample(sample: dict[str, Any]) -> tuple[str, str]:
+def ic_text_from_offline_sample(sample: dict[str, Any]) -> tuple[str, str]:
+    """DyME-aligned offline I_c: DePlot table > hint visual facts > hint."""
+    deplot_vf = sample.get("visual_fact_deplot")
+    if deplot_vf and not is_deplot_placeholder(deplot_vf):
+        text = format_deplot_for_teacher(deplot_vf)
+        if text:
+            return text, "deplot"
+
     for key in ("visual_fact_hint", "visual_fact", "visual_facts", "hint"):
         raw = sample.get(key)
         if raw:
-            return parse_visual_fact(raw), f"hint_{key}"
+            text = parse_visual_fact(raw)
+            if text:
+                return text, f"hint_{key}"
     return "", "empty"
+
+
+def _ic_text_from_sample(sample: dict[str, Any]) -> tuple[str, str]:
+    return ic_text_from_offline_sample(sample)
 
 
 def _ic_stats(ic_obj: Optional[dict], ic_text: str) -> dict[str, Any]:
@@ -85,7 +99,7 @@ def extract_visual_facts_teacher(
     sample: dict[str, Any],
     question: str,
     image: Any,
-    ic_source: str = "teacher_image",
+    ic_source: str = "auto",
     max_new_tokens: int = 768,
     cache: Optional[dict[tuple[str, str], str]] = None,
     recorder: Any = None,
@@ -113,18 +127,18 @@ def extract_visual_facts_teacher(
             recorder.record_ic(**meta)
         return ic_text, meta
 
-    if ic_source == "auto":
+    if ic_source in ("auto", "teacher_image"):
         ic_text, fb = _ic_text_from_sample(sample)
         if ic_text:
             meta.update(_ic_stats(None, ic_text))
-            meta.update(parse_ok=True, ic_source=f"auto_{fb}", ic_preview=ic_text[:400])
+            meta.update(parse_ok=True, ic_source=f"offline_{fb}", ic_preview=ic_text[:400])
             if cache is not None:
                 cache[cache_key] = ic_text
             if recorder is not None:
                 recorder.record_ic(**meta)
             return ic_text, meta
 
-    if teacher_model is None or processor is None or ic_source != "teacher_image":
+    if ic_source == "auto" or teacher_model is None or processor is None:
         ic_text, fb = _ic_text_from_sample(sample)
         meta.update(_ic_stats(None, ic_text))
         meta.update(parse_ok=bool(ic_text), fallback=fb, error="teacher_unavailable")
