@@ -106,14 +106,31 @@ DYME_OPSD_CONFIG = {
         "max_new_tokens": env_int("DYME_TEACHER_TRAJ_MAX_NEW_TOKENS", 128),
     },
     "visual_supervision": {
+        "enabled": VISUAL_CHECKER_ENABLED or VISUAL_REFINER_ENABLED,
+        "ic_source": env_str("DYME_VISUAL_IC_SOURCE", "teacher_image"),
         "checker": {
             "enabled": VISUAL_CHECKER_ENABLED,
             "model_source": "loaded_teacher",
+            "max_per_batch": env_int("DYME_VISUAL_CHECKER_MAX_PER_BATCH", 0),
+            "fallback": "local",
         },
         "refiner": {
             "enabled": VISUAL_REFINER_ENABLED,
             "model_source": "loaded_teacher",
+            "scope": "batch_all",
+            "fallback": "passthrough",
             "include_gold": False,
+        },
+        "template_pool": {
+            "path": env_str("DYME_VISUAL_TEMPLATE_PATH", "best_template.txt"),
+            "refresh_interval_sec": env_float("DYME_VISUAL_TEMPLATE_REFRESH_SEC", 60.0),
+        },
+        "logging": {
+            "enabled": env_bool("DYME_VISUAL_LOG", True),
+            "sample_count": env_int("DYME_VISUAL_LOG_SAMPLES", 3),
+            "preview_chars": env_int("DYME_VISUAL_LOG_PREVIEW_CHARS", 400),
+            "save_artifacts": env_bool("DYME_VISUAL_SAVE_ARTIFACTS", True),
+            "log_route_binding": env_bool("DYME_VISUAL_LOG_ROUTE", True),
         },
     },
     "debug": {

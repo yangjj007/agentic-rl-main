@@ -84,6 +84,49 @@ def calculate_rewards_in_parallel(
 
     return rewards, format_rewards, answer_rewards, thinking_rewards
 
+
+def calculate_rewards_sequential(
+    checker,
+    batch_data: Dict[str, Any],
+    gpu_id: int,
+    task='chart',
+):
+    """Sequential reward path for GPU-backed teacher checker (not thread-safe)."""
+    responses = batch_data['response']
+    predictions = []
+    for r in responses:
+        c, p = split_initial_context(r)
+        predictions.append(p)
+    prompts = batch_data['prompt']
+    answers = batch_data['answer']
+    hints = batch_data['hints'] if 'hints' in batch_data else [""] * len(responses)
+    num_samples = len(responses)
+    in_answers = answers
+    if 'world' in task:
+        in_answers = batch_data['direct_answers']
+
+    format_rewards = []
+    answer_rewards = []
+    thinking_rewards = []
+    for i in range(num_samples):
+        checker._current_sample_idx = i  # noqa: SLF001 — teacher checker batch context
+        format_rewards.append(checker.get_format_reward(responses[i], task=task))
+        answer_rewards.append(
+            checker.get_answer_reward(predictions[i], in_answers[i], task)
+        )
+        thinking_rewards.append(
+            checker.get_thinking_reward_prompt(
+                responses[i], prompts[i], answers[i], hints[i], task
+            )
+        )
+
+    rewards = [
+        0 if f == 0 else f + a + t
+        for f, a, t in zip(format_rewards, answer_rewards, thinking_rewards)
+    ]
+    return rewards, format_rewards, answer_rewards, thinking_rewards
+
+
 def refine_context_in_parallel(
     refiner,
     questions: List[str],
@@ -124,3 +167,19 @@ def refine_context_in_parallel(
         ))
 
     return refined_contexts
+
+
+def refine_context_sequential(
+    refiner,
+    questions: List[str],
+    hints: List[str],
+    reference_answers: List[str],
+    task,
+    gpu_id: int,
+):
+    """Sequential refine path for GPU-backed teacher refiner."""
+    refined = []
+    for i, (q, h, a) in enumerate(zip(questions, hints, reference_answers)):
+        refiner._current_sample_idx = i  # noqa: SLF001
+        refined.append(refiner.refine_hint(q, h, a, task, gpu_id))
+    return refined

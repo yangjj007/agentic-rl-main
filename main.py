@@ -33,8 +33,7 @@ from data_utils.paths import (
     validate_local_model_dir,
 )
 from trainer.DyMETrainer import DyMETrainer
-from reward_utils.checker import RewardCalculator, RewardCalculatorLocal
-from reward_utils.refiner import ContextRefiner, ContextRefinerLocal
+from reward_utils.visual_supervision_factory import build_visual_supervision, visual_supervision_needs_teacher
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils.teacher_batching import (
     log_teacher_placement,
@@ -624,7 +623,8 @@ def main():
         opsd_config.get("gate", {}).get("sft_cold_start_frac", 0.0) or 0.0
     )
     cold_start_steps = opsd_config.get("gate", {}).get("sft_cold_start_steps")
-    lazy_teacher = bool(cold_start_steps) or cold_start_frac > 0.0
+    visual_needs_teacher = visual_supervision_needs_teacher(opsd_config)
+    lazy_teacher = (bool(cold_start_steps) or cold_start_frac > 0.0) and not visual_needs_teacher
 
     teacher_model = None
     teacher_model_config = None
@@ -641,6 +641,11 @@ def main():
             local_rank=local_rank,
             num_gpus=visible_gpus,
         )
+        if visual_needs_teacher and accelerator.is_main_process:
+            print(
+                "[DyME] Visual supervision enabled: 7B teacher loaded before training",
+                flush=True,
+            )
     if accelerator.is_main_process and teacher_model is not None:
         _run_cross_model_vocab_checks(
             model,
@@ -656,8 +661,14 @@ def main():
     # checker = RewardCalculator(rl_config, client_config.copy(), gpu_id=device_id)
     # refiner = ContextRefiner(rl_config, client_config.copy(), gpu_id=device_id)
 
-    checker = RewardCalculatorLocal(rl_config, client_config.copy(), gpu_id=device_id)
-    refiner = ContextRefinerLocal(rl_config, client_config.copy(), gpu_id=device_id)
+    checker, refiner, visual_meta = build_visual_supervision(
+        rl_config,
+        client_config,
+        opsd_config,
+        gpu_id=device_id,
+        teacher_model=teacher_model,
+        processor=processor,
+    )
     # 6. Define Training Arguments
     dyme_args = dict(training_config['dyme_args'])
     if ds_zero_stage is not None and ds_zero_stage >= 3:
@@ -682,6 +693,7 @@ def main():
         opsd_config=opsd_config,
         teacher_model=teacher_model,
         teacher_model_config=teacher_model_config,
+        visual_supervision_meta=visual_meta,
     )
     if accelerator.is_main_process:
         write_run_config_snapshot(

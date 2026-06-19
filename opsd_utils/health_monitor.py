@@ -19,6 +19,10 @@ ALERT_ANSWER_TOKEN_DRIFT = "ANSWER_TOKEN_DRIFT"
 ALERT_CLIP_FALSE_HEALTHY = "CLIP_FALSE_HEALTHY"
 ALERT_OPSD_LEAKAGE_PATTERN = "OPSD_LEAKAGE_PATTERN"
 ALERT_OPSD_ON_CORRECT = "OPSD_ON_CORRECT"
+ALERT_VISUAL_IC_FAIL_HIGH = "VISUAL_IC_FAIL_HIGH"
+ALERT_VISUAL_CHECKER_ALL_LOW = "VISUAL_CHECKER_ALL_LOW"
+ALERT_VISUAL_REFINER_NOOP = "VISUAL_REFINER_NOOP"
+ALERT_VISUAL_POOL_STALE = "VISUAL_POOL_STALE"
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -62,6 +66,7 @@ class TrainingHealthMonitor:
         self._p_greedy_history: deque[float] = deque(maxlen=5)
         self._p_answer_history: deque[float] = deque(maxlen=5)
         self._eos_history: deque[float] = deque(maxlen=5)
+        self._checker_all_low_streak: int = 0
         self._last_step: Optional[int] = None
 
     def reset_step(self, step: int) -> None:
@@ -181,6 +186,46 @@ class TrainingHealthMonitor:
                 alerts=alert_str,
             )
         return alerts
+
+    def record_visual(self, step: int, fields: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        self._step_fields.update(fields)
+        ic_ok_rate = _safe_float(fields.get("visual/ic_ok_rate"), default=1.0)
+        if ic_ok_rate < 0.8:
+            self._emit_alert(
+                step,
+                ALERT_VISUAL_IC_FAIL_HIGH,
+                ic_ok_rate=ic_ok_rate,
+            )
+        checker_high = int(fields.get("visual/checker_high", 0) or 0)
+        checker_medium = int(fields.get("visual/checker_medium", 0) or 0)
+        if checker_high + checker_medium == 0:
+            self._checker_all_low_streak += 1
+        else:
+            self._checker_all_low_streak = 0
+        if self._checker_all_low_streak >= 3:
+            self._emit_alert(
+                step,
+                ALERT_VISUAL_CHECKER_ALL_LOW,
+                streak=self._checker_all_low_streak,
+            )
+        refiner_changed_rate = _safe_float(fields.get("visual/refiner_changed_rate"))
+        sft_ratio = _safe_float(self._step_fields.get("sft_replaced_ratio"))
+        if refiner_changed_rate < 0.1 and sft_ratio > 0.5:
+            self._emit_alert(
+                step,
+                ALERT_VISUAL_REFINER_NOOP,
+                refiner_changed_rate=refiner_changed_rate,
+                sft_replaced_ratio=sft_ratio,
+            )
+        pool_updates = int(fields.get("visual/pool_updates", 0) or 0)
+        if step > 500 and pool_updates == 0:
+            self._emit_alert(
+                step,
+                ALERT_VISUAL_POOL_STALE,
+                pool_updates=pool_updates,
+            )
 
     def record_data(self, step: int, fields: dict[str, Any]) -> None:
         if not self.enabled:
@@ -405,6 +450,10 @@ class TrainingHealthMonitor:
             "metrics/format_without_thinking_rate": "format_without_thinking_rate",
             "phase/sft_cold_start": "phase_sft_cold_start",
             "health/alert_count": "alert_count",
+            "visual/ic_ok_rate": "visual/ic_ok_rate",
+            "visual/checker_mean": "visual/checker_mean",
+            "visual/refiner_changed_rate": "visual/refiner_changed_rate",
+            "visual/pool_updates": "visual/pool_updates",
         }
         for metric_key, field_key in mapping.items():
             val = snapshot.get(field_key)

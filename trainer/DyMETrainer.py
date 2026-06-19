@@ -59,7 +59,12 @@ from datasets import Dataset, IterableDataset
 
 from reward_utils import checker
 from reward_utils.checker import RewardCalculator
-from reward_utils.compute_rewards import calculate_rewards_in_parallel, refine_context_in_parallel
+from reward_utils.compute_rewards import (
+    calculate_rewards_in_parallel,
+    calculate_rewards_sequential,
+    refine_context_in_parallel,
+    refine_context_sequential,
+)
 from data_utils.chart.evaluator import eval_one_chart
 
 from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, DEFAULT_OPSD_CONFIG
@@ -300,10 +305,13 @@ class DyMETrainer(Trainer):
         opsd_config: Optional[dict] = None,
         teacher_model: Optional[PreTrainedModel] = None,
         teacher_model_config: Optional[dict] = None,
+        visual_supervision_meta: Optional[dict] = None,
     ):
         self.opsd_config = opsd_config if opsd_config is not None else dict(DEFAULT_OPSD_CONFIG)
         self.teacher_model = teacher_model
         self._teacher_model_config = teacher_model_config
+        self.visual_supervision_meta = visual_supervision_meta or {}
+        self._last_visual_batch_stats: dict[str, Any] = {}
         self._teacher_vocab_checked = False
         self._last_training_phase: Optional[str] = None
         self.task_name = task_name
@@ -756,6 +764,74 @@ class DyMETrainer(Trainer):
         )
         self._run_teacher_vocab_check_once()
 
+    def _bind_visual_teacher(self) -> None:
+        if self.teacher_model is None:
+            return
+        for component in (self.checker, self.refiner):
+            bind = getattr(component, "bind_teacher", None)
+            if callable(bind):
+                bind(self.teacher_model, self.processing_class)
+
+    def _expand_visual_batch_rows(
+        self,
+        inputs: list[dict[str, Union[torch.Tensor, Any]]],
+        expanded_count: int,
+    ) -> tuple[list[dict], list[Any], list[str]]:
+        raw_count = len(inputs)
+        samples: list[dict] = []
+        images: list[Any] = []
+        questions: list[str] = []
+        for row in range(expanded_count):
+            src = self._source_row_index(row, raw_count, expanded_count)
+            sample = inputs[src]
+            samples.append(sample)
+            images.append(sample.get("image"))
+            questions.append(sample.get("question_wo_prompt", sample.get("prompt", "")))
+        return samples, images, questions
+
+    def _prepare_visual_supervision_batch(
+        self,
+        inputs: list[dict[str, Union[torch.Tensor, Any]]],
+        *,
+        global_step: int,
+        expanded_count: int,
+    ) -> None:
+        if not self.visual_supervision_meta.get("enabled"):
+            return
+        if self.visual_supervision_meta.get("needs_teacher"):
+            self._ensure_teacher_model()
+            self._bind_visual_teacher()
+        samples, images, questions = self._expand_visual_batch_rows(inputs, expanded_count)
+        if hasattr(self.checker, "begin_generate_batch"):
+            self.checker.begin_generate_batch(
+                samples=samples,
+                images=images,
+                questions=questions,
+                global_step=global_step,
+                output_dir=self.args.output_dir,
+            )
+        recorder = getattr(self.checker, "_recorder", None)
+        if hasattr(self.refiner, "begin_generate_batch"):
+            self.refiner.begin_generate_batch(
+                samples=samples,
+                images=images,
+                global_step=global_step,
+                output_dir=self.args.output_dir,
+                recorder=recorder,
+            )
+
+    def _finish_visual_supervision_batch(self, global_step: int) -> dict[str, Any]:
+        stats: dict[str, Any] = {}
+        if hasattr(self.checker, "end_generate_batch"):
+            stats = self.checker.end_generate_batch() or {}
+        if hasattr(self.refiner, "end_generate_batch"):
+            self.refiner.end_generate_batch()
+        self._last_visual_batch_stats = stats
+        if self._health_monitor is not None and stats:
+            self._health_monitor.record_visual(global_step, stats)
+        self._opsd_distributed_barrier("wait_for_everyone after visual supervision batch")
+        return stats
+
     def _run_teacher_vocab_check_once(self) -> None:
         if self._teacher_vocab_checked or self.teacher_model is None:
             return
@@ -1098,7 +1174,18 @@ class DyMETrainer(Trainer):
         hints = [x.get("hint", "") for x in inputs]
         answers = [x["answer"] for x in inputs]
         gpu_id = self.accelerator.device.index
-        hints = refine_context_in_parallel(
+        prompts_count = prompt_ids.size(0)
+        self._prepare_visual_supervision_batch(
+            inputs,
+            global_step=global_step,
+            expanded_count=prompts_count,
+        )
+        refine_fn = (
+            refine_context_sequential
+            if getattr(self.refiner, "requires_sequential", False)
+            else refine_context_in_parallel
+        )
+        hints = refine_fn(
             self.refiner,
             question_wo_prompts,
             hints,
@@ -1106,6 +1193,7 @@ class DyMETrainer(Trainer):
             task=self.task_name,
             gpu_id=gpu_id,
         )
+        self._finish_visual_supervision_batch(global_step)
         sft_gt_rows = []
         for i in range(prompts_count):
             src = self._source_row_index(i, raw_count, prompts_count)
@@ -1415,10 +1503,26 @@ class DyMETrainer(Trainer):
             batch_size=batch_size,
             sample_prompt=(prompts[0][:120] + "...") if prompts and len(prompts[0]) > 120 else (prompts[0] if prompts else None),
         )
+        reward_global_step = getattr(self.state, "global_step", self._step)
+        opsd_debug.set_detail_step(reward_global_step)
+        self._prepare_visual_supervision_batch(
+            inputs,
+            global_step=reward_global_step,
+            expanded_count=batch_size,
+        )
+        reward_fn = (
+            calculate_rewards_sequential
+            if getattr(self.checker, "requires_sequential", False)
+            else calculate_rewards_in_parallel
+        )
         with opsd_debug.timed("reward", "calculate_rewards_in_parallel"):
-            all_rewards, format_rewards, acc_rewards, context_rewards = calculate_rewards_in_parallel(self.checker, batch_data,
-                                                                                       gpu_id=gpu_id,
-                                                                                       task=self.task_name)
+            all_rewards, format_rewards, acc_rewards, context_rewards = reward_fn(
+                self.checker,
+                batch_data,
+                gpu_id=gpu_id,
+                task=self.task_name,
+            )
+        self._opsd_distributed_barrier("wait_for_everyone after visual checker rewards")
         opsd_debug.log(
             "reward",
             "reward calculation finished",
@@ -1564,9 +1668,26 @@ class DyMETrainer(Trainer):
             gen_idx = i % self.num_generations
             sft_check.append((has_correct[batch_id] == 0) and (gen_idx < sft_slots))
 
-        hints = refine_context_in_parallel(self.refiner, question_wo_prompts, hints, answers, task=self.task_name, gpu_id=gpu_id)
+        hints_before_refine = list(hints)
+        refine_fn = (
+            refine_context_sequential
+            if getattr(self.refiner, "requires_sequential", False)
+            else refine_context_in_parallel
+        )
+        hints = refine_fn(
+            self.refiner,
+            question_wo_prompts,
+            hints,
+            answers,
+            task=self.task_name,
+            gpu_id=gpu_id,
+        )
+        hint_changed = [
+            (h or "").strip() != (o or "").strip()
+            for h, o in zip(hints, hints_before_refine)
+        ]
+        visual_batch_stats = self._finish_visual_supervision_batch(global_step)
         opsd_debug.log("refine", "context refinement finished", num_hints=len(hints))
-        self._opsd_distributed_barrier("wait_for_everyone after refine_context_in_parallel")
 
         sft_gt = [hint + '\n' + answer + self.end_flag for hint, answer in zip(hints, answers)]
 
@@ -1669,6 +1790,19 @@ class DyMETrainer(Trainer):
             final_completion_mask_list.append(completion_mask_)
             final_advantange_list.append(advantange_)
             sft_replaced_list.append(sft_replaced)
+            if hasattr(self.checker, "record_route_binding"):
+                route_name = "sft_replaced" if sft_replaced else (
+                    "grpo" if (use_grpo or (completion_modes is None and has_correct[batch_id] > 0)) else (
+                        "opsd" if use_opsd else "other"
+                    )
+                )
+                self.checker.record_route_binding(
+                    sample_idx=i,
+                    route=route_name,
+                    checker_score=float(context_rewards_flat[i].item()),
+                    refiner_changed=hint_changed[i] if i < len(hint_changed) else False,
+                    consumed_refined_hint=bool(sft_replaced and i < len(hint_changed) and hint_changed[i]),
+                )
 
         opsd_debug.log(
             "opsd_mask",

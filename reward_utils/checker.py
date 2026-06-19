@@ -6,111 +6,23 @@ from data_utils.aokvqa.evaluator import eval_aokvqa_direct
 from data_utils.chart.evaluator import eval_one_chart
 from data_utils.commom_util import prompt_ic
 
-import math
-import os
-from filelock import FileLock
-TEMPLATE_FILE = "best_template.txt"
-LOCK_FILE = "best_template.txt.lock"
-# ----------------------------------------------------
+from reward_utils.template_pool import (
+    TemplatePool,
+    compare_templates_via_client,
+    update_best_template_if_different as _pool_update_best_template,
+)
 
-
-def _get_llm_comparison(client, system_prompt, current_template, new_template) -> bool:
-    comparison_prompt = f"""You are an expert in AI prompt engineering. Your task is to compare two reasoning templates. You must decide if the 'New Template' should replace the 'Current Template' as the single 'best' template.
-
-My goal is to keep only the *best*, *clearest*, and *most general* template.
-
----
-**Current Template:** {current_template}
----
-**New Template:** {new_template}
----
-
-**Instructions:**
-1.  **Check for Novelty:** Is the 'New Template' *semantically different*?
-2.  **Check for Quality:** If different, is the 'New Template' *objectively better* or *more general*?
-3.  **Decision:** Should the 'New Template' **replace** the 'Current Template'?
-
-Respond with **only** the word "YES" or "NO".
-
-**Decision:**"""
-
-    try:
-        response = client.get_completion(comparison_prompt, system_prompt=system_prompt, max_tokens=30)
-        decision = response.strip().upper()
-        return decision == "YES"
-    except Exception as e:
-        return False
-
-
-def _read_current_template(lock: FileLock) -> str:
-    """Safely read the file contents under lock protection (this operation is very fast)."""
-    try:
-        with lock.acquire(timeout=5):
-            if not os.path.exists(TEMPLATE_FILE):
-                return ""
-            with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
-                return f.read().strip()
-    except Exception as e:
-        print(f"[Process {os.getpid()}] Failed to read template: {e}")
-        return ""  # Return an empty string on error
-
-
-def _optimistic_write_template(lock: FileLock, new_template: str, original_template: str) -> bool:
-    """
-    Perform a Compare-and-Swap (CAS) write operation.
-    Only write new_template if the file contents are still equal to original_template.
-    """
-    try:
-        with lock.acquire(timeout=10):
-            # Step 4: Read again
-            current_template_on_disk = ""
-            if os.path.exists(TEMPLATE_FILE):
-                with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
-                    current_template_on_disk = f.read().strip()
-
-            # Step 4.1: Check for conflicts
-            # Compare the template on disk with the "original" template used for the LLM comparison
-            if current_template_on_disk != original_template:
-                # Case 2 (conflict): another process already modified the file
-                print(f"[Process {os.getpid()}] Write aborted. Template was modified by another process.")
-                return False
-
-            # Case 1 (success): file unchanged, safe to write
-            with open(TEMPLATE_FILE, "w", encoding="utf-8") as f:
-                f.write(new_template)
-            print(f"[Process {os.getpid()}] New template successfully written.")
-            return True
-
-    except Exception as e:
-        print(f"[Process {os.getpid()}] Failed to write template: {e}")
-        return False
+_DEFAULT_POOL = TemplatePool()
 
 
 def update_best_template_if_different(client, system_prompt, new_template: str):
-    """
-    Coordinate the full optimistic-lock workflow:
-    1. (Unlocked) Read
-    2. (Unlocked) Slow LLM comparison
-    3. (Locked) CAS write
-    """
-    lock = FileLock(LOCK_FILE)
-    clean_new_template = new_template.strip()
-    if not clean_new_template:
-        return
-
-    # Step 1: (locked but extremely fast) read the current template
-    original_template = _read_current_template(lock)
-
-    # If templates are identical, skip expensive LLM call
-    if original_template == clean_new_template:
-        return
-
-    # Step 2: (unlocked, slow) run LLM comparison
-    is_better = _get_llm_comparison(client, system_prompt, original_template, clean_new_template)
-
-    # Step 3: (locked, fast) attempt optimistic write
-    if is_better:
-        _optimistic_write_template(lock, clean_new_template, original_template)
+    """Backward-compatible wrapper around shared TemplatePool."""
+    _pool_update_best_template(
+        client,
+        system_prompt,
+        new_template,
+        pool=_DEFAULT_POOL,
+    )
 
 
 class RewardCalculator:
@@ -246,7 +158,12 @@ class RewardCalculator:
                     template_prompt = prompt_template % thinking
                     ext_template = self.client.get_completion(template_prompt, system_prompt=system_prompt, max_tokens=512)
                     if "none" not in ext_template.strip().lower():
-                        update_best_template_if_different(self.client, system_prompt, ext_template)
+                        _DEFAULT_POOL.maybe_update(
+                            ext_template,
+                            lambda cur, new: compare_templates_via_client(
+                                self.client, system_prompt, cur, new
+                            ),
+                        )
                 return reward
             else:
                 raise ValueError(f"Task '{task}' not supported for thinking reward.")
