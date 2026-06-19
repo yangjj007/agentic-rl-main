@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fast baseline: pure DyME (GRPO, no OPSD) on a small ChartQA subset.
+# Fast baseline: pure DyME (GRPO, no OPSD) on full ChartQA (fewer epochs).
 set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,7 +8,7 @@ source "${TEST_DIR}/launch_utils.sh"
 DYME_CONFIG="${DYME_CONFIG:-test/config/config.py}"
 export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_accelerate_config)}"
 
-prepare_fast_test_data
+prepare_fast_test_data "${DYME_CONFIG}"
 
 NUM_PROCESSES="$(detect_num_gpus)"
 print_fast_plan "dyme" "${DYME_CONFIG}"

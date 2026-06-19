@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fast baseline: cross-model OPD (7B teacher + 0.5B student) with DeepSpeed.
-# Embedded SFT cold-start steps are included in max_steps (see test/config/fast_profile.py).
+# Full dataset, fewer epochs. Embedded SFT cold-start steps count toward total steps.
 set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,7 +9,7 @@ source "${TEST_DIR}/launch_utils.sh"
 DYME_CONFIG="${DYME_CONFIG:-test/config/config_opd_7b_chartqa_deepspeed.py}"
 export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_deepspeed_zero0_config)}"
 
-prepare_fast_test_data
+prepare_fast_test_data "${DYME_CONFIG}"
 ensure_spacy_model
 
 NUM_PROCESSES="$(detect_num_gpus)"

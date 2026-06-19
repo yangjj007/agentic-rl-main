@@ -1,7 +1,8 @@
 """
 Shared fast-training defaults for test/config/* baseline wrappers.
 
-Override via environment variables (see plan / test/README.md).
+Uses the full ChartQA dataset with fewer epochs (not a sample subset).
+Override via environment variables (see test/README.md).
 """
 from __future__ import annotations
 
@@ -10,43 +11,48 @@ import os
 from typing import Any
 
 from config.env_overrides import env_float, env_int, env_str
-from data_utils.paths import OUTPUTS_DIR, project_path
+from data_utils.paths import OUTPUTS_DIR
 
-MAX_TRAIN_SAMPLES = env_int("DYME_FAST_MAX_SAMPLES", 512)
-MAX_STEPS = env_int("DYME_FAST_MAX_STEPS", 500)
+# Full dataset; reduce epochs instead of subsampling.
+RL_EPOCHS = env_int("DYME_FAST_NUM_TRAIN_EPOCHS", 1)
 SFT_EPOCHS = env_int("DYME_FAST_SFT_EPOCHS", 1)
 COLD_START_FRAC = env_float("DYME_FAST_COLD_START_FRAC", 0.08)
 OUTPUT_ROOT = env_str("DYME_FAST_OUTPUT_ROOT", os.path.join(OUTPUTS_DIR, "test-fast"))
-FAST_TRAIN_JSON = env_str(
-    "DYME_FAST_TRAIN_JSON",
-    project_path(f"data/chartqa/train_fast_{MAX_TRAIN_SAMPLES}.json"),
-)
+# Gate warmup scaling when total step count is not known at import time.
+EST_STEPS_PER_EPOCH = env_int("DYME_FAST_EST_STEPS_PER_EPOCH", 600)
 
 
-def scaled_gate_defaults(max_steps: int = MAX_STEPS) -> dict[str, Any]:
-    """Scale RLSD/OPD warmup gates to fit within a short max_steps budget."""
+def estimated_rl_steps() -> int:
+    return max(1, RL_EPOCHS * EST_STEPS_PER_EPOCH)
+
+
+def scaled_gate_defaults() -> dict[str, Any]:
+    """Scale RLSD/OPD warmup gates for a short epoch-budget run."""
+    total = estimated_rl_steps()
     return {
-        "degen_skip_warmup_steps": max(20, max_steps // 12),
-        "sft_warmup_steps": max(40, max_steps // 5),
+        "degen_skip_warmup_steps": max(20, total // 12),
+        "sft_warmup_steps": max(40, total // 5),
         "sft_warmup_slots_per_group": 4,
         "sft_cold_start_frac": COLD_START_FRAC,
     }
 
 
 def fast_dataset_config(base_dataset: dict[str, Any]) -> dict[str, Any]:
-    return {
-        **base_dataset,
-        "train_dataset": FAST_TRAIN_JSON,
-        "max_train_samples": MAX_TRAIN_SAMPLES,
-    }
+    """Keep full production dataset path; do not cap samples."""
+    ds = dict(base_dataset)
+    ds.pop("max_train_samples", None)
+    return ds
 
 
 def fast_dyme_args(base_dyme_args: dict[str, Any], output_dir: str) -> dict[str, Any]:
-    return {
+    args = {
         **base_dyme_args,
         "output_dir": output_dir,
-        "max_steps": MAX_STEPS,
+        "num_train_epochs": RL_EPOCHS,
     }
+    # Epoch-based budget; never inherit a smoke/shortrun max_steps cap.
+    args.pop("max_steps", None)
+    return args
 
 
 def fast_sft_args(base_sft_args: dict[str, Any], output_dir: str) -> dict[str, Any]:
@@ -62,6 +68,7 @@ def apply_fast_opsd_gate(opsd_config: dict[str, Any]) -> dict[str, Any]:
         **opsd_config.get("gate", {}),
         **scaled_gate_defaults(),
     }
+    gate.pop("sft_cold_start_steps", None)
     return {**opsd_config, "gate": gate}
 
 

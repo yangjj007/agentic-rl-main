@@ -1,5 +1,5 @@
 """
-Fast offline SFT baseline on a small ChartQA subset.
+Fast offline SFT baseline on full ChartQA with fewer epochs.
 
 Usage:
   bash test/train_sft.sh

@@ -1,5 +1,5 @@
 """
-Fast DyME baseline (pure RL, no OPSD) on a small ChartQA subset.
+Fast DyME baseline (pure RL, no OPSD) on full ChartQA with fewer epochs.
 
 Usage:
   bash test/train_dyme.sh
