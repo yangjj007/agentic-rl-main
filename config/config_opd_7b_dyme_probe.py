@@ -15,6 +15,7 @@ import os
 import config.config_opd_7b_chartqa as base
 from config.env_overrides import env_bool, env_float, env_int, env_list, env_optional_int, env_str
 from config.config import DEPLOT_CONFIG as _BASE_DEPLOT_CONFIG
+from config.visual_supervision_defaults import build_visual_supervision_config
 from data_utils.paths import OUTPUTS_DIR
 
 # --- Training defaults (single source of truth) ---
@@ -25,9 +26,6 @@ OUTPUT_DIR = os.path.join(OUTPUTS_DIR, "opd-7b-dyme-probe-chartqa")
 
 TEACHER_PROBE_ENABLED = True
 TEACHER_TRAJECTORY_ENABLED = True
-VISUAL_CHECKER_ENABLED = True
-VISUAL_REFINER_ENABLED = True
-
 LOSS_TYPE = "srkl"
 SRKL_ALPHA = 0.1
 OPSD_WEIGHT = 1.0
@@ -45,9 +43,6 @@ OUTPUT_DIR = env_str("DYME_OUTPUT_DIR", OUTPUT_DIR)
 
 TEACHER_PROBE_ENABLED = env_bool("DYME_TEACHER_PROBE", TEACHER_PROBE_ENABLED)
 TEACHER_TRAJECTORY_ENABLED = env_bool("DYME_TEACHER_TRAJECTORY", TEACHER_TRAJECTORY_ENABLED)
-VISUAL_CHECKER_ENABLED = env_bool("DYME_VISUAL_CHECKER", VISUAL_CHECKER_ENABLED)
-VISUAL_REFINER_ENABLED = env_bool("DYME_VISUAL_REFINER", VISUAL_REFINER_ENABLED)
-
 LOSS_TYPE = env_str("DYME_OPSD_LOSS_TYPE", LOSS_TYPE)
 SRKL_ALPHA = env_float("DYME_OPSD_SRKL_ALPHA", SRKL_ALPHA)
 OPSD_WEIGHT = env_float("DYME_OPSD_WEIGHT", OPSD_WEIGHT)
@@ -105,34 +100,7 @@ DYME_OPSD_CONFIG = {
         "weight": TEACHER_TRAJ_FKL_WEIGHT,
         "max_new_tokens": env_int("DYME_TEACHER_TRAJ_MAX_NEW_TOKENS", 128),
     },
-    "visual_supervision": {
-        "enabled": VISUAL_CHECKER_ENABLED or VISUAL_REFINER_ENABLED,
-        "ic_source": env_str("DYME_VISUAL_IC_SOURCE", "teacher_image"),
-        "checker": {
-            "enabled": VISUAL_CHECKER_ENABLED,
-            "model_source": "loaded_teacher",
-            "max_per_batch": env_int("DYME_VISUAL_CHECKER_MAX_PER_BATCH", 0),
-            "fallback": "local",
-        },
-        "refiner": {
-            "enabled": VISUAL_REFINER_ENABLED,
-            "model_source": "loaded_teacher",
-            "scope": "batch_all",
-            "fallback": "passthrough",
-            "include_gold": False,
-        },
-        "template_pool": {
-            "path": env_str("DYME_VISUAL_TEMPLATE_PATH", "best_template.txt"),
-            "refresh_interval_sec": env_float("DYME_VISUAL_TEMPLATE_REFRESH_SEC", 60.0),
-        },
-        "logging": {
-            "enabled": env_bool("DYME_VISUAL_LOG", True),
-            "sample_count": env_int("DYME_VISUAL_LOG_SAMPLES", 3),
-            "preview_chars": env_int("DYME_VISUAL_LOG_PREVIEW_CHARS", 400),
-            "save_artifacts": env_bool("DYME_VISUAL_SAVE_ARTIFACTS", True),
-            "log_route_binding": env_bool("DYME_VISUAL_LOG_ROUTE", True),
-        },
-    },
+    "visual_supervision": build_visual_supervision_config(),
     "debug": {
         **base.DYME_OPSD_CONFIG.get("debug", {}),
         "detail_every": env_int("DYME_OPSD_DETAIL_EVERY", 0),

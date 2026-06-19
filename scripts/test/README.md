@@ -10,7 +10,7 @@
 |----------|------|------|------|------|
 | **纯 SFT** | `train_sft.sh` | `config/config_rlsd_chartqa.py` | `main_sft.py` | 离线监督微调，全量数据，4 epoch |
 | **DyME** | `train_dyme.sh` | `config/config.py` | `main.py --mode rl` | 纯 GRPO，无 OPSD，4 epoch |
-| **OPD** | `train_opd.sh` | `config/config_opd_7b_chartqa_deepspeed.py` | `main.py --mode rl --opsd_enabled` | 7B teacher + 0.5B student，DeepSpeed，4 epoch |
+| **OPD** | `train_opd.sh` | `config/config_opd_7b_chartqa_deepspeed.py` | `main.py --mode rl --opsd_enabled` | 7B teacher + 0.5B student，DeepSpeed，4 epoch，**含 Visual Supervision** |
 
 三条 baseline 默认从同一 base 0.5B 出发。OPD **不依赖**先跑离线 SFT；embedded 冷启动计入总步数（见下）。
 
@@ -55,6 +55,8 @@ bash scripts/test/run_all_baselines.sh
 | OPD | `outputs/test-fast/opd-7b-ds/` |
 
 日志：`outputs/test-fast/logs/`
+
+Visual Supervision 产物：`outputs/test-fast/opd-7b-ds/visual_supervision/step_*/`；日志关键字 `[VISUAL-BATCH]`。可用 `DYME_VISUAL_CHECKER=0` / `DYME_VISUAL_REFINER=0` 关闭。
 
 ### 可选：SFT 后再跑 OPD
 

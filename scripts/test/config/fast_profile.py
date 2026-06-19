@@ -63,6 +63,16 @@ def fast_sft_args(base_sft_args: dict[str, Any], output_dir: str) -> dict[str, A
     }
 
 
+def merge_visual_supervision_opsd(opsd_config: dict[str, Any]) -> dict[str, Any]:
+    """Attach shared 7B Visual Checker/Refiner settings (same as dyme_probe)."""
+    from config.visual_supervision_defaults import build_visual_supervision_config
+
+    return {
+        **opsd_config,
+        "visual_supervision": build_visual_supervision_config(),
+    }
+
+
 def apply_fast_opsd_gate(opsd_config: dict[str, Any]) -> dict[str, Any]:
     gate = {
         **opsd_config.get("gate", {}),
@@ -78,6 +88,7 @@ def apply_to_config(
     output_dir: str,
     opsd_enabled: bool | None = None,
     disable_deplot: bool = True,
+    enable_visual_supervision: bool = False,
 ) -> dict[str, Any]:
     """Return a deep-copied CONFIG with fast-training overrides applied."""
     cfg = copy.deepcopy(base_config)
@@ -93,4 +104,6 @@ def apply_to_config(
         cfg.setdefault("opsd", {})["enabled"] = opsd_enabled
     if cfg.get("opsd", {}).get("enabled"):
         cfg["opsd"] = apply_fast_opsd_gate(cfg["opsd"])
+        if enable_visual_supervision:
+            cfg["opsd"] = merge_visual_supervision_opsd(cfg["opsd"])
     return cfg

@@ -21,4 +21,5 @@ OUTPUT_DIR = os.path.join(OUTPUT_ROOT, "opd-7b-ds")
 CONFIG = apply_to_config(
     base.CONFIG,
     output_dir=OUTPUT_DIR,
+    enable_visual_supervision=True,
 )
