@@ -724,6 +724,11 @@ class DyMETrainer(Trainer):
             self._max_training_steps(),
         )
 
+    def _opsd_distributed_barrier(self, label: str) -> None:
+        if self.accelerator.num_processes > 1:
+            opsd_debug.log_sync_point("dist", label)
+            self.accelerator.wait_for_everyone()
+
     def _ensure_teacher_model(self) -> None:
         if self.teacher_model is not None or not self._teacher_model_config:
             self._run_teacher_vocab_check_once()
@@ -1527,6 +1532,7 @@ class DyMETrainer(Trainer):
                 global_step=global_step,
                 device=device,
             )
+            self._opsd_distributed_barrier("wait_for_everyone after teacher_probe routing")
             prompt_modes = [
                 completion_modes[i * self.num_generations]
                 for i in range(acc_rewards.shape[0])
@@ -1560,6 +1566,7 @@ class DyMETrainer(Trainer):
 
         hints = refine_context_in_parallel(self.refiner, question_wo_prompts, hints, answers, task=self.task_name, gpu_id=gpu_id)
         opsd_debug.log("refine", "context refinement finished", num_hints=len(hints))
+        self._opsd_distributed_barrier("wait_for_everyone after refine_context_in_parallel")
 
         sft_gt = [hint + '\n' + answer + self.end_flag for hint, answer in zip(hints, answers)]
 
@@ -1811,6 +1818,8 @@ class DyMETrainer(Trainer):
             else:
                 old_per_token_logps = None
                 opsd_debug.log("logps", "skip old_per_token_logps because num_iterations == 1")
+
+        self._opsd_distributed_barrier("wait_for_everyone before generate-path metric gathers")
 
         # Log the metrics
         if mode == "train":
@@ -2164,6 +2173,7 @@ class DyMETrainer(Trainer):
                 if opsd_loss_tensor is not None
                 else torch.zeros((), device=loss.device, dtype=loss.dtype)
             )
+            self._opsd_distributed_barrier("wait_for_everyone before gather_for_metrics(opsd_loss)")
             opsd_debug.log_sync_point("dist", "before gather_for_metrics(opsd_loss)")
             self._metrics[mode].setdefault("loss/opsd", []).append(
                 self.accelerator.gather_for_metrics(opsd_metric_value).mean().item()
@@ -2222,14 +2232,13 @@ class DyMETrainer(Trainer):
                     if teacher_traj_loss_tensor is not None
                     else torch.zeros((), device=loss.device, dtype=loss.dtype)
                 )
+                self._opsd_distributed_barrier("wait_for_everyone before gather_for_metrics(teacher_traj_fkl)")
                 self._metrics[mode].setdefault("loss/teacher_traj_fkl", []).append(
                     self.accelerator.gather_for_metrics(metric_value).mean().item()
                 )
             if opsd_indices and opsd_debug.should_log_detail(global_step):
                 opsd_diagnostics.log_opsd_jsd_diagnostics(global_step=global_step)
-            if self.accelerator.num_processes > 1:
-                opsd_debug.log_sync_point("dist", "wait_for_everyone after OPSD compute_loss")
-                self.accelerator.wait_for_everyone()
+            self._opsd_distributed_barrier("wait_for_everyone after OPSD compute_loss")
 
         opsd_diagnostics.log_loss_diagnostics(
             global_step=global_step,

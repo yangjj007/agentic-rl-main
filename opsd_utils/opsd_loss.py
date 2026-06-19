@@ -470,13 +470,44 @@ def compute_vlm_opsd_loss_masked_batch(
         )
         n_img = teacher_img_counts[local]
         teacher_batch_num_images = as_batch_num_images_tensor(n_img, t_pixel)
-        if not is_real and deepspeed_requires_single_student_forward():
-            # ZeRO-1/2: avoid extra student forwards (even loss*0 still backprops).
-            losses.append(torch.zeros((), device=inputs["prompt_ids"].device, requires_grad=True))
-            continue
         precomputed_student_logits = None
         if student_completion_logits is not None:
             precomputed_student_logits = student_completion_logits[local : local + 1]
+        if not is_real and deepspeed_requires_single_student_forward():
+            # ZeRO-1/2: no second student forward, but still run teacher forward on
+            # padded iterations so every rank spends similar time in the OPSD loop.
+            # Otherwise fast ranks hit gather_for_metrics while slow ranks are still
+            # in teacher 7B forwards → NCCL _ALLGATHER_BASE timeout.
+            if precomputed_student_logits is None:
+                losses.append(torch.zeros((), device=inputs["prompt_ids"].device, requires_grad=True))
+                continue
+            with opsd_debug.timed("opsd_loss", f"dummy_teacher_sync idx={global_idx}"):
+                loss = compute_vlm_opsd_loss(
+                    model,
+                    inputs["prompt_ids"][local : local + 1],
+                    inputs["prompt_mask"][local : local + 1],
+                    inputs["pixel_values"][local : local + 1],
+                    student_sizes,
+                    inputs["teacher_prompt_ids"][local : local + 1],
+                    inputs["teacher_prompt_mask"][local : local + 1],
+                    t_pixel,
+                    inputs["completion_ids"][local : local + 1],
+                    inputs["completion_mask"][local : local + 1],
+                    beta=beta,
+                    teacher_image_sizes=teacher_sizes,
+                    processor=processor,
+                    teacher_batch_num_images=teacher_batch_num_images,
+                    teacher_model=teacher_model,
+                    global_idx=None,
+                    capture_jsd_detail=False,
+                    tokenizer=tokenizer,
+                    student_logits=precomputed_student_logits,
+                    loss_type=loss_type,
+                    srkl_alpha=srkl_alpha,
+                )
+                loss = loss * 0.0
+            losses.append(loss)
+            continue
         with opsd_debug.timed("opsd_loss", f"sample_opsd_loss idx={global_idx}"):
             loss = compute_vlm_opsd_loss(
                 model,
