@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import torch
-import torch.nn.functional as F
 from PIL import Image
 
 from data_utils.paths import resolve_image_path
@@ -18,6 +17,7 @@ from opsd_utils.teacher_batching import (
     move_pixel_values_to_model_device,
     process_teacher_sample,
     stack_teacher_processor_batches,
+    _pad_aligned_batch_rows,
 )
 
 
@@ -57,24 +57,6 @@ def _images_to_pil(images: Optional[list[Any]]) -> list[Image.Image]:
         if loaded is not None:
             out.append(loaded)
     return out
-
-
-def _pad_aligned_batch_rows(
-    ids_rows: list[torch.Tensor],
-    mask_rows: list[torch.Tensor],
-    pad_id: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    max_len = max(int(row.shape[1]) for row in ids_rows)
-    out_ids: list[torch.Tensor] = []
-    out_masks: list[torch.Tensor] = []
-    for ids, mask in zip(ids_rows, mask_rows):
-        pad_len = max_len - ids.shape[1]
-        if pad_len > 0:
-            ids = F.pad(ids, (0, pad_len), value=pad_id)
-            mask = F.pad(mask, (0, pad_len), value=0)
-        out_ids.append(ids)
-        out_masks.append(mask)
-    return torch.cat(out_ids, dim=0), torch.cat(out_masks, dim=0)
 
 
 def _align_stacked_batch(
@@ -224,12 +206,12 @@ def teacher_generate_batch(
         per_sample_batches.append(process_teacher_sample(processor, req.prompt_text, pil_images))
 
     stacked = stack_teacher_processor_batches(processor, per_sample_batches)
-    prompt_len = int(stacked["input_ids"].shape[1])
     aligned_ids, aligned_mask, pixel_values, image_sizes, batch_num_images = _align_stacked_batch(
         teacher_model,
         processor,
         stacked,
     )
+    prompt_len = int(aligned_ids.shape[1])
 
     try:
         if isinstance(pixel_values, list):

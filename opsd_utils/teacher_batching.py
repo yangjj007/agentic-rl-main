@@ -145,10 +145,10 @@ def stack_teacher_processor_batches(
     for batch in per_sample_batches:
         ids = batch["input_ids"]
         attn = batch["attention_mask"]
-        pad_len = max_len - ids.shape[1]
-        if pad_len > 0:
-            ids = F.pad(ids, (0, pad_len), value=pad_id)
-            attn = F.pad(attn, (0, pad_len), value=0)
+        if ids.shape[1] < max_len:
+            ids, attn = _pad_batch_token_rows(
+                [ids], [attn], pad_id, padding_side="left", target_len=max_len
+            )
         input_ids_list.append(ids)
         attn_list.append(attn)
         image_token_counts.append(count_image_tokens(ids, processor))
@@ -195,14 +195,21 @@ def process_teacher_sample(processor, teacher_text: str, images: list[Any]) -> d
     """Tokenize one teacher sample via processor.apply_chat_template(tokenize=True)."""
     pil_images = [img for img in images if isinstance(img, Image.Image)]
     messages = _messages_for_teacher(teacher_text, pil_images)
-    batch = processor.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        tokenize=True,
-        return_dict=True,
-        return_tensors="pt",
-        padding=True,
-    )
+    tok = processor.tokenizer
+    prev_padding_side = getattr(tok, "padding_side", "right")
+    if prev_padding_side != "left":
+        tok.padding_side = "left"
+    try:
+        batch = processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+            padding=True,
+        )
+    finally:
+        tok.padding_side = prev_padding_side
     n_img_tok = count_image_tokens(batch["input_ids"], processor)
     opsd_debug.log(
         "teacher_batching",
@@ -453,8 +460,11 @@ def truncate_image_tokens(
     out_mask = []
     for row, mask in zip(trimmed_rows, trimmed_masks):
         pad_len = max_len - len(row)
-        out_ids.append(row + [pad_token_id] * pad_len)
-        out_mask.append(mask + [0] * pad_len)
+        if pad_len > 0:
+            row = [pad_token_id] * pad_len + row
+            mask = [0] * pad_len + mask
+        out_ids.append(row)
+        out_mask.append(mask)
     return (
         torch.tensor(out_ids, dtype=input_ids.dtype, device=input_ids.device),
         torch.tensor(out_mask, dtype=attention_mask.dtype, device=attention_mask.device),
@@ -520,22 +530,39 @@ def _align_prompt_image_tokens_one_row(
     return truncate_image_tokens(input_ids, attention_mask, img_id, n_features, pad_id)
 
 
+def _pad_batch_token_rows(
+    ids_rows: list[torch.Tensor],
+    mask_rows: list[torch.Tensor],
+    pad_id: int,
+    *,
+    padding_side: str = "left",
+    target_len: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pad variable-length token rows for batched decoder-only generate (default: left)."""
+    max_len = target_len if target_len is not None else max(int(row.shape[1]) for row in ids_rows)
+    out_ids: list[torch.Tensor] = []
+    out_masks: list[torch.Tensor] = []
+    side = (padding_side or "left").lower()
+    for ids, mask in zip(ids_rows, mask_rows):
+        pad_len = max_len - ids.shape[1]
+        if pad_len > 0:
+            if side == "left":
+                ids = F.pad(ids, (pad_len, 0), value=pad_id)
+                mask = F.pad(mask, (pad_len, 0), value=0)
+            else:
+                ids = F.pad(ids, (0, pad_len), value=pad_id)
+                mask = F.pad(mask, (0, pad_len), value=0)
+        out_ids.append(ids)
+        out_masks.append(mask)
+    return torch.cat(out_ids, dim=0), torch.cat(out_masks, dim=0)
+
+
 def _pad_aligned_batch_rows(
     ids_rows: list[torch.Tensor],
     mask_rows: list[torch.Tensor],
     pad_id: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    max_len = max(int(row.shape[1]) for row in ids_rows)
-    out_ids: list[torch.Tensor] = []
-    out_masks: list[torch.Tensor] = []
-    for ids, mask in zip(ids_rows, mask_rows):
-        pad_len = max_len - ids.shape[1]
-        if pad_len > 0:
-            ids = F.pad(ids, (0, pad_len), value=pad_id)
-            mask = F.pad(mask, (0, pad_len), value=0)
-        out_ids.append(ids)
-        out_masks.append(mask)
-    return torch.cat(out_ids, dim=0), torch.cat(out_masks, dim=0)
+    return _pad_batch_token_rows(ids_rows, mask_rows, pad_id, padding_side="left")
 
 
 def align_teacher_prompt_image_tokens(

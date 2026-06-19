@@ -111,6 +111,32 @@ def test_stack_teacher_processor_batches_keeps_per_sample_pixels():
     assert out["batch_num_images"] == [2, 2]
 
 
+def test_stack_teacher_processor_batches_left_pads():
+    per_sample = [
+        {
+            "input_ids": torch.tensor([[1, 2, 3, 4, 5]]),
+            "attention_mask": torch.ones(1, 5, dtype=torch.long),
+        },
+        {
+            "input_ids": torch.tensor([[6, 7, 8, 9, 10, 11, 12]]),
+            "attention_mask": torch.ones(1, 7, dtype=torch.long),
+        },
+    ]
+
+    class _Tok:
+        pad_token_id = 0
+
+    class _Proc:
+        tokenizer = _Tok()
+
+    out = stack_teacher_processor_batches(_Proc(), per_sample)
+    assert out["input_ids"].shape == (2, 7)
+    assert out["input_ids"][0, 0].item() == 0
+    assert out["input_ids"][0, -1].item() == 5
+    assert out["attention_mask"][0, 0].item() == 0
+    assert out["attention_mask"][0, -1].item() == 1
+
+
 def test_as_batch_num_images_tensor_shape():
     pv = torch.zeros(2, 1, 3, 384, 384)
     bn = as_batch_num_images_tensor(2, pv)

@@ -19,6 +19,7 @@ if _test_cfg_dir not in sys.path:
 
 import config.config_opd_7b_chartqa_deepspeed as base
 from config.env_overrides import env_int, env_str
+from config.visual_supervision_defaults import build_visual_supervision_config
 from data_utils.paths import OUTPUTS_DIR
 
 OUTPUT_DIR = env_str(
@@ -66,6 +67,7 @@ DYME_OPSD_CONFIG = {
     **base.DYME_OPSD_CONFIG,
     "enabled": True,
     "mode": _opsd_mode,
+    "visual_supervision": build_visual_supervision_config(),
     "gate": {
         **base.DYME_OPSD_CONFIG.get("gate", {}),
         **_FORCE_GATE,

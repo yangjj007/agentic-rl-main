@@ -49,6 +49,8 @@ def collate_fn(examples, processor, label_id=151646):
 
     texts = []
     images = []
+    if getattr(processor.tokenizer, "padding_side", "right") != "left":
+        processor.tokenizer.padding_side = "left"
     for example in examples:
       image = example["image"]
       if isinstance(image, str):
