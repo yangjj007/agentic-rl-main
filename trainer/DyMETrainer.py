@@ -789,6 +789,10 @@ class DyMETrainer(Trainer):
             questions.append(sample.get("question_wo_prompt", sample.get("prompt", "")))
         return samples, images, questions
 
+    def _refiner_skip_cold_start(self) -> bool:
+        visual_cfg = self.visual_supervision_meta.get("visual_config") or {}
+        return bool(visual_cfg.get("refiner", {}).get("skip_cold_start", True))
+
     def _prepare_visual_supervision_batch(
         self,
         inputs: list[dict[str, Union[torch.Tensor, Any]]],
@@ -811,13 +815,18 @@ class DyMETrainer(Trainer):
                 output_dir=self.args.output_dir,
             )
         recorder = getattr(self.checker, "_recorder", None)
+        ic_cache = getattr(self.checker, "_ic_cache", None)
+        skip_cold_start = self._in_sft_cold_start() and self._refiner_skip_cold_start()
         if hasattr(self.refiner, "begin_generate_batch"):
             self.refiner.begin_generate_batch(
                 samples=samples,
                 images=images,
+                questions=questions,
                 global_step=global_step,
                 output_dir=self.args.output_dir,
                 recorder=recorder,
+                ic_cache=ic_cache,
+                skip_cold_start=skip_cold_start,
             )
 
     def _finish_visual_supervision_batch(self, global_step: int) -> dict[str, Any]:
@@ -1175,25 +1184,26 @@ class DyMETrainer(Trainer):
         answers = [x["answer"] for x in inputs]
         gpu_id = self.accelerator.device.index
         prompts_count = prompt_ids.size(0)
-        self._prepare_visual_supervision_batch(
-            inputs,
-            global_step=global_step,
-            expanded_count=prompts_count,
-        )
-        refine_fn = (
-            refine_context_sequential
-            if getattr(self.refiner, "requires_sequential", False)
-            else refine_context_in_parallel
-        )
-        hints = refine_fn(
-            self.refiner,
-            question_wo_prompts,
-            hints,
-            answers,
-            task=self.task_name,
-            gpu_id=gpu_id,
-        )
-        self._finish_visual_supervision_batch(global_step)
+        if not self._refiner_skip_cold_start():
+            self._prepare_visual_supervision_batch(
+                inputs,
+                global_step=global_step,
+                expanded_count=prompts_count,
+            )
+            refine_fn = (
+                refine_context_sequential
+                if getattr(self.refiner, "requires_sequential", False)
+                else refine_context_in_parallel
+            )
+            hints = refine_fn(
+                self.refiner,
+                question_wo_prompts,
+                hints,
+                answers,
+                task=self.task_name,
+                gpu_id=gpu_id,
+            )
+            self._finish_visual_supervision_batch(global_step)
         sft_gt_rows = []
         for i in range(prompts_count):
             src = self._source_row_index(i, raw_count, prompts_count)

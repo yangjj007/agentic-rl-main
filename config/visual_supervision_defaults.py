@@ -12,13 +12,18 @@ VISUAL_REFINER_ENABLED = env_bool("DYME_VISUAL_REFINER", VISUAL_REFINER_ENABLED)
 
 def build_visual_supervision_config() -> dict:
     """7B teacher Visual Checker / Refiner settings (env-overridable)."""
+    max_ic_tokens = env_int("DYME_VISUAL_MAX_IC_TOKENS", 512)
+    max_refine_tokens = env_int("DYME_VISUAL_MAX_REFINE_TOKENS", 512)
     return {
         "enabled": VISUAL_CHECKER_ENABLED or VISUAL_REFINER_ENABLED,
         "ic_source": env_str("DYME_VISUAL_IC_SOURCE", "teacher_image"),
+        "prefetch_ic": env_bool("DYME_VISUAL_PREFETCH_IC", True),
+        "dedupe_per_batch": env_bool("DYME_VISUAL_DEDUPE", True),
         "checker": {
             "enabled": VISUAL_CHECKER_ENABLED,
             "model_source": "loaded_teacher",
             "max_per_batch": env_int("DYME_VISUAL_CHECKER_MAX_PER_BATCH", 0),
+            "max_ic_tokens": max_ic_tokens,
             "fallback": "local",
         },
         "refiner": {
@@ -27,6 +32,9 @@ def build_visual_supervision_config() -> dict:
             "scope": "batch_all",
             "fallback": "passthrough",
             "include_gold": False,
+            "skip_cold_start": env_bool("DYME_VISUAL_REFINER_SKIP_COLD_START", True),
+            "max_ic_tokens": max_ic_tokens,
+            "max_refine_tokens": max_refine_tokens,
         },
         "template_pool": {
             "path": env_str("DYME_VISUAL_TEMPLATE_PATH", "best_template.txt"),

@@ -177,9 +177,45 @@ def refine_context_sequential(
     task,
     gpu_id: int,
 ):
-    """Sequential refine path for GPU-backed teacher refiner."""
-    refined = []
-    for i, (q, h, a) in enumerate(zip(questions, hints, reference_answers)):
-        refiner._current_sample_idx = i  # noqa: SLF001
-        refined.append(refiner.refine_hint(q, h, a, task, gpu_id))
+    """Sequential refine path for GPU-backed teacher refiner (optional per-batch dedupe)."""
+    from reward_utils.visual_batch_ops import refine_dedupe_key
+
+    visual_cfg = getattr(refiner, "visual_config", {}) or {}
+    dedupe = visual_cfg.get("dedupe_per_batch", True)
+    images = getattr(refiner, "_batch_images", None) or []
+
+    if not dedupe:
+        refined = []
+        for i, (q, h, a) in enumerate(zip(questions, hints, reference_answers)):
+            refiner._current_sample_idx = i  # noqa: SLF001
+            refined.append(refiner.refine_hint(q, h, a, task, gpu_id))
+        return refined
+
+    n = len(questions)
+    refined: list[Optional[str]] = [None] * n
+    groups: dict[tuple[str, str, str], list[int]] = {}
+    for i, (q, h) in enumerate(zip(questions, hints)):
+        image = images[i] if i < len(images) else None
+        key = refine_dedupe_key(q, h, image)
+        groups.setdefault(key, []).append(i)
+
+    for indices in groups.values():
+        i0 = indices[0]
+        refiner._current_sample_idx = i0  # noqa: SLF001
+        result = refiner.refine_hint(
+            questions[i0],
+            hints[i0],
+            reference_answers[i0],
+            task,
+            gpu_id,
+        )
+        for i in indices:
+            refined[i] = result
+            if i != i0 and hasattr(refiner, "record_refiner_dedupe"):
+                refiner.record_refiner_dedupe(
+                    sample_idx=i,
+                    result=result,
+                    hint=hints[i],
+                    source_idx=i0,
+                )
     return refined

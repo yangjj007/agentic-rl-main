@@ -8,6 +8,7 @@ from opsd_utils.visual_supervision_log import VisualBatchRecorder
 from reward_utils.refiner import ContextRefinerLocal
 from reward_utils.template_pool import TemplatePool
 from reward_utils.teacher_generate import teacher_generate_one
+from reward_utils.visual_batch_ops import prefetch_ic_unique
 from reward_utils.visual_ic import extract_visual_facts_teacher
 
 
@@ -39,6 +40,8 @@ class TeacherVisualRefiner(ContextRefinerLocal):
         self._ic_source = self.visual_config.get("ic_source", "teacher_image")
         self._max_ic_tokens = int(refiner_cfg.get("max_ic_tokens", 768))
         self._max_refine_tokens = int(refiner_cfg.get("max_refine_tokens", 1000))
+        self._skip_cold_start = bool(refiner_cfg.get("skip_cold_start", True))
+        self._prefetch_ic = bool(self.visual_config.get("prefetch_ic", True))
         self.template_pool = template_pool or TemplatePool(
             template_path=self.visual_config.get("template_pool", {}).get("path", "best_template.txt"),
             refresh_interval_sec=float(
@@ -51,6 +54,7 @@ class TeacherVisualRefiner(ContextRefinerLocal):
         self._ic_cache: dict[tuple[str, str], str] = {}
         self._batch_samples: list[dict] = []
         self._batch_images: list[Any] = []
+        self._skip_cold_start_active = False
 
     def bind_teacher(self, teacher_model, processor) -> None:
         self._teacher_model = teacher_model
@@ -61,9 +65,12 @@ class TeacherVisualRefiner(ContextRefinerLocal):
         *,
         samples: list[dict],
         images: list[Any],
+        questions: Optional[list[str]] = None,
         global_step: int,
         output_dir: str,
         recorder: Optional[VisualBatchRecorder] = None,
+        ic_cache: Optional[dict] = None,
+        skip_cold_start: bool = False,
     ) -> None:
         if recorder is not None:
             self._recorder = recorder
@@ -76,11 +83,59 @@ class TeacherVisualRefiner(ContextRefinerLocal):
             )
         self._batch_samples = samples
         self._batch_images = images
-        self._ic_cache = {}
+        self._skip_cold_start_active = skip_cold_start or self._skip_cold_start
+        if ic_cache is not None:
+            self._ic_cache = ic_cache
+        else:
+            self._ic_cache = {}
+        batch_questions = questions or [
+            s.get("question_wo_prompt", s.get("question", "")) for s in samples
+        ]
+        if (
+            not self._skip_cold_start_active
+            and self._prefetch_ic
+            and ic_cache is None
+        ):
+            prefetch_ic_unique(
+                teacher_model=self._teacher_model,
+                processor=self._processor,
+                samples=samples,
+                images=images,
+                questions=batch_questions,
+                ic_source=self._ic_source,
+                max_new_tokens=self._max_ic_tokens,
+                cache=self._ic_cache,
+                recorder=self._recorder,
+            )
 
     def end_generate_batch(self) -> None:
         self._batch_samples = []
         self._batch_images = []
+        self._skip_cold_start_active = False
+
+    def record_refiner_dedupe(
+        self,
+        *,
+        sample_idx: int,
+        result: str,
+        hint: str,
+        source_idx: int,
+    ) -> None:
+        if self._recorder is None:
+            return
+        in_len = len(hint or "")
+        out_len = len(result or "")
+        self._recorder.record_refiner(
+            sample_idx=sample_idx,
+            changed=result.strip() != hint.strip(),
+            in_len=in_len,
+            out_len=out_len,
+            delta=out_len - in_len,
+            dedupe_hit=True,
+            dedupe_source_idx=source_idx,
+            hint_after_preview=result[:400],
+            passthrough=result.strip() == hint.strip(),
+        )
 
     def refine_hint(self, question, hint: str, reference_answer: str, task: str, gpu_id=None):
         sample_idx = getattr(self, "_current_sample_idx", 0)
@@ -95,6 +150,19 @@ class TeacherVisualRefiner(ContextRefinerLocal):
                     delta=0,
                     reason="empty_hint",
                     passthrough=True,
+                )
+            return hint
+
+        if self._skip_cold_start_active:
+            if self._recorder is not None:
+                self._recorder.record_refiner(
+                    sample_idx=sample_idx,
+                    changed=False,
+                    in_len=in_len,
+                    out_len=in_len,
+                    delta=0,
+                    passthrough=True,
+                    reason="skip_cold_start",
                 )
             return hint
 

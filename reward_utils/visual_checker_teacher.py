@@ -9,6 +9,7 @@ from opsd_utils.visual_supervision_log import VisualBatchRecorder
 from reward_utils.checker import RewardCalculatorLocal
 from reward_utils.template_pool import TemplatePool, _comparison_prompt
 from reward_utils.teacher_generate import teacher_generate_one
+from reward_utils.visual_batch_ops import prefetch_ic_unique
 from reward_utils.visual_ic import extract_visual_facts_teacher
 
 
@@ -70,6 +71,7 @@ class TeacherVisualChecker(RewardCalculatorLocal):
         self._batch_images: list[Any] = []
         self._batch_questions: list[str] = []
         self._teacher_budget_used = 0
+        self._prefetch_ic = bool(self.visual_config.get("prefetch_ic", True))
 
     def bind_teacher(self, teacher_model, processor) -> None:
         self._teacher_model = teacher_model
@@ -95,6 +97,18 @@ class TeacherVisualChecker(RewardCalculatorLocal):
         self._batch_questions = questions
         self._ic_cache = {}
         self._teacher_budget_used = 0
+        if self._prefetch_ic:
+            prefetch_ic_unique(
+                teacher_model=self._teacher_model,
+                processor=self._processor,
+                samples=samples,
+                images=images,
+                questions=questions,
+                ic_source=self._ic_source,
+                max_new_tokens=self._max_ic_tokens,
+                cache=self._ic_cache,
+                recorder=self._recorder,
+            )
 
     def end_generate_batch(self) -> dict[str, Any]:
         if self._recorder is None:

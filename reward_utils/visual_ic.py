@@ -35,8 +35,16 @@ def build_prompt_s1(question: str) -> str:
     return PROMPT_S1.replace("__QUESTION__", str(question or ""))
 
 
+def _strip_code_fence(text: str) -> str:
+    s = (text or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s*```\s*$", "", s)
+    return s.strip()
+
+
 def _parse_ic_json(text: str) -> tuple[Optional[dict], Optional[str]]:
-    raw = (text or "").strip()
+    raw = _strip_code_fence(text)
     if not raw:
         return None, "empty_output"
     try:
@@ -104,6 +112,17 @@ def extract_visual_facts_teacher(
         if recorder is not None:
             recorder.record_ic(**meta)
         return ic_text, meta
+
+    if ic_source == "auto":
+        ic_text, fb = _ic_text_from_sample(sample)
+        if ic_text:
+            meta.update(_ic_stats(None, ic_text))
+            meta.update(parse_ok=True, ic_source=f"auto_{fb}", ic_preview=ic_text[:400])
+            if cache is not None:
+                cache[cache_key] = ic_text
+            if recorder is not None:
+                recorder.record_ic(**meta)
+            return ic_text, meta
 
     if teacher_model is None or processor is None or ic_source != "teacher_image":
         ic_text, fb = _ic_text_from_sample(sample)

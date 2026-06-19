@@ -37,6 +37,45 @@ def test_parse_ic_json_extracts_object():
     assert len(obj["objects"]) == 1
 
 
+def test_parse_ic_json_strips_markdown_fence():
+    text = '```json\n{"description": "chart", "objects": []}\n```'
+    obj, err = _parse_ic_json(text)
+    assert err is None
+    assert obj["description"] == "chart"
+
+
+def test_refine_context_sequential_dedupes():
+    from reward_utils.compute_rewards import refine_context_sequential
+
+    class StubRefiner:
+        requires_sequential = True
+        visual_config = {"dedupe_per_batch": True}
+        _batch_images = ["img/a.png", "img/a.png", "img/b.png"]
+
+        def __init__(self):
+            self.calls = 0
+
+        def refine_hint(self, question, hint, answer, task, gpu_id):
+            self.calls += 1
+            return f"refined:{hint[:8]}"
+
+        def record_refiner_dedupe(self, **kwargs):
+            pass
+
+    refiner = StubRefiner()
+    out = refine_context_sequential(
+        refiner,
+        ["q1", "q1", "q2"],
+        ["hint-aaaa", "hint-aaaa", "hint-bbbb"],
+        ["a1", "a1", "a2"],
+        "chart",
+        0,
+    )
+    assert refiner.calls == 2
+    assert out[0] == out[1]
+    assert out[2] != out[0]
+
+
 def test_template_pool_cas_write():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "best_template.txt")
