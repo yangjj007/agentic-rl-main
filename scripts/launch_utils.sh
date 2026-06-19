@@ -221,7 +221,6 @@ print(1 if cfg.get('deplot', {}).get('enabled', True) else 0)
 prepare_chartqa_training_data() {
   local cfg="${1:-}"
   export WANDB_MODE="${WANDB_MODE:-disabled}"
-  export WANDB_DISABLED="${WANDB_DISABLED:-true}"
   export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-$(config_deplot_enabled "${cfg}")}"
   ensure_chartqa_vf_full
   ensure_tokenizers

@@ -1,7 +1,7 @@
 compute_environment: LOCAL_MACHINE
 debug: false
 deepspeed_config:
-  gradient_accumulation_steps: auto
+  gradient_accumulation_steps: 16
   zero3_init_flag: false
   zero_stage: 0
 distributed_type: DEEPSPEED

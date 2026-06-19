@@ -11,7 +11,6 @@ source "${ROOT}/scripts/launch_utils.sh"
 export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-0}"
 export DYME_LOG_DIR="${DYME_LOG_DIR:-${ROOT}/outputs/test-fast/logs}"
 export WANDB_MODE="${WANDB_MODE:-disabled}"
-export WANDB_DISABLED="${WANDB_DISABLED:-true}"
 
 prepare_fast_test_data() {
   local cfg="${1:-scripts/test/config/config_rlsd_chartqa.py}"
