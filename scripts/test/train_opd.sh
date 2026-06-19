@@ -6,7 +6,7 @@ set -euo pipefail
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${TEST_DIR}/launch_utils.sh"
 
-DYME_CONFIG="${DYME_CONFIG:-test/config_opd_7b_chartqa_deepspeed.py}"
+DYME_CONFIG="${DYME_CONFIG:-scripts/test/config/config_opd_7b_chartqa_deepspeed.py}"
 export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_deepspeed_zero0_config)}"
 
 prepare_fast_test_data "${DYME_CONFIG}"

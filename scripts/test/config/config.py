@@ -1,16 +1,16 @@
 """
 Fast DyME baseline (pure RL, no OPSD) on full ChartQA with fewer epochs.
 
-Usage (from test/):
-  bash train_dyme.sh
-  accelerate launch ../main.py --config test/config.py --mode rl
+Usage:
+  bash scripts/test/train_dyme.sh
+  accelerate launch main.py --config scripts/test/config/config.py --mode rl
 """
 import os
 import sys
 
-_test_dir = os.path.dirname(os.path.abspath(__file__))
-if _test_dir not in sys.path:
-    sys.path.insert(0, _test_dir)
+_test_cfg_dir = os.path.dirname(os.path.abspath(__file__))
+if _test_cfg_dir not in sys.path:
+    sys.path.insert(0, _test_cfg_dir)
 
 import config.config as base
 from fast_profile import OUTPUT_ROOT, apply_to_config

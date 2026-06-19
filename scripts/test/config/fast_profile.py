@@ -1,8 +1,8 @@
 """
-Shared fast-training defaults for test/* baseline config wrappers.
+Shared fast-training defaults for scripts/test/config/* baseline wrappers.
 
 Uses the full ChartQA dataset with fewer epochs (not a sample subset).
-Override via environment variables (see test/README.md).
+Override via environment variables (see scripts/test/README.md).
 """
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ import os
 from typing import Any
 
 from config.env_overrides import env_float, env_int, env_str
-from data_utils.paths import project_path
+from data_utils.paths import OUTPUTS_DIR
 
 # Full dataset; reduce epochs instead of subsampling.
 RL_EPOCHS = env_int("DYME_FAST_NUM_TRAIN_EPOCHS", 4)
 SFT_EPOCHS = env_int("DYME_FAST_SFT_EPOCHS", 4)
 COLD_START_FRAC = env_float("DYME_FAST_COLD_START_FRAC", 0.08)
-OUTPUT_ROOT = env_str("DYME_FAST_OUTPUT_ROOT", project_path("test/outputs"))
+OUTPUT_ROOT = env_str("DYME_FAST_OUTPUT_ROOT", os.path.join(OUTPUTS_DIR, "test-fast"))
 # Gate warmup scaling when total step count is not known at import time.
 EST_STEPS_PER_EPOCH = env_int("DYME_FAST_EST_STEPS_PER_EPOCH", 600)
 

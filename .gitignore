@@ -126,7 +126,6 @@ nohup.out
 .cursor/
 
 # Local experiment artifacts
-test/outputs/
 *.tmp
 *.bak
 *.orig

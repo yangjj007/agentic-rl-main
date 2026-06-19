@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Shared helpers for test/ fast baseline launch scripts.
+# Shared helpers for scripts/test/ fast baseline launch scripts.
 set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "${TEST_DIR}/.." && pwd)"
+ROOT="$(cd "${TEST_DIR}/../.." && pwd)"
 cd "${ROOT}"
 
 source "${ROOT}/scripts/launch_utils.sh"
 
 export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-0}"
-export DYME_LOG_DIR="${DYME_LOG_DIR:-${TEST_DIR}/outputs/logs}"
+export DYME_LOG_DIR="${DYME_LOG_DIR:-${ROOT}/outputs/test-fast/logs}"
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 export WANDB_DISABLED="${WANDB_DISABLED:-true}"
 
 prepare_fast_test_data() {
-  local cfg="${1:-test/config_rlsd_chartqa.py}"
+  local cfg="${1:-scripts/test/config/config_rlsd_chartqa.py}"
   prepare_chartqa_training_data "${cfg}"
 }
 
@@ -39,7 +39,7 @@ print(max(1, int(steps * frac)) if frac > 0 and steps > 0 else 0)
 PY
 )"
   echo "============================================================"
-  echo "test/ fast baseline: ${baseline}"
+  echo "scripts/test/ fast baseline: ${baseline}"
   echo "config: ${config_path}"
   echo "dataset: full train_medium_vf_full.json"
   if [[ "${baseline}" == "sft" ]]; then
@@ -52,6 +52,6 @@ PY
     echo "OPD cold-start (embedded SFT): ~${cold_steps}/${est_rl_steps} steps (${cold_frac} of total)"
     echo "OPD RL phase after cold start: ~$((est_rl_steps - cold_steps)) steps"
   fi
-  echo "output root: test/outputs/"
+  echo "output root: outputs/test-fast/"
   print_launch_plan
 }
