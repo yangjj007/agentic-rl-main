@@ -22,6 +22,23 @@ fast_train_log_path() {
   train_log_path "${prefix}"
 }
 
+# accelerate | tee under set -e: return the training command exit code, not tee's.
+run_train_with_log() {
+  local log_file="$1"
+  shift
+  echo "Writing log to: ${log_file}"
+  set +o pipefail
+  "$@" 2>&1 | tee "${log_file}"
+  local train_ec="${PIPESTATUS[0]}"
+  set -o pipefail
+  if [[ "${train_ec}" -ne 0 ]]; then
+    echo "!!! Training exited with code ${train_ec} (log: ${log_file})" >&2
+    return "${train_ec}"
+  fi
+  echo ">>> Training finished OK (log: ${log_file})"
+  return 0
+}
+
 run_test_baseline() {
   local name="$1"
   local script="$2"

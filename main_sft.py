@@ -17,7 +17,7 @@ from transformers import Trainer, TrainingArguments
 
 from config.loader import load_config
 from data_utils.commom_util import collate_fn, define_task_data_func
-from main import load_model_and_processor
+from main import destroy_distributed_process_group, load_model_and_processor
 
 
 def main() -> None:
@@ -81,4 +81,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        destroy_distributed_process_group()

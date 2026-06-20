@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run all three fast baselines sequentially: SFT -> DyME -> OPD.
+# Run all three fast baselines sequentially: SFT -> OPD -> DyME.
 set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,6 +23,7 @@ echo "scripts/test/ fast baselines — sequential run"
 echo "  dataset: full ChartQA (train_medium_vf_full.json)"
 echo "  SFT epochs: ${SFT_EPOCHS}"
 echo "  RL epochs (DyME + OPD): ${RL_EPOCHS} (~${EST_RL_STEPS} steps)"
+echo "  order: SFT -> OPD -> DyME"
 echo "  OPD cold-start: ~${cold_steps}/${EST_RL_STEPS} steps (embedded SFT, counted in total)"
 echo "  outputs:"
 echo "    SFT  -> outputs/test-fast/sft/final_checkpoint"

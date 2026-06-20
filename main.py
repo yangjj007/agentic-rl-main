@@ -256,6 +256,17 @@ def setup_accelerator_and_wandb(bf16, want_wandb: bool) -> tuple[Accelerator, bo
     return Accelerator(**accel_kwargs), use_wandb
 
 
+def destroy_distributed_process_group() -> None:
+    """Avoid NCCL teardown warnings / spurious non-zero exit after accelerate launch."""
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
+    except Exception:
+        pass
+
+
 def load_model_and_processor(model_config: Dict[str, Any]):
     """
     Loads the pre-trained vision-language model and its associated processor.
@@ -724,4 +735,7 @@ def main():
         processor.save_pretrained(output_dir)
         print(f"Model and processor saved to {output_dir}")
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        destroy_distributed_process_group()

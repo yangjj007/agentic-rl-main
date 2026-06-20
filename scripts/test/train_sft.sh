@@ -14,9 +14,7 @@ NUM_PROCESSES="$(detect_num_gpus)"
 print_fast_plan "sft" "${DYME_CONFIG}"
 
 LOG_FILE="$(fast_train_log_path train_test_sft)"
-echo "Writing log to: ${LOG_FILE}"
-
-accelerate launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PROCESSES}" main_sft.py \
-  --config "${DYME_CONFIG}" \
-  "$@" \
-  2>&1 | tee "${LOG_FILE}"
+run_train_with_log "${LOG_FILE}" \
+  accelerate launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PROCESSES}" main_sft.py \
+    --config "${DYME_CONFIG}" \
+    "$@"
