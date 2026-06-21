@@ -78,6 +78,7 @@ from opsd_utils.deepspeed_utils import (
     gradient_checkpointing_enable_kwargs,
     is_deepspeed_accelerate_config,
     student_forward_chunk_size,
+    sync_global_max_count,
 )
 from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
@@ -2029,32 +2030,47 @@ class DyMETrainer(Trainer):
                     padding_value=0,
                 ).to(device)
             opsd_indices = [i for i, m in enumerate(opsd_mask_list) if m]
+            global_max_opsd_for_build = sync_global_max_count(
+                len(opsd_indices),
+                device,
+                self.accelerator.num_processes,
+            )
             opsd_debug.log_sync_point(
                 "teacher_prompt",
                 "before build_teacher_prompt_batch",
                 local_batch_size=local_batch_size,
                 opsd_indices=opsd_indices,
+                global_max_opsd=global_max_opsd_for_build,
                 provider_names=self.opsd_config.get("privileged_providers", ["text"]),
             )
-            with opsd_debug.timed("teacher_prompt", "build_teacher_prompt_batch"):
-                teacher_tensors = build_teacher_prompt_batch(
-                    self.processing_class,
-                    inputs,
-                    list(range(local_batch_size)),
-                    self.opsd_config.get("privileged_providers", ["text"]),
-                    device,
-                    opsd_config=self.opsd_config,
-                    global_step=getattr(self.state, "global_step", self._step),
-                    output_dir=self.args.output_dir,
-                )
-            result.update(teacher_tensors)
-            for key, value in teacher_tensors.items():
-                opsd_debug.log_tensor("teacher_prompt", key, value)
-            teacher_stats = teacher_tensors.get("teacher_stats")
-            if self._health_monitor is not None and teacher_stats:
-                self._health_monitor.record_data(
-                    getattr(self.state, "global_step", self._step),
-                    teacher_stats,
+            if global_max_opsd_for_build > 0:
+                build_indices = sorted(set(opsd_indices) | {0})
+                with opsd_debug.timed("teacher_prompt", "build_teacher_prompt_batch"):
+                    teacher_tensors = build_teacher_prompt_batch(
+                        self.processing_class,
+                        inputs,
+                        build_indices,
+                        self.opsd_config.get("privileged_providers", ["text"]),
+                        device,
+                        opsd_config=self.opsd_config,
+                        global_step=getattr(self.state, "global_step", self._step),
+                        output_dir=self.args.output_dir,
+                    )
+                result["teacher_compact_indices"] = build_indices
+                result.update(teacher_tensors)
+                for key, value in teacher_tensors.items():
+                    opsd_debug.log_tensor("teacher_prompt", key, value)
+                teacher_stats = teacher_tensors.get("teacher_stats")
+                if self._health_monitor is not None and teacher_stats:
+                    self._health_monitor.record_data(
+                        getattr(self.state, "global_step", self._step),
+                        teacher_stats,
+                    )
+            else:
+                opsd_debug.log(
+                    "teacher_prompt",
+                    "skip teacher prompt build (no OPSD samples on any rank)",
+                    opsd_indices=opsd_indices,
                 )
             if opsd_indices:
                 mode = "train" if self.model.training else "eval"
@@ -2258,15 +2274,11 @@ class DyMETrainer(Trainer):
             # the same seq). Synchronise the per-rank OPSD sample count to the
             # global max and pad short/empty ranks with zero-weighted forwards.
             local_opsd_count = len(opsd_indices)
-            global_max_opsd = local_opsd_count
-            if self.accelerator.num_processes > 1:
-                count_tensor = torch.tensor(
-                    [local_opsd_count], device=loss.device, dtype=torch.long
-                )
-                torch.distributed.all_reduce(
-                    count_tensor, op=torch.distributed.ReduceOp.MAX
-                )
-                global_max_opsd = int(count_tensor.item())
+            global_max_opsd = sync_global_max_count(
+                local_opsd_count,
+                loss.device,
+                self.accelerator.num_processes,
+            )
 
             if global_max_opsd > 0:
                 opsd_debug.log(

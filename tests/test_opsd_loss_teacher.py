@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from opsd_utils.vocab_align import align_cross_model_logits
 from opsd_utils.opsd_loss import (
+    _completion_tensors_for_opsd_step,
+    _teacher_row,
     compute_vlm_opsd_loss_masked_batch,
     generalized_jsd_loss,
     token_distillation_loss,
@@ -67,6 +69,27 @@ def test_opsd_loss_accepts_teacher_model_kwarg():
     assert isinstance(loss, torch.Tensor)
     assert teacher.called, "cross-model OPD must forward through teacher_model"
     assert student.called, "OPSD must forward through student model"
+
+
+def test_teacher_row_compact_indices():
+    inputs = {"teacher_compact_indices": [0, 5, 12]}
+    assert _teacher_row(inputs, 5) == 1
+    assert _teacher_row(inputs, 0) == 0
+    assert _teacher_row(inputs, 99) == 0
+
+
+def test_dummy_opsd_completion_uses_single_token():
+    inputs = {
+        "completion_ids": torch.tensor([[10, 11, 12, 13]]),
+        "completion_mask": torch.tensor([[1, 1, 1, 1]]),
+    }
+    logits = torch.randn(1, 4, 8)
+    comp_ids, comp_mask, pre = _completion_tensors_for_opsd_step(
+        inputs, 0, is_real=False, student_completion_logits=logits
+    )
+    assert comp_ids.shape == (1, 1)
+    assert comp_mask.shape == (1, 1)
+    assert pre.shape == (1, 1, 8)
 
 
 def test_generalized_jsd_loss_mismatched_vocab_sizes():

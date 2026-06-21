@@ -54,6 +54,54 @@ def _teacher_image_counts(inputs: dict, batch_size: int) -> list[int]:
     return [int(max(1, c)) for c in counts]
 
 
+_DUMMY_SYNC_COMPLETION_TOKENS = 1
+
+
+def _teacher_row(inputs: dict, batch_local_idx: int) -> int:
+    """Map a batch row to a row in compact teacher tensors (if used)."""
+    compact = inputs.get("teacher_compact_indices")
+    if compact is None:
+        return batch_local_idx
+    if batch_local_idx in compact:
+        return compact.index(batch_local_idx)
+    return 0
+
+
+def _teacher_image_count_for_row(inputs: dict, teacher_row: int) -> int:
+    counts = inputs.get("teacher_num_images")
+    if counts is None:
+        return 1
+    if isinstance(counts, torch.Tensor):
+        return int(max(1, counts[teacher_row].item()))
+    return int(max(1, counts[teacher_row]))
+
+
+def _completion_tensors_for_opsd_step(
+    inputs: dict,
+    local: int,
+    is_real: bool,
+    student_completion_logits,
+    sync_tokens: int = _DUMMY_SYNC_COMPLETION_TOKENS,
+):
+    """Use a short completion on padded dummy forwards to avoid 7B teacher hangs."""
+    comp_ids = inputs["completion_ids"][local : local + 1]
+    comp_mask = inputs["completion_mask"][local : local + 1]
+    precomputed = None
+    if student_completion_logits is not None:
+        precomputed = student_completion_logits[local : local + 1]
+
+    if is_real:
+        return comp_ids, comp_mask, precomputed
+
+    valid_len = max(int(comp_mask.sum().item()), 1)
+    use_len = min(sync_tokens, valid_len)
+    comp_ids = comp_ids[:, :use_len]
+    comp_mask = comp_mask[:, :use_len]
+    if precomputed is not None:
+        precomputed = precomputed[:, :use_len]
+    return comp_ids, comp_mask, precomputed
+
+
 def slice_teacher_vision_inputs(
     teacher_pixel_values,
     teacher_image_sizes,
@@ -451,28 +499,35 @@ def compute_vlm_opsd_loss_masked_batch(
         # their contribution is zeroed out below.
         global_idx = opsd_indices[step_idx] if is_real else all_indices[0]
         local = idx_map[global_idx]
+        teacher_row = _teacher_row(inputs, local)
         student_sizes = _slice_image_sizes(inputs.get("img_sizes"), local)
         t_pixel, teacher_sizes = get_teacher_vision_for_sample(
-            inputs, local, teacher_img_counts
+            inputs, teacher_row, teacher_img_counts
         )
         if t_pixel is None:
             t_pixel = inputs["pixel_values"][local : local + 1]
             teacher_sizes = student_sizes
+        n_img = _teacher_image_count_for_row(inputs, teacher_row)
+        comp_ids, comp_mask, precomputed_student_logits = _completion_tensors_for_opsd_step(
+            inputs,
+            local,
+            is_real,
+            student_completion_logits,
+        )
         opsd_debug.log(
             "opsd_loss",
             "compute sample OPSD loss",
             global_idx=global_idx,
             local_idx=local,
-            teacher_num_images=teacher_img_counts[local],
+            teacher_row=teacher_row,
+            is_real=is_real,
+            completion_tokens=int(comp_mask.sum().item()),
+            teacher_num_images=n_img,
             student_image_sizes=student_sizes,
             teacher_image_sizes=teacher_sizes,
             teacher_pixel_values_shape=tuple(t_pixel.shape) if t_pixel is not None else None,
         )
-        n_img = teacher_img_counts[local]
         teacher_batch_num_images = as_batch_num_images_tensor(n_img, t_pixel)
-        precomputed_student_logits = None
-        if student_completion_logits is not None:
-            precomputed_student_logits = student_completion_logits[local : local + 1]
         if not is_real and deepspeed_requires_single_student_forward():
             # ZeRO-1/2: no second student forward, but still run teacher forward on
             # padded iterations so every rank spends similar time in the OPSD loop.
@@ -488,11 +543,11 @@ def compute_vlm_opsd_loss_masked_batch(
                     inputs["prompt_mask"][local : local + 1],
                     inputs["pixel_values"][local : local + 1],
                     student_sizes,
-                    inputs["teacher_prompt_ids"][local : local + 1],
-                    inputs["teacher_prompt_mask"][local : local + 1],
+                    inputs["teacher_prompt_ids"][teacher_row : teacher_row + 1],
+                    inputs["teacher_prompt_mask"][teacher_row : teacher_row + 1],
                     t_pixel,
-                    inputs["completion_ids"][local : local + 1],
-                    inputs["completion_mask"][local : local + 1],
+                    comp_ids,
+                    comp_mask,
                     beta=beta,
                     teacher_image_sizes=teacher_sizes,
                     processor=processor,
@@ -515,11 +570,11 @@ def compute_vlm_opsd_loss_masked_batch(
                 inputs["prompt_mask"][local : local + 1],
                 inputs["pixel_values"][local : local + 1],
                 student_sizes,
-                inputs["teacher_prompt_ids"][local : local + 1],
-                inputs["teacher_prompt_mask"][local : local + 1],
+                inputs["teacher_prompt_ids"][teacher_row : teacher_row + 1],
+                inputs["teacher_prompt_mask"][teacher_row : teacher_row + 1],
                 t_pixel,
-                inputs["completion_ids"][local : local + 1],
-                inputs["completion_mask"][local : local + 1],
+                comp_ids,
+                comp_mask,
                 beta=beta,
                 teacher_image_sizes=teacher_sizes,
                 processor=processor,

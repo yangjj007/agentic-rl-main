@@ -120,6 +120,21 @@ def should_disable_gradient_checkpointing(config_name: Optional[str] = None) -> 
     return deepspeed_requires_single_student_forward(config_name)
 
 
+def sync_global_max_count(
+    local_count: int,
+    device: "torch.device",
+    num_processes: int,
+) -> int:
+    """All-reduce MAX so every rank agrees on a padded iteration count."""
+    if num_processes <= 1:
+        return local_count
+    import torch
+
+    count_tensor = torch.tensor([local_count], device=device, dtype=torch.long)
+    torch.distributed.all_reduce(count_tensor, op=torch.distributed.ReduceOp.MAX)
+    return int(count_tensor.item())
+
+
 def student_forward_chunk_size(
     batch_size: int,
     has_vision: bool,

@@ -12,6 +12,7 @@ from opsd_utils.deepspeed_utils import (
     should_colocate_teacher_with_student,
     should_disable_gradient_checkpointing,
     student_forward_chunk_size,
+    sync_global_max_count,
     uses_deepspeed_json_file,
 )
 
@@ -45,3 +46,10 @@ def test_ddp_config_not_deepspeed(monkeypatch):
     assert not should_colocate_teacher_with_student("auto")
     assert not deepspeed_requires_single_student_forward()
     assert student_forward_chunk_size(8, has_vision=True) == 1
+
+
+def test_sync_global_max_count_single_process():
+    import torch
+
+    assert sync_global_max_count(3, torch.device("cpu"), 1) == 3
+    assert sync_global_max_count(0, torch.device("cpu"), 1) == 0
