@@ -144,6 +144,34 @@ def test_visual_facts_f1_f2_merge():
     assert "Col | Val" in suffix
 
 
+def test_deplot_only_provider_skips_hint():
+    """Deplot-only must not inject hint/CoT (F1) into teacher suffix."""
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
+    hint_cot = "Goal: Find the lowest value.\nObservation: values are 70, 72, 77."
+    sample = {
+        "hint": hint_cot,
+        "answer": "Answer: 70",
+        "visual_fact_hint": hint_cot,
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Year | Value\n2019 | 70\n2020 | 72"
+        ),
+        "image": Image.new("RGB", (64, 64)),
+    }
+    suffix, _ = build_privileged_context(
+        sample,
+        ["format_only", "visual_facts_deplot"],
+        privileged_profile="text",
+        opsd_config={"text_include_gold": False},
+    )
+    assert "Visual Facts - DePlot" in suffix
+    assert "2019 | 70" in suffix
+    assert "Visual Facts - Hint" not in suffix
+    assert "Reference Reasoning" not in suffix
+    assert "Reference Answer" not in suffix
+    assert hint_cot not in suffix
+
+
 def test_parse_visual_fact_b1():
     raw = {"objects": [{"name": "a"}]}
     text = parse_visual_fact(raw)

@@ -19,6 +19,7 @@
 - **无 embedded 冷启动**（`sft_cold_start_frac=0`）
 - **全错组** → 100% 在线 SFT（GT 替换）
 - **答对** → GRPO；**答错** → 7B teacher probe，**仅 teacher 答对时**走 OPD，否则 SFT
+- Teacher 优势上下文：`format_only` + **DePlot-only**（`visual_fact_deplot` 离线表，不含 hint/推理链）
 - Visual Supervision 默认关闭（可用 `DYME_VISUAL_CHECKER=1` / `DYME_VISUAL_REFINER=1` 重新开启）
 
 ## 统一常量

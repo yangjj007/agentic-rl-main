@@ -6,6 +6,7 @@ from opsd_utils.privileged.image_utils import resolve_teacher_images
 from opsd_utils.privileged.profiles import DEFAULT_PROFILE, effective_profile, resolve_profile_config
 from opsd_utils.privileged.providers import (
     CropProvider,
+    DeplotOnlyProvider,
     FormatOnlyProvider,
     HybridProvider,
     TextProvider,
@@ -16,6 +17,7 @@ PROVIDER_REGISTRY: dict[str, type[PrivilegedContextProvider]] = {
     "text": TextProvider,
     "format_only": FormatOnlyProvider,
     "visual_facts": VisualFactsProvider,
+    "visual_facts_deplot": DeplotOnlyProvider,
     "crop": CropProvider,
     "hybrid": HybridProvider,
 }

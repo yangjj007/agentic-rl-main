@@ -41,6 +41,18 @@ class TextProvider(PrivilegedContextProvider):
         return "\n\n".join(parts)
 
 
+class DeplotOnlyProvider(PrivilegedContextProvider):
+    """F2 only: offline DePlot table from visual_fact_deplot — no hint/CoT (anti-leakage)."""
+
+    def build_teacher_suffix(self, sample: dict[str, Any]) -> str:
+        deplot_vf = sample.get("visual_fact_deplot")
+        if deplot_vf and not is_deplot_placeholder(deplot_vf):
+            text = format_deplot_for_teacher(deplot_vf)
+            if text:
+                return f"[Visual Facts - DePlot]\n{text}"
+        return ""
+
+
 class VisualFactsProvider(PrivilegedContextProvider):
     """B1: raw JSON visual facts; F1+F2 merge hint and deplot sources."""
 
@@ -110,6 +122,8 @@ class HybridProvider(PrivilegedContextProvider):
                 self._providers.append(FormatOnlyProvider(format_only_hint))
             elif name == "visual_facts":
                 self._providers.append(VisualFactsProvider())
+            elif name == "visual_facts_deplot":
+                self._providers.append(DeplotOnlyProvider())
             elif name == "crop":
                 self._providers.append(CropProvider())
 

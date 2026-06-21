@@ -87,7 +87,8 @@ def apply_dyme_aligned_opd(opsd_config: dict[str, Any]) -> dict[str, Any]:
     opsd = {
         **opsd_config,
         "mode": "dyme_teacher_probe_opd",
-        "privileged_providers": ["format_only"],
+        "privileged_providers": ["format_only", "visual_facts_deplot"],
+        "text_include_gold": False,
         "gate": {
             **opsd_config.get("gate", {}),
             "sft_cold_start_frac": 0.0,
