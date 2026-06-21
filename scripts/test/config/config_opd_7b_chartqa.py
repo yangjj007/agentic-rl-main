@@ -12,12 +12,13 @@ if _test_cfg_dir not in sys.path:
     sys.path.insert(0, _test_cfg_dir)
 
 import config.config_opd_7b_chartqa as base
-from fast_profile import OUTPUT_ROOT, apply_to_config
+from fast_profile import OUTPUT_ROOT, apply_dyme_aligned_opd, apply_to_config
 
 OUTPUT_DIR = os.path.join(OUTPUT_ROOT, "opd-7b")
 
 CONFIG = apply_to_config(
     base.CONFIG,
     output_dir=OUTPUT_DIR,
-    enable_visual_supervision=True,
+    enable_visual_supervision=False,
 )
+CONFIG["opsd"] = apply_dyme_aligned_opd(CONFIG["opsd"])

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fast baseline: cross-model OPD (7B teacher + 0.5B student) with DeepSpeed.
-# Full dataset, fewer epochs. Embedded SFT cold-start steps count toward total steps.
+# DyME-aligned routing (teacher-probe gated OPD, no embedded cold-start, no Visual Supervision).
 set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -82,6 +82,26 @@ def apply_fast_opsd_gate(opsd_config: dict[str, Any]) -> dict[str, Any]:
     return {**opsd_config, "gate": gate}
 
 
+def apply_dyme_aligned_opd(opsd_config: dict[str, Any]) -> dict[str, Any]:
+    """Fast OPD: no embedded cold-start; all-wrong -> SFT; OPD only if teacher probe is correct."""
+    opsd = {
+        **opsd_config,
+        "mode": "dyme_teacher_probe_opd",
+        "privileged_providers": ["format_only"],
+        "gate": {
+            **opsd_config.get("gate", {}),
+            "sft_cold_start_frac": 0.0,
+            "online_sft_on_all_wrong": True,
+        },
+        "teacher_probe": {
+            **opsd_config.get("teacher_probe", {}),
+            "enabled": True,
+        },
+    }
+    opsd.pop("visual_supervision", None)
+    return opsd
+
+
 def apply_to_config(
     base_config: dict[str, Any],
     *,

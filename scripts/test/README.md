@@ -9,19 +9,17 @@
 | Baseline | 脚本 | 配置 | 入口 | 说明 |
 |----------|------|------|------|------|
 | **纯 SFT** | `train_sft.sh` | `config/config_rlsd_chartqa.py` | `main_sft.py` | 离线监督微调，全量数据，4 epoch |
-| **DyME** | `train_dyme.sh` | `config/config.py` | `main.py --mode rl` | 纯 GRPO，无 OPSD，4 epoch |
-| **OPD** | `train_opd.sh` | `config/config_opd_7b_chartqa_deepspeed.py` | `main.py --mode rl --opsd_enabled` | 7B teacher + 0.5B student，DeepSpeed，4 epoch，**含 Visual Supervision** |
+| **DyME** | `train_dyme.sh` | `config/config_dyme_deepspeed.py` | `main.py --mode rl` | 纯 GRPO，无 OPSD，4 epoch，**DeepSpeed ZeRO-2** |
+| **OPD** | `train_opd.sh` | `config/config_opd_7b_chartqa_deepspeed.py` | `main.py --mode rl --opsd_enabled` | 7B teacher + 0.5B student，DeepSpeed，4 epoch，**teacher-probe OPD**（无冷启动、无 Visual Supervision） |
 
-三条 baseline 默认从同一 base 0.5B 出发。OPD **不依赖**先跑离线 SFT；embedded 冷启动计入总步数（见下）。
+三条 baseline 默认从同一 base 0.5B 出发。OPD **不依赖**先跑离线 SFT。
 
-### OPD 冷启动步数
+### OPD 路由（快速 baseline）
 
-默认 `num_train_epochs=4`，`sft_cold_start_frac=0.08`。以 4 GPU、约 600 步/epoch 估算（总步数 ~2400）：
-
-- **冷启动（embedded SFT）**：约前 **192** 步 — 不 generate、100% GT 注入、纯 SFT NLL
-- **RL/OPD 阶段**：剩余约 **2208** 步 — RLSD 路由 + 7B teacher OPD
-
-实际总步数由 dataloader 长度决定；gate warmup 按估算总步数同比缩放（见 `config/fast_profile.py`）。
+- **无 embedded 冷启动**（`sft_cold_start_frac=0`）
+- **全错组** → 100% 在线 SFT（GT 替换）
+- **答对** → GRPO；**答错** → 7B teacher probe，**仅 teacher 答对时**走 OPD，否则 SFT
+- Visual Supervision 默认关闭（可用 `DYME_VISUAL_CHECKER=1` / `DYME_VISUAL_REFINER=1` 重新开启）
 
 ## 统一常量
 
@@ -30,7 +28,7 @@
 | 数据集 | 全量 `train_medium_vf_full.json` | — | 同左 |
 | RL epoch | **4** | `DYME_FAST_NUM_TRAIN_EPOCHS` | 10 |
 | SFT epoch | **4** | `DYME_FAST_SFT_EPOCHS` | 2 |
-| 冷启动占比 | 8% | `DYME_FAST_COLD_START_FRAC` | 8% |
+| 冷启动占比 | OPD/SFT **0%**；其他 baseline 8% | `DYME_FAST_COLD_START_FRAC` | 8% |
 | Gate 步数估算 | 600 步/epoch | `DYME_FAST_EST_STEPS_PER_EPOCH` | — |
 | 输出根目录 | `outputs/test-fast/` | `DYME_FAST_OUTPUT_ROOT` | `outputs/*` |
 
@@ -56,7 +54,7 @@ bash scripts/test/run_all_baselines.sh
 
 日志：`outputs/test-fast/logs/`
 
-Visual Supervision 产物：`outputs/test-fast/opd-7b-ds/visual_supervision/step_*/`；日志关键字 `[VISUAL-BATCH]`。可用 `DYME_VISUAL_CHECKER=0` / `DYME_VISUAL_REFINER=0` 关闭。
+快速 OPD 默认关闭 Visual Supervision。开启时在 `scripts/test/config/config_opd_7b_chartqa_deepspeed.py` 设 `enable_visual_supervision=True`，产物见 `outputs/test-fast/opd-7b-ds/visual_supervision/step_*/`。
 
 ### 可选：SFT 后再跑 OPD
 
@@ -74,8 +72,11 @@ DYME_FAST_NUM_TRAIN_EPOCHS=1 DYME_FAST_SFT_EPOCHS=1 bash scripts/test/train_dyme
 # 更长：6 epoch
 DYME_FAST_NUM_TRAIN_EPOCHS=6 bash scripts/test/run_all_baselines.sh
 
-# OPD 内存紧张时换 ZeRO-2
-ACCELERATE_CONFIG=default_config_zero2.yaml bash scripts/test/train_opd.sh
+# DyME / OPD 仍 OOM 时进一步缩 batch 或生成长度
+DYME_PER_DEVICE_BATCH=1 DYME_NUM_GENERATIONS=4 DYME_MAX_COMPLETION_LENGTH=96 bash scripts/test/train_dyme.sh
+
+# OPD 内存紧张时换 ZeRO-2（DyME 默认已是 ZeRO-2）
+ACCELERATE_CONFIG=default_config_zero2_8gpu.yaml bash scripts/test/train_opd.sh
 
 # 使用 DDP 版 OPD 配置
 DYME_CONFIG=scripts/test/config/config_opd_7b_chartqa.py \
