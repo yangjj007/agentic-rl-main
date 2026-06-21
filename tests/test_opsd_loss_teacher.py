@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from opsd_utils.vocab_align import align_cross_model_logits
 from opsd_utils.opsd_loss import (
-    _completion_tensors_for_opsd_step,
     _teacher_row,
+    _trim_to_effective_completion,
     compute_vlm_opsd_loss_masked_batch,
     generalized_jsd_loss,
     token_distillation_loss,
@@ -78,18 +78,15 @@ def test_teacher_row_compact_indices():
     assert _teacher_row(inputs, 99) == 0
 
 
-def test_dummy_opsd_completion_uses_single_token():
-    inputs = {
-        "completion_ids": torch.tensor([[10, 11, 12, 13]]),
-        "completion_mask": torch.tensor([[1, 1, 1, 1]]),
-    }
-    logits = torch.randn(1, 4, 8)
-    comp_ids, comp_mask, pre = _completion_tensors_for_opsd_step(
-        inputs, 0, is_real=False, student_completion_logits=logits
-    )
-    assert comp_ids.shape == (1, 1)
-    assert comp_mask.shape == (1, 1)
-    assert pre.shape == (1, 1, 8)
+def test_trim_to_effective_completion_drops_padding():
+    comp_ids = torch.tensor([[10, 11, 12, 0, 0]])
+    comp_mask = torch.tensor([[1, 1, 1, 0, 0]])
+    logits = torch.randn(1, 5, 8)
+    ids, mask, lg, eff = _trim_to_effective_completion(comp_ids, comp_mask, logits)
+    assert eff == 3
+    assert ids.shape == (1, 3)
+    assert mask.shape == (1, 3)
+    assert lg.shape == (1, 3, 8)
 
 
 def test_generalized_jsd_loss_mismatched_vocab_sizes():

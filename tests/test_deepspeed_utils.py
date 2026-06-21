@@ -13,6 +13,7 @@ from opsd_utils.deepspeed_utils import (
     should_disable_gradient_checkpointing,
     student_forward_chunk_size,
     sync_global_max_count,
+    sync_global_sum_count,
     uses_deepspeed_json_file,
 )
 
@@ -53,3 +54,10 @@ def test_sync_global_max_count_single_process():
 
     assert sync_global_max_count(3, torch.device("cpu"), 1) == 3
     assert sync_global_max_count(0, torch.device("cpu"), 1) == 0
+
+
+def test_sync_global_sum_count_single_process():
+    import torch
+
+    assert sync_global_sum_count(3, torch.device("cpu"), 1) == 3
+    assert sync_global_sum_count(0, torch.device("cpu"), 1) == 0

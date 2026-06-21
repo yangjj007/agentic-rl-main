@@ -135,6 +135,21 @@ def sync_global_max_count(
     return int(count_tensor.item())
 
 
+def sync_global_sum_count(
+    local_count: int,
+    device: "torch.device",
+    num_processes: int,
+) -> int:
+    """All-reduce SUM for total OPSD samples across ranks."""
+    if num_processes <= 1:
+        return local_count
+    import torch
+
+    count_tensor = torch.tensor([local_count], device=device, dtype=torch.long)
+    torch.distributed.all_reduce(count_tensor, op=torch.distributed.ReduceOp.SUM)
+    return int(count_tensor.item())
+
+
 def student_forward_chunk_size(
     batch_size: int,
     has_vision: bool,

@@ -317,6 +317,19 @@ def hang_probe(tag: str, **fields: Any) -> None:
     )
 
 
+def hang_probe_force(tag: str, **fields: Any) -> None:
+    """Unconditional flush probe (ignores DYME_OPSD_HANG_DEBUG)."""
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    step = _DETAIL_STEP if _DETAIL_STEP is not None else "?"
+    extra = ""
+    if fields:
+        extra = " | " + " | ".join(f"{k}={_fmt(v, max_len=200)}" for k, v in fields.items())
+    print(
+        f"[OPSD-HANGDBG][{ts}][rank={_RANK}/{_WORLD_SIZE}][global_step={step}][{tag}]{extra}",
+        flush=True,
+    )
+
+
 def _gendbg_prefix(section: str) -> str:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     step = _DETAIL_STEP if _DETAIL_STEP is not None else "?"

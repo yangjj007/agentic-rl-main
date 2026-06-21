@@ -78,6 +78,7 @@ from opsd_utils.deepspeed_utils import (
     gradient_checkpointing_enable_kwargs,
     is_deepspeed_accelerate_config,
     student_forward_chunk_size,
+    sync_global_sum_count,
 )
 from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
@@ -2104,6 +2105,12 @@ class DyMETrainer(Trainer):
             batch_size=result["prompt_ids"].shape[0],
             opsd_active=opsd_active,
         )
+        if opsd_active and "opsd_mask" in result:
+            opsd_debug.hang_probe_force(
+                "generate_and_score_return",
+                opsd_mask_true=int(result["opsd_mask"].sum().item()),
+                has_teacher_prompt=result.get("teacher_prompt_ids") is not None,
+            )
         return result
 
     def compute_liger_loss(self, unwrapped_model, inputs):
@@ -2194,7 +2201,14 @@ class DyMETrainer(Trainer):
             and inputs.get("opsd_mask") is not None
             and self.teacher_model is not None
         )
-        cache_logits_for_opsd = opsd_active and deepspeed_requires_single_student_forward()
+        local_opsd_for_cache = 0
+        if opsd_active and inputs.get("opsd_mask") is not None:
+            local_opsd_for_cache = int(inputs["opsd_mask"].sum().item())
+        cache_logits_for_opsd = (
+            opsd_active
+            and deepspeed_requires_single_student_forward()
+            and local_opsd_for_cache > 0
+        )
         opsd_debug.hang_probe(
             "student_forward_start",
             opsd_active=opsd_active,
@@ -2287,14 +2301,20 @@ class DyMETrainer(Trainer):
                 opsd_indices = opsd_mask.nonzero(as_tuple=True)[0].tolist()
 
             local_opsd_count = len(opsd_indices)
-            opsd_debug.hang_probe(
+            global_opsd_count = sync_global_sum_count(
+                local_opsd_count,
+                loss.device,
+                self.accelerator.num_processes,
+            )
+            opsd_debug.hang_probe_force(
                 "opsd_branch_enter",
                 local_opsd_count=local_opsd_count,
+                global_opsd_count=global_opsd_count,
                 opsd_indices=opsd_indices,
                 has_teacher_prompt=inputs.get("teacher_prompt_ids") is not None,
             )
 
-            if local_opsd_count > 0:
+            if global_opsd_count > 0 and local_opsd_count > 0:
                 opsd_debug.log(
                     "opsd_loss",
                     "compute_vlm_opsd_loss_masked_batch args",
@@ -2340,8 +2360,15 @@ class DyMETrainer(Trainer):
                     combined_loss=float(loss.detach().item()),
                 )
             else:
-                opsd_debug.log("opsd_loss", "no local OPSD samples, skip teacher/OPSD on this rank")
-                opsd_debug.hang_probe("opsd_loss_skip_local", local_opsd_count=0)
+                if global_opsd_count == 0:
+                    opsd_debug.log("opsd_loss", "no OPSD samples on any rank, skip teacher/OPSD")
+                else:
+                    opsd_debug.log("opsd_loss", "no local OPSD samples, skip teacher/OPSD on this rank")
+                opsd_debug.hang_probe_force(
+                    "opsd_loss_skip_local",
+                    local_opsd_count=local_opsd_count,
+                    global_opsd_count=global_opsd_count,
+                )
 
             # Every rank must enter this collective; barrier keeps ranks aligned first.
             opsd_metric_value = (

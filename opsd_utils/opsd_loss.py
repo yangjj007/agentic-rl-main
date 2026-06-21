@@ -53,9 +53,6 @@ def _teacher_image_counts(inputs: dict, batch_size: int) -> list[int]:
     return [int(max(1, c)) for c in counts]
 
 
-_DUMMY_SYNC_COMPLETION_TOKENS = 1
-
-
 def _teacher_row(inputs: dict, batch_local_idx: int) -> int:
     """Map a batch row to a row in compact teacher tensors (if used)."""
     compact = inputs.get("teacher_compact_indices")
@@ -75,30 +72,25 @@ def _teacher_image_count_for_row(inputs: dict, teacher_row: int) -> int:
     return int(max(1, counts[teacher_row]))
 
 
-def _completion_tensors_for_opsd_step(
-    inputs: dict,
-    local: int,
-    is_real: bool,
-    student_completion_logits,
-    sync_tokens: int = _DUMMY_SYNC_COMPLETION_TOKENS,
+def _trim_to_effective_completion(
+    completion_ids: torch.Tensor,
+    completion_mask: torch.Tensor,
+    student_logits=None,
 ):
-    """Use a short completion on padded dummy forwards to avoid 7B teacher hangs."""
-    comp_ids = inputs["completion_ids"][local : local + 1]
-    comp_mask = inputs["completion_mask"][local : local + 1]
-    precomputed = None
-    if student_completion_logits is not None:
-        precomputed = student_completion_logits[local : local + 1]
-
-    if is_real:
-        return comp_ids, comp_mask, precomputed
-
-    valid_len = max(int(comp_mask.sum().item()), 1)
-    use_len = min(sync_tokens, valid_len)
-    comp_ids = comp_ids[:, :use_len]
-    comp_mask = comp_mask[:, :use_len]
-    if precomputed is not None:
-        precomputed = precomputed[:, :use_len]
-    return comp_ids, comp_mask, precomputed
+    """Drop padded completion tail so teacher/student OPSD only run on valid tokens."""
+    eff_len = max(int(completion_mask.sum().item()), 1)
+    width = int(completion_ids.size(1))
+    if eff_len >= width:
+        trimmed_logits = student_logits
+        if student_logits is not None and student_logits.size(1) > eff_len:
+            trimmed_logits = student_logits[:, :eff_len, :]
+        return completion_ids, completion_mask, trimmed_logits, eff_len
+    comp_ids = completion_ids[:, :eff_len]
+    comp_mask = completion_mask[:, :eff_len]
+    trimmed_logits = None
+    if student_logits is not None:
+        trimmed_logits = student_logits[:, :eff_len, :]
+    return comp_ids, comp_mask, trimmed_logits, eff_len
 
 
 def slice_teacher_vision_inputs(
@@ -360,7 +352,19 @@ def compute_vlm_opsd_loss(
     student_batch_num_images = student_batch_num_images_tensor(
         student_pixel_values, student_prompt_ids.shape[0]
     )
-    if processor is not None and student_pixel_values is not None:
+    padded_width = int(completion_ids.size(1))
+    completion_ids, completion_mask, student_logits, eff_len = _trim_to_effective_completion(
+        completion_ids,
+        completion_mask,
+        student_logits,
+    )
+    opsd_debug.hang_probe(
+        "opsd_trim_completion",
+        global_idx=global_idx,
+        padded_width=padded_width,
+        effective_tokens=eff_len,
+    )
+    if processor is not None and student_pixel_values is not None and student_logits is None:
         student_prompt_ids, student_prompt_mask = align_teacher_prompt_image_tokens(
             model,
             processor,
@@ -448,8 +452,6 @@ def compute_vlm_opsd_loss(
         )
 
     del teacher_logits
-    if cross_model and torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     opsd_debug.log("opsd_loss", "compute_vlm_opsd_loss done", loss=float(loss.detach().item()))
     return loss
