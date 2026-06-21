@@ -2016,7 +2016,8 @@ class DyMETrainer(Trainer):
         if opsd_active:
             opsd_mask = torch.tensor(opsd_mask_list, dtype=torch.bool, device=device)
             result["opsd_mask"] = opsd_mask
-            if any(teacher_traj_mask_list):
+            traj_cfg = self._teacher_trajectory_config()
+            if traj_cfg["enabled"]:
                 result["teacher_traj_mask"] = torch.tensor(
                     teacher_traj_mask_list,
                     dtype=torch.bool,
@@ -2384,7 +2385,8 @@ class DyMETrainer(Trainer):
                 self.accelerator.gather_for_metrics(opsd_metric_value).mean().item()
             )
             opsd_debug.hang_probe("gather_opsd_loss_done")
-            if inputs.get("teacher_traj_mask") is not None:
+            traj_cfg = self._teacher_trajectory_config()
+            if traj_cfg["enabled"] and inputs.get("teacher_traj_mask") is not None:
                 teacher_traj_mask = inputs["teacher_traj_mask"]
                 teacher_traj_indices = (
                     teacher_traj_mask.nonzero(as_tuple=True)[0].tolist()
@@ -2392,9 +2394,18 @@ class DyMETrainer(Trainer):
                     else []
                 )
                 local_traj_count = len(teacher_traj_indices)
+                global_traj_count = sync_global_sum_count(
+                    local_traj_count,
+                    loss.device,
+                    self.accelerator.num_processes,
+                )
+                opsd_debug.hang_probe_force(
+                    "teacher_traj_branch",
+                    local_traj_count=local_traj_count,
+                    global_traj_count=global_traj_count,
+                )
                 teacher_traj_loss_tensor = None
                 if local_traj_count > 0:
-                    traj_cfg = self._teacher_trajectory_config()
                     traj_inputs = dict(inputs)
                     traj_inputs["completion_ids"] = inputs["teacher_traj_completion_ids"]
                     traj_inputs["completion_mask"] = inputs["teacher_traj_completion_mask"]
@@ -2428,15 +2439,24 @@ class DyMETrainer(Trainer):
                         teacher_traj_loss_type=traj_cfg["loss_type"],
                         combined_loss=float(loss.detach().item()),
                     )
+                elif global_traj_count > 0:
+                    opsd_debug.log(
+                        "opsd_loss",
+                        "no local teacher traj on this rank; wait for traj sync",
+                        global_traj_count=global_traj_count,
+                    )
                 metric_value = (
                     teacher_traj_loss_tensor.detach()
                     if teacher_traj_loss_tensor is not None
                     else torch.zeros((), device=loss.device, dtype=loss.dtype)
                 )
+                opsd_debug.hang_probe("barrier_before_gather_teacher_traj", local_traj_count=local_traj_count)
                 self._opsd_distributed_barrier("wait_for_everyone before gather_for_metrics(teacher_traj_fkl)")
+                opsd_debug.hang_probe("gather_teacher_traj_start")
                 self._metrics[mode].setdefault("loss/teacher_traj_fkl", []).append(
                     self.accelerator.gather_for_metrics(metric_value).mean().item()
                 )
+                opsd_debug.hang_probe("gather_teacher_traj_done")
             if opsd_indices and opsd_debug.should_log_detail(global_step):
                 opsd_diagnostics.log_opsd_jsd_diagnostics(global_step=global_step)
             self._opsd_distributed_barrier("wait_for_everyone after OPSD compute_loss")
