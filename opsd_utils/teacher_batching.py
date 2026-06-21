@@ -65,6 +65,63 @@ def image_offsets(counts: list[int]) -> list[int]:
     return offsets
 
 
+def expand_teacher_tensors_to_full_batch(
+    teacher_tensors: dict[str, Any],
+    build_indices: list[int],
+    batch_size: int,
+) -> dict[str, Any]:
+    """
+    Scatter compact teacher rows (built only for OPSD / dummy anchor indices)
+    into tensors aligned with the full student batch for GA splitting.
+    """
+    if not teacher_tensors or not build_indices or batch_size <= 0:
+        return teacher_tensors
+    compact_ids = teacher_tensors.get("teacher_prompt_ids")
+    if compact_ids is None:
+        return teacher_tensors
+    compact_n = int(compact_ids.shape[0])
+    if compact_n >= batch_size and build_indices == list(range(batch_size)):
+        return teacher_tensors
+
+    idx_to_compact = {bi: i for i, bi in enumerate(build_indices)}
+    fallback_compact = idx_to_compact[build_indices[0]]
+    reorder = [idx_to_compact.get(i, fallback_compact) for i in range(batch_size)]
+
+    out = dict(teacher_tensors)
+    compact_mask = teacher_tensors["teacher_prompt_mask"]
+    reorder_tensor = torch.tensor(reorder, device=compact_ids.device, dtype=torch.long)
+    out["teacher_prompt_ids"] = compact_ids.index_select(0, reorder_tensor)
+    out["teacher_prompt_mask"] = compact_mask.index_select(0, reorder_tensor)
+
+    compact_counts = teacher_tensors.get("teacher_num_images")
+    if compact_counts is not None:
+        if isinstance(compact_counts, torch.Tensor):
+            counts_list = [int(max(1, c)) for c in compact_counts.detach().cpu().tolist()]
+        else:
+            counts_list = [int(max(1, c)) for c in compact_counts]
+        out["teacher_num_images"] = torch.tensor(
+            [counts_list[i] for i in reorder],
+            device=compact_ids.device,
+            dtype=torch.long,
+        )
+
+    pv_list = teacher_tensors.get("teacher_pixel_values_list")
+    if pv_list is not None:
+        out["teacher_pixel_values_list"] = [pv_list[i] for i in reorder]
+    sz_list = teacher_tensors.get("teacher_image_sizes_list")
+    if sz_list is not None:
+        out["teacher_image_sizes_list"] = [sz_list[i] for i in reorder]
+
+    opsd_debug.log(
+        "teacher_batching",
+        "expand_teacher_tensors_to_full_batch",
+        batch_size=batch_size,
+        build_indices=build_indices,
+        compact_n=compact_n,
+    )
+    return out
+
+
 def split_tensor_dict_for_opsd(
     tensor_dict: dict[str, Any],
     num_chunks: int,

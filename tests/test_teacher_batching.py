@@ -9,6 +9,7 @@ from opsd_utils.teacher_batching import (
     _image_feature_row_count,
     align_teacher_prompt_image_tokens,
     as_batch_num_images_tensor,
+    expand_teacher_tensors_to_full_batch,
     expected_image_feature_count,
     get_teacher_vision_for_sample,
     split_tensor_dict_for_opsd,
@@ -16,6 +17,31 @@ from opsd_utils.teacher_batching import (
     student_batch_num_images_tensor,
     truncate_image_tokens,
 )
+
+
+def test_expand_teacher_tensors_compact_to_full_batch():
+    """Compact teacher build (anchor row 0 only) must expand before GA split."""
+    batch_size = 8
+    compact = {
+        "teacher_prompt_ids": torch.zeros(1, 10),
+        "teacher_prompt_mask": torch.ones(1, 10, dtype=torch.long),
+        "teacher_num_images": torch.tensor([2], dtype=torch.long),
+        "teacher_pixel_values_list": [torch.zeros(2, 7, 3, 4, 4)],
+    }
+    expanded = expand_teacher_tensors_to_full_batch(compact, [0], batch_size)
+    assert expanded["teacher_prompt_ids"].shape[0] == batch_size
+    assert expanded["teacher_num_images"].tolist() == [2] * batch_size
+    assert len(expanded["teacher_pixel_values_list"]) == batch_size
+
+    chunks = split_tensor_dict_for_opsd(
+        {
+            "prompt_ids": torch.zeros(batch_size, 5),
+            **expanded,
+        },
+        num_chunks=4,
+    )
+    assert len(chunks) == 4
+    assert chunks[-1]["teacher_num_images"].tolist() == [2, 2]
 
 
 def test_split_tensor_dict_dual_image_chunks_legacy_stacked():

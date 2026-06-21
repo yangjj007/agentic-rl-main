@@ -83,6 +83,7 @@ from opsd_utils.deepspeed_utils import (
 from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
     as_batch_num_images_tensor,
+    expand_teacher_tensors_to_full_batch,
     get_teacher_vision_for_sample,
     model_inference_device,
     move_batch_num_images_to_model_device,
@@ -2056,7 +2057,11 @@ class DyMETrainer(Trainer):
                         global_step=getattr(self.state, "global_step", self._step),
                         output_dir=self.args.output_dir,
                     )
-                result["teacher_compact_indices"] = build_indices
+                teacher_tensors = expand_teacher_tensors_to_full_batch(
+                    teacher_tensors,
+                    build_indices,
+                    local_batch_size,
+                )
                 result.update(teacher_tensors)
                 for key, value in teacher_tensors.items():
                     opsd_debug.log_tensor("teacher_prompt", key, value)
