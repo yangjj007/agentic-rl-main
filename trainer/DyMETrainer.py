@@ -78,7 +78,6 @@ from opsd_utils.deepspeed_utils import (
     gradient_checkpointing_enable_kwargs,
     is_deepspeed_accelerate_config,
     student_forward_chunk_size,
-    sync_global_max_count,
 )
 from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
@@ -736,8 +735,10 @@ class DyMETrainer(Trainer):
 
     def _opsd_distributed_barrier(self, label: str) -> None:
         if self.accelerator.num_processes > 1:
+            opsd_debug.hang_probe("distributed_barrier_enter", label=label)
             opsd_debug.log_sync_point("dist", label)
             self.accelerator.wait_for_everyone()
+            opsd_debug.hang_probe("distributed_barrier_done", label=label)
 
     def _ensure_teacher_model(self) -> None:
         if self.teacher_model is not None or not self._teacher_model_config:
@@ -2031,21 +2032,20 @@ class DyMETrainer(Trainer):
                     padding_value=0,
                 ).to(device)
             opsd_indices = [i for i, m in enumerate(opsd_mask_list) if m]
-            global_max_opsd_for_build = sync_global_max_count(
-                len(opsd_indices),
-                device,
-                self.accelerator.num_processes,
+            opsd_debug.hang_probe(
+                "teacher_build_decision",
+                local_opsd_count=len(opsd_indices),
+                opsd_indices=opsd_indices,
             )
             opsd_debug.log_sync_point(
                 "teacher_prompt",
                 "before build_teacher_prompt_batch",
                 local_batch_size=local_batch_size,
                 opsd_indices=opsd_indices,
-                global_max_opsd=global_max_opsd_for_build,
                 provider_names=self.opsd_config.get("privileged_providers", ["text"]),
             )
-            if global_max_opsd_for_build > 0:
-                build_indices = sorted(set(opsd_indices) | {0})
+            if opsd_indices:
+                build_indices = sorted(opsd_indices)
                 with opsd_debug.timed("teacher_prompt", "build_teacher_prompt_batch"):
                     teacher_tensors = build_teacher_prompt_batch(
                         self.processing_class,
@@ -2063,6 +2063,11 @@ class DyMETrainer(Trainer):
                     local_batch_size,
                 )
                 result.update(teacher_tensors)
+                opsd_debug.hang_probe(
+                    "teacher_build_done",
+                    build_indices=build_indices,
+                    teacher_prompt_shape=tuple(teacher_tensors["teacher_prompt_ids"].shape),
+                )
                 for key, value in teacher_tensors.items():
                     opsd_debug.log_tensor("teacher_prompt", key, value)
                 teacher_stats = teacher_tensors.get("teacher_stats")
@@ -2074,9 +2079,10 @@ class DyMETrainer(Trainer):
             else:
                 opsd_debug.log(
                     "teacher_prompt",
-                    "skip teacher prompt build (no OPSD samples on any rank)",
+                    "skip teacher prompt build (no local OPSD samples)",
                     opsd_indices=opsd_indices,
                 )
+                opsd_debug.hang_probe("teacher_build_skipped", reason="no_local_opsd")
             if opsd_indices:
                 mode = "train" if self.model.training else "eval"
                 self._metrics[mode].setdefault("opsd/mask_ratio", []).append(
@@ -2189,6 +2195,13 @@ class DyMETrainer(Trainer):
             and self.teacher_model is not None
         )
         cache_logits_for_opsd = opsd_active and deepspeed_requires_single_student_forward()
+        opsd_debug.hang_probe(
+            "student_forward_start",
+            opsd_active=opsd_active,
+            cache_logits_for_opsd=cache_logits_for_opsd,
+            completion_tokens=int(completion_mask.sum().item()),
+            batch_size=int(prompt_ids.shape[0]),
+        )
         try:
             if cache_logits_for_opsd:
                 per_token_logps, student_completion_logits = self._get_per_token_logps(
@@ -2208,6 +2221,7 @@ class DyMETrainer(Trainer):
         except Exception as e:
             print(f"Error in _get_per_token_logps: {e}")
             raise e
+        opsd_debug.hang_probe("student_forward_done", cache_logits_for_opsd=cache_logits_for_opsd)
 
         # sft_loss = -(per_token_logps * completion_mask).sum(-1) / completion_mask.sum(-1)
         advantages = inputs["advantages"][:, 0]
@@ -2272,20 +2286,15 @@ class DyMETrainer(Trainer):
             if opsd_mask.any():
                 opsd_indices = opsd_mask.nonzero(as_tuple=True)[0].tolist()
 
-            # DDP safety: every rank must run the same number of student/teacher
-            # forwards inside the OPSD loop, otherwise the per-forward buffer
-            # broadcast / gradient reduction collectives desync across ranks and
-            # NCCL times out (rank A on _ALLGATHER_BASE vs rank B on BROADCAST at
-            # the same seq). Synchronise the per-rank OPSD sample count to the
-            # global max and pad short/empty ranks with zero-weighted forwards.
             local_opsd_count = len(opsd_indices)
-            global_max_opsd = sync_global_max_count(
-                local_opsd_count,
-                loss.device,
-                self.accelerator.num_processes,
+            opsd_debug.hang_probe(
+                "opsd_branch_enter",
+                local_opsd_count=local_opsd_count,
+                opsd_indices=opsd_indices,
+                has_teacher_prompt=inputs.get("teacher_prompt_ids") is not None,
             )
 
-            if global_max_opsd > 0:
+            if local_opsd_count > 0:
                 opsd_debug.log(
                     "opsd_loss",
                     "compute_vlm_opsd_loss_masked_batch args",
@@ -2297,8 +2306,8 @@ class DyMETrainer(Trainer):
                     grpo_weight=grpo_weight,
                     grpo_loss=float(loss.detach().item()),
                     local_opsd_count=local_opsd_count,
-                    global_max_opsd=global_max_opsd,
                 )
+                opsd_debug.hang_probe("opsd_loss_compute_start", local_opsd_count=local_opsd_count)
                 with opsd_debug.timed("opsd_loss", "compute_vlm_opsd_loss_masked_batch"):
                     acc_gate = self.opsd_config.get("loss", {}).get("acc_gate", True)
                     opsd_loss = compute_vlm_opsd_loss_masked_batch(
@@ -2310,13 +2319,16 @@ class DyMETrainer(Trainer):
                         processor=self.processing_class,
                         teacher_model=self.teacher_model,
                         acc_gate=acc_gate,
-                        pad_to_count=global_max_opsd,
                         global_step=global_step,
                         tokenizer=self.processing_class.tokenizer,
                         student_completion_logits=student_completion_logits,
                         loss_type=opsd_loss_type,
                         srkl_alpha=srkl_alpha,
                     )
+                opsd_debug.hang_probe(
+                    "opsd_loss_compute_done",
+                    opsd_loss=float(opsd_loss.detach().item()),
+                )
                 opsd_loss_tensor = opsd_loss
                 loss = grpo_weight * loss + opsd_weight * opsd_loss
                 combined_loss_tensor = loss
@@ -2328,19 +2340,23 @@ class DyMETrainer(Trainer):
                     combined_loss=float(loss.detach().item()),
                 )
             else:
-                opsd_debug.log("opsd_loss", "opsd_mask empty on all ranks, skip OPSD loss")
+                opsd_debug.log("opsd_loss", "no local OPSD samples, skip teacher/OPSD on this rank")
+                opsd_debug.hang_probe("opsd_loss_skip_local", local_opsd_count=0)
 
-            # Every rank must enter this collective; skipping on empty local mask deadlocks NCCL.
+            # Every rank must enter this collective; barrier keeps ranks aligned first.
             opsd_metric_value = (
                 opsd_loss_tensor.detach()
                 if opsd_loss_tensor is not None
                 else torch.zeros((), device=loss.device, dtype=loss.dtype)
             )
+            opsd_debug.hang_probe("barrier_before_gather_opsd_loss", local_opsd_count=local_opsd_count)
             self._opsd_distributed_barrier("wait_for_everyone before gather_for_metrics(opsd_loss)")
+            opsd_debug.hang_probe("gather_opsd_loss_start")
             opsd_debug.log_sync_point("dist", "before gather_for_metrics(opsd_loss)")
             self._metrics[mode].setdefault("loss/opsd", []).append(
                 self.accelerator.gather_for_metrics(opsd_metric_value).mean().item()
             )
+            opsd_debug.hang_probe("gather_opsd_loss_done")
             if inputs.get("teacher_traj_mask") is not None:
                 teacher_traj_mask = inputs["teacher_traj_mask"]
                 teacher_traj_indices = (
@@ -2349,21 +2365,13 @@ class DyMETrainer(Trainer):
                     else []
                 )
                 local_traj_count = len(teacher_traj_indices)
-                global_max_traj = local_traj_count
-                if self.accelerator.num_processes > 1:
-                    count_tensor = torch.tensor(
-                        [local_traj_count], device=loss.device, dtype=torch.long
-                    )
-                    torch.distributed.all_reduce(
-                        count_tensor, op=torch.distributed.ReduceOp.MAX
-                    )
-                    global_max_traj = int(count_tensor.item())
                 teacher_traj_loss_tensor = None
-                if global_max_traj > 0:
+                if local_traj_count > 0:
                     traj_cfg = self._teacher_trajectory_config()
                     traj_inputs = dict(inputs)
                     traj_inputs["completion_ids"] = inputs["teacher_traj_completion_ids"]
                     traj_inputs["completion_mask"] = inputs["teacher_traj_completion_mask"]
+                    opsd_debug.hang_probe("teacher_traj_compute_start", local_traj_count=local_traj_count)
                     with opsd_debug.timed("opsd_loss", "compute_teacher_traj_fkl_loss"):
                         teacher_traj_loss_tensor = compute_vlm_opsd_loss_masked_batch(
                             model,
@@ -2374,12 +2382,15 @@ class DyMETrainer(Trainer):
                             processor=self.processing_class,
                             teacher_model=self.teacher_model,
                             acc_gate=False,
-                            pad_to_count=global_max_traj,
                             global_step=global_step,
                             tokenizer=self.processing_class.tokenizer,
                             loss_type=traj_cfg["loss_type"],
                             srkl_alpha=srkl_alpha,
                         )
+                    opsd_debug.hang_probe(
+                        "teacher_traj_compute_done",
+                        teacher_traj_loss=float(teacher_traj_loss_tensor.detach().item()),
+                    )
                     loss = loss + traj_cfg["weight"] * teacher_traj_loss_tensor
                     combined_loss_tensor = loss
                     opsd_debug.log(

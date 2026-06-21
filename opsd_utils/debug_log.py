@@ -297,6 +297,26 @@ def log_probe(section: str, msg: str, **fields: Any) -> None:
     print(f"{_probe_prefix(section)} {msg}{extra}", flush=True)
 
 
+def hang_debug_enabled() -> bool:
+    raw = os.environ.get("DYME_OPSD_HANG_DEBUG", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def hang_probe(tag: str, **fields: Any) -> None:
+    """Always-flush timeline probe for NCCL / teacher-forward hang diagnosis."""
+    if not hang_debug_enabled():
+        return
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    step = _DETAIL_STEP if _DETAIL_STEP is not None else "?"
+    extra = ""
+    if fields:
+        extra = " | " + " | ".join(f"{k}={_fmt(v, max_len=200)}" for k, v in fields.items())
+    print(
+        f"[OPSD-HANGDBG][{ts}][rank={_RANK}/{_WORLD_SIZE}][global_step={step}][{tag}]{extra}",
+        flush=True,
+    )
+
+
 def _gendbg_prefix(section: str) -> str:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     step = _DETAIL_STEP if _DETAIL_STEP is not None else "?"

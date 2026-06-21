@@ -3,7 +3,6 @@ import torch.nn.functional as F
 
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils import diagnostics as opsd_diagnostics
-from opsd_utils.deepspeed_utils import deepspeed_requires_single_student_forward
 from opsd_utils.teacher_batching import (
     align_teacher_prompt_image_tokens,
     as_batch_num_images_tensor,
@@ -271,16 +270,28 @@ def _teacher_logits_with_oom_retry(
     teacher_input = torch.cat([teacher_prompt_ids, completion_ids], dim=1)
     teacher_attn = torch.cat([teacher_prompt_mask, completion_mask], dim=1)
     oom_retries = 0
+    opsd_debug.hang_probe(
+        "teacher_forward_start",
+        teacher_input_shape=tuple(teacher_input.shape),
+        logits_to_keep=logits_to_keep,
+        has_pixel_values=t_pixel is not None,
+    )
     while True:
         try:
             with torch.no_grad():
-                return model(
+                out = model(
                     input_ids=teacher_input,
                     attention_mask=teacher_attn,
                     pixel_values=t_pixel,
                     image_sizes=t_sizes,
                     batch_num_images=teacher_batch_num_images,
                 ).logits[:, -logits_to_keep - 1 : -1, :]
+            opsd_debug.hang_probe(
+                "teacher_forward_done",
+                teacher_logits_shape=tuple(out.shape),
+                oom_retries=oom_retries,
+            )
+            return out
         except RuntimeError as exc:
             if "out of memory" not in str(exc).lower():
                 raise
@@ -383,6 +394,15 @@ def compute_vlm_opsd_loss(
 
     t_pixel = teacher_pixel_values if teacher_pixel_values is not None else student_pixel_values
     t_sizes = teacher_image_sizes if teacher_image_sizes is not None else student_image_sizes
+    cross_model = teacher_model is not model
+    opsd_debug.hang_probe(
+        "opsd_sample_forward",
+        global_idx=global_idx,
+        student_prompt_len=int(student_prompt_mask.sum().item()),
+        teacher_prompt_len=int(teacher_prompt_mask.sum().item()),
+        completion_tokens=int(completion_mask.sum().item()),
+        cross_model=cross_model,
+    )
     with opsd_debug.timed("opsd_loss", "teacher forward (no grad)"):
         teacher_logits = _teacher_logits_with_oom_retry(
             teacher_model,
@@ -397,7 +417,6 @@ def compute_vlm_opsd_loss(
             teacher_batch_num_images=teacher_batch_num_images,
         )
 
-    cross_model = teacher_model is not model
     if cross_model:
         opsd_debug.log(
             "opsd_loss",
@@ -455,19 +474,22 @@ def compute_vlm_opsd_loss_masked_batch(
 ) -> torch.Tensor:
     """Compute mean OPSD loss over opsd_indices within a batch.
 
-    Under DDP every rank must run the *same* number of student/teacher
-    forwards, otherwise the per-forward buffer broadcast (and gradient
-    reduction) collectives desync across ranks and NCCL eventually times out.
-    ``pad_to_count`` is the global-max OPSD sample count across ranks; ranks
-    with fewer (or zero) real samples run extra zero-weighted "dummy" forwards
-    on a valid local row so the collective sequence stays aligned.
+    Each rank runs teacher forwards only for its own OPSD samples. Ranks with
+    zero local OPSD skip the loop; ``DyMETrainer`` barriers before
+    ``gather_for_metrics`` so fast ranks do not enter NCCL while slow ranks
+    are still in 7B teacher forwards.
     """
     real_count = len(opsd_indices)
-    target_count = pad_to_count if pad_to_count is not None else real_count
-    if target_count <= 0:
+    if real_count <= 0:
         opsd_debug.log("opsd_loss", "compute_vlm_opsd_loss_masked_batch skipped (no OPSD samples)")
         return torch.tensor(0.0, device=inputs["prompt_ids"].device, requires_grad=True)
 
+    opsd_debug.hang_probe(
+        "opsd_masked_batch_enter",
+        real_count=real_count,
+        opsd_indices=opsd_indices,
+        pad_to_count=pad_to_count,
+    )
     opsd_debug.log(
         "opsd_loss",
         "compute_vlm_opsd_loss_masked_batch enter",
@@ -477,7 +499,6 @@ def compute_vlm_opsd_loss_masked_batch(
         loss_type=loss_type,
         srkl_alpha=srkl_alpha,
         real_count=real_count,
-        target_count=target_count,
     )
     capture_jsd_detail = (
         global_step is not None and opsd_debug.should_log_detail(global_step)
@@ -493,11 +514,7 @@ def compute_vlm_opsd_loss_masked_batch(
     batch_size = inputs["prompt_ids"].shape[0]
     teacher_img_counts = _teacher_image_counts(inputs, batch_size)
 
-    for step_idx in range(target_count):
-        is_real = step_idx < real_count
-        # Dummy iterations reuse the first available row so shapes stay valid;
-        # their contribution is zeroed out below.
-        global_idx = opsd_indices[step_idx] if is_real else all_indices[0]
+    for step_idx, global_idx in enumerate(opsd_indices):
         local = idx_map[global_idx]
         teacher_row = _teacher_row(inputs, local)
         student_sizes = _slice_image_sizes(inputs.get("img_sizes"), local)
@@ -508,11 +525,17 @@ def compute_vlm_opsd_loss_masked_batch(
             t_pixel = inputs["pixel_values"][local : local + 1]
             teacher_sizes = student_sizes
         n_img = _teacher_image_count_for_row(inputs, teacher_row)
-        comp_ids, comp_mask, precomputed_student_logits = _completion_tensors_for_opsd_step(
-            inputs,
-            local,
-            is_real,
-            student_completion_logits,
+        comp_ids = inputs["completion_ids"][local : local + 1]
+        comp_mask = inputs["completion_mask"][local : local + 1]
+        precomputed_student_logits = None
+        if student_completion_logits is not None:
+            precomputed_student_logits = student_completion_logits[local : local + 1]
+        opsd_debug.hang_probe(
+            "opsd_loop_iter_start",
+            step_idx=step_idx,
+            global_idx=global_idx,
+            local_idx=local,
+            completion_tokens=int(comp_mask.sum().item()),
         )
         opsd_debug.log(
             "opsd_loss",
@@ -520,7 +543,6 @@ def compute_vlm_opsd_loss_masked_batch(
             global_idx=global_idx,
             local_idx=local,
             teacher_row=teacher_row,
-            is_real=is_real,
             completion_tokens=int(comp_mask.sum().item()),
             teacher_num_images=n_img,
             student_image_sizes=student_sizes,
@@ -528,41 +550,6 @@ def compute_vlm_opsd_loss_masked_batch(
             teacher_pixel_values_shape=tuple(t_pixel.shape) if t_pixel is not None else None,
         )
         teacher_batch_num_images = as_batch_num_images_tensor(n_img, t_pixel)
-        if not is_real and deepspeed_requires_single_student_forward():
-            # ZeRO-1/2: no second student forward, but still run teacher forward on
-            # padded iterations so every rank spends similar time in the OPSD loop.
-            # Otherwise fast ranks hit gather_for_metrics while slow ranks are still
-            # in teacher 7B forwards → NCCL _ALLGATHER_BASE timeout.
-            if precomputed_student_logits is None:
-                losses.append(torch.zeros((), device=inputs["prompt_ids"].device, requires_grad=True))
-                continue
-            with opsd_debug.timed("opsd_loss", f"dummy_teacher_sync idx={global_idx}"):
-                loss = compute_vlm_opsd_loss(
-                    model,
-                    inputs["prompt_ids"][local : local + 1],
-                    inputs["prompt_mask"][local : local + 1],
-                    inputs["pixel_values"][local : local + 1],
-                    student_sizes,
-                    inputs["teacher_prompt_ids"][teacher_row : teacher_row + 1],
-                    inputs["teacher_prompt_mask"][teacher_row : teacher_row + 1],
-                    t_pixel,
-                    comp_ids,
-                    comp_mask,
-                    beta=beta,
-                    teacher_image_sizes=teacher_sizes,
-                    processor=processor,
-                    teacher_batch_num_images=teacher_batch_num_images,
-                    teacher_model=teacher_model,
-                    global_idx=None,
-                    capture_jsd_detail=False,
-                    tokenizer=tokenizer,
-                    student_logits=precomputed_student_logits,
-                    loss_type=loss_type,
-                    srkl_alpha=srkl_alpha,
-                )
-                loss = loss * 0.0
-            losses.append(loss)
-            continue
         with opsd_debug.timed("opsd_loss", f"sample_opsd_loss idx={global_idx}"):
             loss = compute_vlm_opsd_loss(
                 model,
@@ -580,29 +567,34 @@ def compute_vlm_opsd_loss_masked_batch(
                 processor=processor,
                 teacher_batch_num_images=teacher_batch_num_images,
                 teacher_model=teacher_model,
-                global_idx=global_idx if is_real else None,
-                capture_jsd_detail=capture_jsd_detail and is_real,
+                global_idx=global_idx,
+                capture_jsd_detail=capture_jsd_detail,
                 tokenizer=tokenizer,
                 student_logits=precomputed_student_logits,
                 loss_type=loss_type,
                 srkl_alpha=srkl_alpha,
             )
-            if not is_real:
-                # Keep the autograd graph / DDP collective alive but contribute nothing.
-                loss = loss * 0.0
-            elif acc_gate and "acc_rewards" in inputs:
+            if acc_gate and "acc_rewards" in inputs:
                 acc_val = float(inputs["acc_rewards"][global_idx].item())
                 loss = loss * max(0.0, 1.0 - acc_val)
         losses.append(loss)
+        opsd_debug.hang_probe(
+            "opsd_loop_iter_done",
+            step_idx=step_idx,
+            global_idx=global_idx,
+            loss=float(loss.detach().item()),
+        )
 
-    # Mean over real samples only; dummy (zero-weighted) forwards keep the
-    # collective sequence aligned across ranks without skewing the loss scale.
-    mean_loss = torch.stack(losses).sum() / max(real_count, 1)
+    mean_loss = torch.stack(losses).sum() / real_count
+    opsd_debug.hang_probe(
+        "opsd_masked_batch_done",
+        real_count=real_count,
+        mean_loss=float(mean_loss.detach().item()),
+    )
     opsd_debug.log(
         "opsd_loss",
         "compute_vlm_opsd_loss_masked_batch done",
         mean_loss=float(mean_loss.detach().item()),
         real_count=real_count,
-        target_count=target_count,
     )
     return mean_loss
