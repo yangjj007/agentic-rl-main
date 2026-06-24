@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Shared helpers for accelerate launch scripts.
 
+if [[ -x "/home/deepseek_VG/.conda/envs/dyme/bin/python" ]]; then
+  PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
+else
+  PYTHON_BIN="${PYTHON_BIN:-python}"
+fi
+
 detect_num_gpus() {
   # Explicit override always wins.
   if [[ -n "${NUM_GPUS:-}" ]]; then
@@ -26,9 +32,9 @@ detect_num_gpus() {
   fi
 
   # torch.cuda.device_count() reflects what this process can actually use.
-  if command -v python >/dev/null 2>&1; then
+  if command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
     local torch_count
-    torch_count="$(python - <<'PY' 2>/dev/null || true
+    torch_count="$("${PYTHON_BIN}" - <<'PY' 2>/dev/null || true
 import torch
 print(torch.cuda.device_count())
 PY
@@ -116,8 +122,8 @@ print_launch_plan() {
     echo "nvidia-smi -L:"
     nvidia-smi -L 2>/dev/null || true
   fi
-  if command -v python >/dev/null 2>&1; then
-    python - <<'PY' 2>/dev/null || true
+  if command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+    "${PYTHON_BIN}" - <<'PY' 2>/dev/null || true
 import torch
 print(f"torch.cuda.device_count()={torch.cuda.device_count()}")
 PY
@@ -148,7 +154,7 @@ ensure_chartqa_vf_full() {
     return 1
   fi
 
-  python scripts/build_visual_facts_chartqa.py \
+  "${PYTHON_BIN}" scripts/build_visual_facts_chartqa.py \
     --input "${chartqa_raw}" \
     --output "${chartqa_vf_hint}" \
     --also-set-visual-fact
@@ -161,7 +167,7 @@ ensure_chartqa_vf_full() {
       ;;
   esac
 
-  python scripts/build_visual_facts_chartqa_deplot.py \
+  "${PYTHON_BIN}" scripts/build_visual_facts_chartqa_deplot.py \
     --input "${chartqa_vf_hint}" \
     --output "${chartqa_vf_full}" \
     --batch-size "${deplot_batch}" \
@@ -174,7 +180,7 @@ ensure_chartqa_vf_full() {
 
 # RewardCalculatorLocal needs en_core_web_sm; install once before multi-GPU launch.
 ensure_spacy_model() {
-  python - <<'PY'
+  "${PYTHON_BIN}" - <<'PY'
 from reward_utils.spacy_model import ensure_spacy_english_model
 ensure_spacy_english_model()
 print("[DyME] spaCy model ready: en_core_web_sm")
@@ -183,7 +189,7 @@ PY
 
 # transformers imports tokenizers at load time (GGUF integration path).
 ensure_tokenizers() {
-  python - <<'PY'
+  "${PYTHON_BIN}" - <<'PY'
 import importlib.util
 import subprocess
 import sys
@@ -211,7 +217,7 @@ config_deplot_enabled() {
     echo "1"
     return
   fi
-  python -c "
+  "${PYTHON_BIN}" -c "
 from config.loader import load_config
 cfg = load_config('${cfg}')
 print(1 if cfg.get('deplot', {}).get('enabled', True) else 0)

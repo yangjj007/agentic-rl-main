@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_utils.chart.deplot_pipeline import (
     DePlotErrorTracker,
+    _build_deplot_device_chunks,
     build_deplot_visual_fact,
     enrich_entries_with_deplot,
     format_deplot_for_teacher,
@@ -21,7 +22,7 @@ from data_utils.chart.deplot_pipeline import (
     resolve_deplot_devices,
     save_deplot_cache,
 )
-from opsd_utils.privileged.providers import VisualFactsProvider
+from opsd_utils.privileged.providers import VisualFactsProvider, teacher_probe_evidence_status
 
 
 def test_is_deplot_placeholder():
@@ -40,6 +41,16 @@ def test_format_deplot_for_teacher():
     assert format_deplot_for_teacher("") == ""
 
 
+def test_build_deplot_visual_fact_normalizes_row_separator_token():
+    raw_table = "Year | Value <0x0A> 2020 | 10 <0x0A> 2021 | 12"
+    vf = build_deplot_visual_fact({"question": "q"}, raw_table)
+
+    table = format_deplot_for_teacher(vf)
+
+    assert "<0x0A>" not in table
+    assert table == "Year | Value\n2020 | 10\n2021 | 12"
+
+
 def test_visual_facts_provider_skips_placeholder_and_missing():
     provider = VisualFactsProvider()
     sample_ph = {
@@ -54,6 +65,42 @@ def test_visual_facts_provider_skips_placeholder_and_missing():
     suffix2 = provider.build_teacher_suffix(sample_none)
     assert "Visual Facts - DePlot" not in suffix2
     assert "Visual Facts - Hint" in suffix2
+
+
+def test_deplot_placeholder_is_no_clean_teacher_probe_evidence():
+    sample = {
+        "visual_fact": "Goal: answer-derived text that must not count as clean evidence. Answer: 70",
+        "visual_fact_hint": "Observation: answer-derived hint. Answer: 70",
+        "visual_fact_deplot": placeholder_deplot_table({"question": "q"}),
+    }
+
+    status = teacher_probe_evidence_status(
+        sample,
+        ["format_only", "visual_facts_deplot"],
+    )
+
+    assert status["evidence_present"] is False
+    assert status["deplot_status"] == "placeholder"
+    assert status["visual_fact_used"] is False
+
+
+def test_real_deplot_is_clean_teacher_probe_evidence():
+    sample = {
+        "visual_fact": "Goal: answer-derived text that must not be used.",
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"},
+            "Year | Value\n2019 | 70\n2020 | 72",
+        ),
+    }
+
+    status = teacher_probe_evidence_status(
+        sample,
+        ["format_only", "visual_facts_deplot"],
+    )
+
+    assert status["evidence_present"] is True
+    assert status["deplot_status"] == "real"
+    assert status["visual_fact_used"] is False
 
 
 def test_visual_facts_provider_real_deplot_table():
@@ -109,6 +156,58 @@ def test_enrich_with_mock_runner():
         assert os.path.isfile(cache_path)
 
 
+def test_enrich_passes_dtype_to_runner():
+    with tempfile.TemporaryDirectory() as tmp:
+        img_path = os.path.join(tmp, "chart.png")
+        Image.new("RGB", (32, 32)).save(img_path)
+        seen = {}
+
+        class _FakeRunner:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+            def load(self):
+                return True
+
+            def generate_batch_with_oom_retry(self, paths, batch_size=8):
+                return ["Col | Val\nA | 1" for _ in paths]
+
+        with patch("data_utils.chart.deplot_pipeline.DePlotRunner", _FakeRunner):
+            stats = enrich_entries_with_deplot(
+                [{"question": "What?", "image": img_path}],
+                enabled=True,
+                dtype="float32",
+            )
+
+        assert stats["real"] == 1
+        assert seen["dtype"] == "float32"
+
+
+def test_enrich_cache_stores_normalized_table_text():
+    with tempfile.TemporaryDirectory() as tmp:
+        img_path = os.path.join(tmp, "chart.png")
+        Image.new("RGB", (32, 32)).save(img_path)
+        cache_path = os.path.join(tmp, "deplot_cache.json")
+
+        class _FakeRunner:
+            def load(self):
+                return True
+
+            def generate_batch_with_oom_retry(self, paths, batch_size=8):
+                return ["Year | Value <0x0A> 2020 | 10"]
+
+        with patch("data_utils.chart.deplot_pipeline.DePlotRunner", return_value=_FakeRunner()):
+            stats = enrich_entries_with_deplot(
+                [{"question": "What?", "image": img_path}],
+                enabled=True,
+                cache_path=cache_path,
+            )
+
+        cache = load_deplot_cache(cache_path)
+        assert stats["real"] == 1
+        assert cache[os.path.abspath(img_path)] == "Year | Value\n2020 | 10"
+
+
 def test_resolve_deplot_devices_explicit():
     devices = resolve_deplot_devices(devices=["cuda:1", "cuda:3"], device="cuda:0")
     assert devices == ["cuda:1", "cuda:3"]
@@ -129,6 +228,25 @@ def test_worker_cuda_device_sets_visible_devices(monkeypatch):
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     assert _worker_cuda_device("cuda:3") == "cuda"
     assert os.environ.get("CUDA_VISIBLE_DEVICES") == "3"
+
+
+def test_build_deplot_device_chunks_round_robin_and_caps_chunk_size():
+    pending = [(i, f"key-{i}", f"/tmp/chart-{i}.png") for i in range(10)]
+
+    chunks = _build_deplot_device_chunks(
+        pending,
+        ["cuda:3", "cuda:7"],
+        worker_chunk_size=3,
+    )
+
+    assert list(chunks) == ["cuda:3", "cuda:7"]
+    assert [[item[0] for item in chunk] for chunk in chunks["cuda:3"]] == [[0, 2, 4], [6, 8]]
+    assert [[item[0] for item in chunk] for chunk in chunks["cuda:7"]] == [[1, 3, 5], [7, 9]]
+    assert all(
+        len(chunk) <= 3
+        for device_chunks in chunks.values()
+        for chunk in device_chunks
+    )
 
 
 def test_build_script_disabled(tmp_path):

@@ -74,7 +74,7 @@ print_fast_plan() {
   local cold_frac="${DYME_FAST_COLD_START_FRAC:-0.08}"
   local est_rl_steps=$((rl_epochs * est_steps_per_epoch))
   local cold_steps
-  cold_steps="$(python - <<PY
+  cold_steps="$("${PYTHON_BIN}" - <<PY
 frac = float("${cold_frac}")
 steps = int("${est_rl_steps}")
 print(max(1, int(steps * frac)) if frac > 0 and steps > 0 else 0)

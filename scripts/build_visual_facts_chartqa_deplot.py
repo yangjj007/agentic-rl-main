@@ -27,6 +27,12 @@ def main():
         help="Run real DePlot inference (default: enabled)",
     )
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--worker-chunk-size",
+        type=int,
+        default=0,
+        help="Multi-GPU cache checkpoint granularity per worker shard. 0 = auto.",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=384)
     parser.add_argument(
         "--cache",
@@ -41,6 +47,12 @@ def main():
     parser.add_argument("--only-missing", action="store_true", default=False)
     parser.add_argument("--max-samples", type=int, default=0, help="0 = all entries")
     parser.add_argument("--model-id", default="google/deplot")
+    parser.add_argument(
+        "--dtype",
+        default="",
+        choices=["", "float32", "float16", "bfloat16"],
+        help="Optional model dtype override. Use float32 if bf16/float16 inference mismatches processor inputs.",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--devices",
@@ -76,11 +88,13 @@ def main():
         model_id=args.model_id,
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
+        dtype=args.dtype or None,
         cache_path=args.cache,
         replace_placeholder=args.replace_placeholder,
         only_missing=args.only_missing,
         max_samples=args.max_samples,
         devices=device_list,
+        worker_chunk_size=args.worker_chunk_size,
         show_progress=not args.no_progress,
     )
 

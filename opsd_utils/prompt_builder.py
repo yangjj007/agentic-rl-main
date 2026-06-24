@@ -5,6 +5,7 @@ import torch
 from PIL import Image
 
 from opsd_utils import debug_log as opsd_debug
+from opsd_utils.indexing import source_row_index
 from opsd_utils.privileged import build_privileged_context, maybe_save_privileged_images
 from opsd_utils.teacher_batching import (
     count_image_tokens,
@@ -68,6 +69,8 @@ def build_teacher_prompt_batch(
     opsd_config: Optional[dict[str, Any]] = None,
     global_step: Optional[int] = None,
     output_dir: Optional[str] = None,
+    expanded_count: Optional[int] = None,
+    num_generations: Optional[int] = None,
 ) -> dict[str, Any]:
     """Build padded teacher prompt tensors for OPSD samples at given indices."""
     opsd_config = opsd_config or {}
@@ -91,9 +94,18 @@ def build_teacher_prompt_batch(
         opsd_debug.log("teacher_prompt", "empty indices, return {}")
         return {}
 
+    def sample_for_completion_row(row: int) -> dict[str, Any]:
+        sample_idx = source_row_index(
+            row,
+            raw_count=len(samples),
+            expanded_count=expanded_count or len(samples),
+            num_generations=num_generations or 1,
+        )
+        return samples[sample_idx]
+
     sample_payloads: list[dict[str, Any]] = []
     for idx in indices:
-        sample = samples[idx]
+        sample = sample_for_completion_row(idx)
         suffix, teacher_images = build_privileged_context(
             sample,
             provider_names,
@@ -150,11 +162,12 @@ def build_teacher_prompt_batch(
     out["teacher_num_images"] = torch.tensor(teacher_num_images, device=device, dtype=torch.long)
 
     student_len = None
-    if indices and samples[indices[0]].get("prompt"):
+    first_sample = sample_for_completion_row(indices[0])
+    if indices and first_sample.get("prompt"):
         student_messages = [
             {
                 "role": "user",
-                "content": [{"type": "image"}, {"type": "text", "text": samples[indices[0]]["prompt"]}],
+                "content": [{"type": "image"}, {"type": "text", "text": first_sample["prompt"]}],
             }
         ]
         student_text = processor.apply_chat_template(student_messages, add_generation_prompt=True)
@@ -193,7 +206,7 @@ def build_teacher_prompt_batch(
     vf_empty = 0
     gold_suffix_count = 0
     for idx in indices:
-        sample = samples[idx]
+        sample = sample_for_completion_row(idx)
         vf = (
             sample.get("visual_fact_hint")
             or sample.get("visual_fact")

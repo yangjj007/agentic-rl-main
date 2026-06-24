@@ -64,6 +64,22 @@ def test_visual_profile_excludes_answer():
     assert "Reference Answer" not in suffix
 
 
+def test_format_only_chartqa_short_answer_profile():
+    suffix, images = build_privileged_context(
+        {"prompt": "What is the value?"},
+        ["format_only"],
+        privileged_profile="hybrid",
+        opsd_config={
+            "teacher_probe": {
+                "prompt_profile": "chartqa_short_answer",
+            },
+        },
+    )
+
+    assert "Answer: <short answer>" in suffix
+    assert images == []
+
+
 def test_math_lm_downgrade():
     sample = {"hint": "step", "answer": "Answer: 1"}
     profile = effective_profile(sample, "hybrid")

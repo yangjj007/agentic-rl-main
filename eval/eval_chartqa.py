@@ -8,7 +8,6 @@ from accelerate import Accelerator
 from datasets import load_dataset
 from torch.distributed import all_gather_object
 from transformers import AutoProcessor, AutoConfig, AutoTokenizer, LlavaOnevisionForConditionalGeneration
-from trl.models import unwrap_model_for_generation
 
 from data_utils.chart.evaluator import eval_one_chart
 from data_utils.rl_prompt import PROMPT_TEMPLATE
@@ -113,21 +112,20 @@ def run_kh_batch(batch_data_list):  # Renamed from run_kh, takes a batch
         for k, v in inputs.items()
     }
 
-    with unwrap_model_for_generation(model, accelerator) as unwrapped_model_instance:
-        gen_kwargs = {
-            "max_new_tokens": _eval_args.max_new_tokens,
-            "do_sample": _eval_args.do_sample,
-            "repetition_penalty": _eval_args.repetition_penalty,
-            "pad_token_id": processor.tokenizer.pad_token_id,
-            "eos_token_id": processor.tokenizer.eos_token_id,
-        }
-        if _eval_args.do_sample:
-            gen_kwargs["temperature"] = max(_eval_args.temperature, 1e-5)
-            gen_kwargs["top_p"] = _eval_args.top_p
-        generated_ids = unwrapped_model_instance.generate(
-            **inputs,
-            **gen_kwargs,
-        )
+    gen_kwargs = {
+        "max_new_tokens": _eval_args.max_new_tokens,
+        "do_sample": _eval_args.do_sample,
+        "repetition_penalty": _eval_args.repetition_penalty,
+        "pad_token_id": processor.tokenizer.pad_token_id,
+        "eos_token_id": processor.tokenizer.eos_token_id,
+    }
+    if _eval_args.do_sample:
+        gen_kwargs["temperature"] = max(_eval_args.temperature, 1e-5)
+        gen_kwargs["top_p"] = _eval_args.top_p
+    generated_ids = model.generate(
+        **inputs,
+        **gen_kwargs,
+    )
 
     input_ids_length = inputs['input_ids'].shape[1]
     newly_generated_ids = generated_ids[:, input_ids_length:]
@@ -281,10 +279,13 @@ if task == 'chart':
             if should_sync_and_report:
                 accelerator.wait_for_everyone()  # Wait for all processes to reach the sync point
 
-                gathered_all_processes_data = [None] * num_processes
-                # Each process sends its *current accumulated* dt_record_local
-                # If a process has no data, dt_record_local['res'] is an empty list, which is fine
-                all_gather_object(gathered_all_processes_data, dt_record_local)
+                if num_processes == 1:
+                    gathered_all_processes_data = [dt_record_local]
+                else:
+                    gathered_all_processes_data = [None] * num_processes
+                    # Each process sends its *current accumulated* dt_record_local
+                    # If a process has no data, dt_record_local['res'] is an empty list, which is fine
+                    all_gather_object(gathered_all_processes_data, dt_record_local)
 
                 if accelerator.is_main_process:
                     current_global_scores_list = []

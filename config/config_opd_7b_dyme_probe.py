@@ -21,8 +21,13 @@ from data_utils.paths import OUTPUTS_DIR
 # --- Training defaults (single source of truth) ---
 OPSD_MODE = "dyme_teacher_probe_opd"
 PRIVILEGE_PROFILE = "hybrid"
-PROBE_PROVIDERS = ["format_only", "visual_facts"]
+PROBE_PROVIDERS = ["format_only", "visual_facts_deplot"]
 OUTPUT_DIR = os.path.join(OUTPUTS_DIR, "opd-7b-dyme-probe-chartqa")
+CHARTQA_SHORT_ANSWER_HINT = (
+    "Answer the chart question using only the chart image and provided visual evidence. "
+    "Keep reasoning concise. Finish with exactly one final line:\n"
+    "Answer: <short answer>"
+)
 
 TEACHER_PROBE_ENABLED = True
 TEACHER_TRAJECTORY_ENABLED = True
@@ -67,6 +72,7 @@ DYME_OPSD_CONFIG = {
     "enabled": True,
     "mode": OPSD_MODE,
     "text_include_gold": False,
+    "format_only_hint": env_str("DYME_TEACHER_FORMAT_HINT", CHARTQA_SHORT_ANSWER_HINT),
     "privileged_profile": PRIVILEGE_PROFILE,
     "privileged_providers": PROBE_PROVIDERS,
     "gate": {
@@ -74,6 +80,9 @@ DYME_OPSD_CONFIG = {
         "per_completion_opsd": True,
         "online_sft_on_all_wrong": True,
         "require_format_for_opsd": False,
+        # Disable SFT cold-start — all steps run full OPD from step 0.
+        "sft_cold_start_steps": 0,
+        "sft_cold_start_frac": 0.0,
     },
     "loss": {
         **base.DYME_OPSD_CONFIG.get("loss", {}),
@@ -93,6 +102,13 @@ DYME_OPSD_CONFIG = {
         "top_p": env_float("DYME_TEACHER_PROBE_TOP_P", 1.0),
         "repetition_penalty": env_float("DYME_TEACHER_PROBE_REPETITION_PENALTY", 1.2),
         "max_relative_change": env_float("DYME_TEACHER_PROBE_RELAXED_TOL", 0.05),
+        "prompt_profile": env_str("DYME_TEACHER_PROBE_PROMPT_PROFILE", "chartqa_short_answer"),
+        "answer_parser": env_str("DYME_TEACHER_PROBE_ANSWER_PARSER", "chartqa_final_answer"),
+        "skip_no_evidence": env_bool("DYME_TEACHER_PROBE_SKIP_NO_EVIDENCE", True),
+        "probe_all_wrong_after_step": env_optional_int("DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP"),
+        "candidate_log": {
+            "enabled": env_bool("DYME_TEACHER_PROBE_CANDIDATE_LOG", True),
+        },
     },
     "teacher_trajectory": {
         "enabled": TEACHER_TRAJECTORY_ENABLED,

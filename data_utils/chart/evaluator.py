@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import re
 import string
 from typing import Optional
@@ -235,6 +236,94 @@ def eval_one_chart(
     # return relaxed_correctness(model_answer, reference_answer)
     evaluator = ExplicitPromptRelaxedCorrectness()
     return evaluator.score(model_answer, reference_answer, max_relative_change)
+
+
+@dataclass(frozen=True)
+class TeacherProbeAnswer:
+    answer: str
+    has_answer_flag: bool
+    parse_failed: bool
+
+
+def _clean_probe_answer(text: str) -> str:
+    text = str(text or "").strip()
+    text = re.sub(r"[*_\[\]\(\)]", "", text).strip()
+    text = _normalize_string(text)
+    return _remove_end_punctuation(text).strip()
+
+
+def parse_teacher_probe_answer(
+    model_answer: str,
+    *,
+    answer_flag: str = "answer:",
+) -> TeacherProbeAnswer:
+    """Extract the short final answer from a teacher probe generation."""
+    text = str(model_answer or "").strip()
+    if not text:
+        return TeacherProbeAnswer("", False, True)
+
+    flag = (answer_flag or "answer:").strip().lower()
+    lower = text.lower()
+    flag_idx = lower.rfind(flag)
+    if flag_idx >= 0:
+        after = text[flag_idx + len(flag) :]
+        lines = [line.strip() for line in after.splitlines() if line.strip()]
+        answer = _clean_probe_answer(lines[0] if lines else "")
+        return TeacherProbeAnswer(answer, True, not bool(answer))
+
+    phrase_match = re.search(
+        r"(?is)\b(?:the\s+)?(?:final\s+)?answer\s+(?:is|=)\s*([^\n.]+%?)",
+        text,
+    )
+    if phrase_match:
+        answer = _clean_probe_answer(phrase_match.group(1))
+        return TeacherProbeAnswer(answer, False, not bool(answer))
+
+    one_line = " ".join(text.split())
+    answer = _clean_probe_answer(one_line)
+    lower_answer = answer.lower()
+    word_count = len(re.findall(r"[A-Za-z]+", answer))
+    looks_like_failure = bool(
+        re.search(
+            r"\b(need|information|chart|cannot|can't|unable|unknown|insufficient)\b",
+            lower_answer,
+        )
+    )
+    if (
+        answer
+        and len(answer) <= 64
+        and "\n" not in text
+        and word_count <= 4
+        and not looks_like_failure
+    ):
+        return TeacherProbeAnswer(answer, False, False)
+
+    return TeacherProbeAnswer("", False, True)
+
+
+def eval_teacher_probe_chart(
+    model_answer: str,
+    reference_answer: str | list[str],
+    max_relative_change: float = 0.05,
+    *,
+    answer_flag: str = "answer:",
+) -> tuple[float, TeacherProbeAnswer]:
+    parsed = parse_teacher_probe_answer(model_answer, answer_flag=answer_flag)
+    if parsed.parse_failed:
+        return 0.0, parsed
+
+    if isinstance(reference_answer, list):
+        references = [
+            str(ref).lower().replace((answer_flag or "answer:").lower(), "").strip()
+            for ref in reference_answer
+        ]
+    else:
+        references = str(reference_answer).lower().replace(
+            (answer_flag or "answer:").lower(), ""
+        ).strip()
+
+    evaluator = RelaxedCorrectness()
+    return float(evaluator.score(parsed.answer, references, max_relative_change)), parsed
 
 if __name__ == "__main__":
     # Example usage

@@ -5,6 +5,7 @@ from opsd_utils.privileged.base import PrivilegedContextProvider
 from opsd_utils.privileged.image_utils import resolve_teacher_images
 from opsd_utils.privileged.profiles import DEFAULT_PROFILE, effective_profile, resolve_profile_config
 from opsd_utils.privileged.providers import (
+    CHARTQA_SHORT_ANSWER_HINT,
     CropProvider,
     DeplotOnlyProvider,
     FormatOnlyProvider,
@@ -23,6 +24,16 @@ PROVIDER_REGISTRY: dict[str, type[PrivilegedContextProvider]] = {
 }
 
 
+def _format_only_hint_from_config(cfg: dict[str, Any]) -> str | None:
+    hint = cfg.get("format_only_hint")
+    if hint:
+        return str(hint)
+    probe_cfg = cfg.get("teacher_probe") or {}
+    if probe_cfg.get("prompt_profile") == "chartqa_short_answer":
+        return CHARTQA_SHORT_ANSWER_HINT
+    return None
+
+
 def get_providers(
     names: list[str],
     crop_cfg: Optional[dict[str, Any]] = None,
@@ -33,7 +44,7 @@ def get_providers(
         return []
     cfg = opsd_config or {}
     text_include_gold = bool(cfg.get("text_include_gold", True))
-    format_only_hint = cfg.get("format_only_hint")
+    format_only_hint = _format_only_hint_from_config(cfg)
 
     if len(names) == 1 and names[0] == "hybrid":
         return [
@@ -94,7 +105,7 @@ def build_privileged_context(
     )
 
     text_include_gold = bool(cfg.get("text_include_gold", True))
-    format_only_hint = cfg.get("format_only_hint")
+    format_only_hint = _format_only_hint_from_config(cfg)
     hybrid = HybridProvider(
         providers,
         crop_cfg=crop_cfg,

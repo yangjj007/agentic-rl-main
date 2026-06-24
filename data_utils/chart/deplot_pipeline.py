@@ -185,14 +185,22 @@ def build_deplot_visual_fact(
     *,
     model_id: str = DEFAULT_MODEL_ID,
 ) -> str:
+    table = normalize_deplot_table_text(parsed_table)
     question = entry.get("question", entry.get("question_wo_prompt", ""))
     payload = {
         "source": REAL_SOURCE,
         "model_id": model_id,
         "question": question,
-        "parsed_table": parsed_table.strip(),
+        "parsed_table": table,
     }
     return json.dumps(payload, ensure_ascii=False)
+
+
+def normalize_deplot_table_text(parsed_table: str) -> str:
+    """Normalize Pix2Struct/DePlot row separators for teacher-facing text."""
+    text = str(parsed_table or "").replace("<0x0A>", "\n")
+    rows = [row.strip() for row in text.splitlines()]
+    return "\n".join(row for row in rows if row)
 
 
 def cache_key_for_entry(entry: dict[str, Any]) -> str:
@@ -514,6 +522,64 @@ def _deplot_pool_init(progress_queue: Any) -> None:
         pass
 
 
+def _resolve_deplot_worker_chunk_size(batch_size: int, worker_chunk_size: int = 0) -> int:
+    if worker_chunk_size and worker_chunk_size > 0:
+        return max(1, int(worker_chunk_size))
+    return max(max(1, int(batch_size)) * 32, 256)
+
+
+def _build_deplot_device_chunks(
+    pending: list[tuple[int, str, str]],
+    device_list: list[str],
+    *,
+    worker_chunk_size: int = 0,
+    batch_size: int = 8,
+) -> dict[str, list[list[tuple[int, str, str]]]]:
+    """Round-robin pending items by GPU, then split each GPU shard into cache chunks."""
+    chunk_size = _resolve_deplot_worker_chunk_size(batch_size, worker_chunk_size)
+    device_shards: dict[str, list[tuple[int, str, str]]] = {
+        device: [] for device in device_list if device
+    }
+    devices = list(device_shards)
+    if not pending or not devices:
+        return {}
+
+    for i, item in enumerate(pending):
+        device_shards[devices[i % len(devices)]].append(item)
+
+    return {
+        device: [
+            shard[start : start + chunk_size]
+            for start in range(0, len(shard), chunk_size)
+        ]
+        for device, shard in device_shards.items()
+        if shard
+    }
+
+
+def _emit_deplot_rows(
+    progress_queue: Any,
+    *,
+    device: str,
+    rows: list[tuple[int, str, str, str]],
+    chunk_index: int,
+) -> bool:
+    if progress_queue is None:
+        return False
+    try:
+        progress_queue.put(
+            {
+                "type": "rows",
+                "device": device,
+                "rows": rows,
+                "chunk_index": chunk_index,
+            }
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _deplot_shard_worker(payload: dict[str, Any]) -> dict[str, Any]:
     """Process one pending shard on a single GPU (spawn-safe entrypoint)."""
     shard: list[tuple[int, str, str]] = payload["shard"]
@@ -524,6 +590,7 @@ def _deplot_shard_worker(payload: dict[str, Any]) -> dict[str, Any]:
     runner = DePlotRunner(
         model_id=payload["model_id"],
         device=worker_device,
+        dtype=payload.get("dtype") or None,
         max_new_tokens=payload["max_new_tokens"],
     )
     if not runner.load():
@@ -562,6 +629,75 @@ def _deplot_shard_worker(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _deplot_chunked_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    """Process one GPU's chunks and stream each chunk's rows for incremental cache saves."""
+    chunks: list[list[tuple[int, str, str]]] = payload["chunks"]
+    device_label = str(payload.get("device", "?"))
+    progress_queue = _DEPLOT_WORKER_STATE.get("progress_queue")
+    fallback_rows: list[tuple[int, str, str, str]] = []
+
+    worker_device = _worker_cuda_device(device_label)
+    runner = DePlotRunner(
+        model_id=payload["model_id"],
+        device=worker_device,
+        dtype=payload.get("dtype") or None,
+        max_new_tokens=payload["max_new_tokens"],
+    )
+    if not runner.load():
+        for chunk_index, shard in enumerate(chunks):
+            rows = [(idx, key, "", "model_load_failed") for idx, key, _ in shard]
+            if not _emit_deplot_rows(
+                progress_queue,
+                device=device_label,
+                rows=rows,
+                chunk_index=chunk_index,
+            ):
+                fallback_rows.extend(rows)
+        return {
+            "rows": fallback_rows,
+            "counts": {"model_load_failed": sum(len(shard) for shard in chunks)},
+            "samples": runner._error_tracker.samples,
+        }
+
+    bs = max(1, int(payload["batch_size"]))
+    for chunk_index, shard in enumerate(chunks):
+        rows: list[tuple[int, str, str, str]] = []
+        for batch_idx, start in enumerate(range(0, len(shard), bs)):
+            batch = shard[start : start + bs]
+            paths = [p[2] for p in batch]
+            t0 = time.perf_counter()
+            tables = runner.generate_batch_with_oom_retry(paths, batch_size=bs)
+            elapsed = time.perf_counter() - t0
+            for (entry_idx, key, _), table in zip(batch, tables):
+                rows.append((entry_idx, key, table, "" if table else "inference_failed"))
+            if progress_queue is not None:
+                try:
+                    progress_queue.put(
+                        {
+                            "type": "progress",
+                            "n": len(batch),
+                            "device": device_label,
+                            "elapsed": elapsed,
+                            "first": chunk_index == 0 and batch_idx == 0,
+                        }
+                    )
+                except Exception:
+                    pass
+        if not _emit_deplot_rows(
+            progress_queue,
+            device=device_label,
+            rows=rows,
+            chunk_index=chunk_index,
+        ):
+            fallback_rows.extend(rows)
+
+    return {
+        "rows": fallback_rows,
+        "counts": dict(runner._error_tracker.counts),
+        "samples": runner._error_tracker.samples,
+    }
+
+
 def _apply_deplot_rows(
     work_entries: list[dict[str, Any]],
     rows: list[tuple[int, str, str, str]],
@@ -573,6 +709,7 @@ def _apply_deplot_rows(
     for entry_idx, key, table, _err in rows:
         entry = work_entries[entry_idx]
         if table:
+            table = normalize_deplot_table_text(table)
             entry["visual_fact_deplot"] = build_deplot_visual_fact(
                 entry, table, model_id=model_id
             )
@@ -594,6 +731,7 @@ def enrich_entries_with_deplot(
     model_id: str = DEFAULT_MODEL_ID,
     batch_size: int = 8,
     max_new_tokens: int = 384,
+    dtype: Optional[str] = None,
     cache_path: str = "",
     replace_placeholder: bool = True,
     only_missing: bool = False,
@@ -601,6 +739,7 @@ def enrich_entries_with_deplot(
     device: Optional[str] = None,
     devices: Optional[list[str]] = None,
     use_all_gpus: bool = False,
+    worker_chunk_size: int = 0,
     show_progress: bool = True,
 ) -> dict[str, int]:
     """
@@ -637,6 +776,7 @@ def enrich_entries_with_deplot(
         runner = DePlotRunner(
             model_id=model_id,
             device=device_list[0],
+            dtype=dtype,
             max_new_tokens=max_new_tokens,
             error_tracker=error_tracker,
         )
@@ -694,30 +834,35 @@ def enrich_entries_with_deplot(
         bs = max(1, batch_size)
         n_pending = len(pending)
         if show_progress:
+            chunk_size = _resolve_deplot_worker_chunk_size(bs, worker_chunk_size)
             tqdm.write(
                 f"[DePlot] inference: {n_pending} images "
                 f"(cached={stats['cached']} skipped={stats['skipped']} "
                 f"placeholder={stats['placeholder']}, batch_size={bs}, "
-                f"workers={len(device_list)})"
+                f"workers={len(device_list)}, worker_chunk_size={chunk_size})"
             )
 
         if len(device_list) > 1:
             from concurrent.futures import ProcessPoolExecutor
 
-            shards = [[] for _ in device_list]
-            for i, item in enumerate(pending):
-                shards[i % len(device_list)].append(item)
+            device_chunks = _build_deplot_device_chunks(
+                pending,
+                device_list,
+                worker_chunk_size=worker_chunk_size,
+                batch_size=bs,
+            )
             mp_ctx = mp.get_context("spawn")
             payloads = [
                 {
-                    "shard": shard,
+                    "chunks": chunks,
                     "model_id": model_id,
-                    "device": device_list[i],
+                    "device": device,
+                    "dtype": dtype,
                     "max_new_tokens": max_new_tokens,
                     "batch_size": bs,
                 }
-                for i, shard in enumerate(shards)
-                if shard
+                for device, chunks in device_chunks.items()
+                if chunks
             ]
             infer_bar = tqdm(
                 total=n_pending,
@@ -734,12 +879,40 @@ def enrich_entries_with_deplot(
                     initializer=_deplot_pool_init,
                     initargs=(progress_queue,),
                 ) as pool:
-                    futures = [pool.submit(_deplot_shard_worker, payload) for payload in payloads]
+                    futures = [pool.submit(_deplot_chunked_worker, payload) for payload in payloads]
                     pending_futures = set(futures)
-                    while pending_futures:
+
+                    def drain_progress_queue() -> None:
                         try:
                             while True:
                                 msg = progress_queue.get_nowait()
+                                if isinstance(msg, dict) and msg.get("type") == "rows":
+                                    rows = msg.get("rows") or []
+                                    _apply_deplot_rows(
+                                        work_entries,
+                                        rows,
+                                        model_id=model_id,
+                                        cache=cache,
+                                        stats=stats,
+                                    )
+                                    if cache_path and cache:
+                                        save_deplot_cache(cache_path, cache)
+                                    if show_progress:
+                                        infer_bar.set_postfix(
+                                            processed=infer_bar.n,
+                                            real=stats["real"],
+                                            failed=stats["failed"],
+                                        )
+                                    else:
+                                        print(
+                                            f"[DePlot] chunk complete device={msg.get('device', '?')} "
+                                            f"chunk={int(msg.get('chunk_index', 0)) + 1} "
+                                            f"rows={len(rows)} real={stats['real']} "
+                                            f"failed={stats['failed']} cache={len(cache)}",
+                                            flush=True,
+                                        )
+                                    continue
+
                                 if isinstance(msg, dict):
                                     infer_bar.update(int(msg.get("n", 0)))
                                     if msg.get("first") and show_progress:
@@ -757,6 +930,9 @@ def enrich_entries_with_deplot(
                         except queue_module.Empty:
                             pass
 
+                    while pending_futures:
+                        drain_progress_queue()
+
                         done = [f for f in pending_futures if f.done()]
                         for fut in done:
                             pending_futures.remove(fut)
@@ -766,15 +942,16 @@ def enrich_entries_with_deplot(
                                 if len(error_tracker.samples) < error_tracker._max_log_lines:
                                     error_tracker.samples.append(line)
                             rows = result.get("rows") or []
-                            _apply_deplot_rows(
-                                work_entries,
-                                rows,
-                                model_id=model_id,
-                                cache=cache,
-                                stats=stats,
-                            )
-                            if cache_path and cache:
-                                save_deplot_cache(cache_path, cache)
+                            if rows:
+                                _apply_deplot_rows(
+                                    work_entries,
+                                    rows,
+                                    model_id=model_id,
+                                    cache=cache,
+                                    stats=stats,
+                                )
+                                if cache_path and cache:
+                                    save_deplot_cache(cache_path, cache)
                             if show_progress:
                                 infer_bar.set_postfix(
                                     processed=infer_bar.n,
@@ -784,6 +961,7 @@ def enrich_entries_with_deplot(
 
                         if pending_futures:
                             time.sleep(0.1)
+                    drain_progress_queue()
             if show_progress:
                 infer_bar.close()
         else:

@@ -13,6 +13,52 @@ DEFAULT_FORMAT_ONLY_HINT = (
     "Goal: ...\nObservation: ...\nReasoning: ...\nAnswer: ..."
 )
 
+CHARTQA_SHORT_ANSWER_HINT = (
+    "Answer the chart question using only the chart image and provided visual evidence. "
+    "Keep reasoning concise. Finish with exactly one final line:\n"
+    "Answer: <short answer>"
+)
+
+
+def _deplot_status(sample: dict[str, Any]) -> str:
+    raw = sample.get("visual_fact_deplot")
+    if not str(raw or "").strip():
+        return "missing"
+    if is_deplot_placeholder(raw):
+        return "placeholder"
+    if format_deplot_for_teacher(raw).strip():
+        return "real"
+    return "unknown"
+
+
+def teacher_probe_evidence_status(
+    sample: dict[str, Any],
+    provider_names: list[str],
+) -> dict[str, Any]:
+    """Describe whether a teacher-probe candidate has clean extra evidence."""
+    providers = set(provider_names or [])
+    deplot_status = _deplot_status(sample)
+    uses_deplot = bool({"visual_facts_deplot", "visual_facts"} & providers)
+    visual_fact_used = bool("visual_facts" in providers) and bool(
+        str(sample.get("visual_fact") or sample.get("visual_facts") or "").strip()
+        or str(sample.get("visual_fact_hint") or "").strip()
+    )
+    crop_used = bool("crop" in providers) and bool(sample.get("image"))
+
+    clean_evidence_present = bool(
+        (uses_deplot and deplot_status == "real") or crop_used
+    )
+    evidence_present = clean_evidence_present or visual_fact_used
+    return {
+        "evidence_present": evidence_present,
+        "clean_evidence_present": clean_evidence_present,
+        "deplot_status": deplot_status,
+        "deplot_real": deplot_status == "real",
+        "deplot_placeholder": deplot_status == "placeholder",
+        "visual_fact_used": visual_fact_used,
+        "crop_used": crop_used,
+    }
+
 
 class FormatOnlyProvider(PrivilegedContextProvider):
     """Structure hint only — no gold answer or reference reasoning (anti-leakage)."""

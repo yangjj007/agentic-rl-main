@@ -1,4 +1,5 @@
 import itertools
+import json
 import os
 import textwrap
 import warnings
@@ -65,14 +66,17 @@ from reward_utils.compute_rewards import (
     refine_context_in_parallel,
     refine_context_sequential,
 )
-from data_utils.chart.evaluator import eval_one_chart
+from data_utils.chart.evaluator import eval_one_chart, eval_teacher_probe_chart
 
 from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, DEFAULT_OPSD_CONFIG
+from opsd_utils.indexing import source_row_index
 from opsd_utils.leakage import completion_has_leakage_pattern
 from opsd_utils.mode_router import route_prompt_modes, route_completion_modes
 from opsd_utils.recoverability import estimate_recoverable_flags
 from opsd_utils.prompt_builder import build_teacher_prompt_batch
+from opsd_utils.privileged.providers import teacher_probe_evidence_status
 from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch, slice_student_completion_logits
+from opsd_utils.teacher_probe_log import append_teacher_probe_record, build_teacher_probe_record
 from opsd_utils.deepspeed_utils import (
     deepspeed_requires_single_student_forward,
     gradient_checkpointing_enable_kwargs,
@@ -315,6 +319,7 @@ class DyMETrainer(Trainer):
         self.visual_supervision_meta = visual_supervision_meta or {}
         self._last_visual_batch_stats: dict[str, Any] = {}
         self._teacher_vocab_checked = False
+        self._teacher_probe_preview_logged = False
         self._last_training_phase: Optional[str] = None
         self.task_name = task_name
         reward_weights = self.opsd_config.get("reward_weights", [1.0, 1.0, 1.0])
@@ -878,6 +883,10 @@ class DyMETrainer(Trainer):
             "top_p": float(cfg.get("top_p", 1.0)),
             "repetition_penalty": float(cfg.get("repetition_penalty", 1.2)),
             "max_relative_change": float(cfg.get("max_relative_change", 0.05)),
+            "prompt_profile": cfg.get("prompt_profile", "chartqa_short_answer"),
+            "answer_parser": cfg.get("answer_parser", "chartqa_final_answer"),
+            "skip_no_evidence": bool(cfg.get("skip_no_evidence", True)),
+            "probe_all_wrong_after_step": cfg.get("probe_all_wrong_after_step"),
         }
 
     def _teacher_trajectory_config(self) -> dict[str, Any]:
@@ -973,6 +982,7 @@ class DyMETrainer(Trainer):
         completion_modes: list[int],
         acc_rewards: torch.Tensor,
         answers: list[str],
+        completions: list[str],
         answer_flag: str,
         global_step: int,
         device,
@@ -982,6 +992,17 @@ class DyMETrainer(Trainer):
             "teacher_probe_correct": 0,
             "teacher_probe_wrong": 0,
             "teacher_probe_skipped_budget": 0,
+            "teacher_probe_skipped_no_evidence": 0,
+            "teacher_probe_evidence_present": 0,
+            "teacher_probe_deplot_placeholder": 0,
+            "teacher_probe_deplot_real": 0,
+            "teacher_probe_visual_fact_used": 0,
+            "teacher_probe_answer_flag": 0,
+            "teacher_probe_parse_failed": 0,
+            "teacher_probe_gold_suffix": 0,
+            "teacher_probe_generated_tokens_mean": 0.0,
+            "teacher_probe_generated_tokens_p95": 0.0,
+            "teacher_probe_clipped_rate": 0.0,
             "teacher_probe_text": {},
         }
         if (
@@ -996,6 +1017,66 @@ class DyMETrainer(Trainer):
 
         candidate_indices = [i for i, mode_i in enumerate(completion_modes) if mode_i == MODE_OPSD]
         stats["teacher_probe_candidates"] = len(candidate_indices)
+        provider_names = probe_cfg["context_providers"]
+        expanded_count = len(completion_modes)
+
+        def source_idx_for(row: int) -> int:
+            return self._source_row_index(row, len(inputs), expanded_count)
+
+        def sample_for(row: int) -> dict[str, Union[torch.Tensor, Any]]:
+            return inputs[source_idx_for(row)] if inputs else {}
+
+        def reference_for(row: int) -> str:
+            idx = source_idx_for(row)
+            return str(answers[idx]) if idx < len(answers) else ""
+
+        eligible_indices: list[int] = []
+        for global_idx in candidate_indices:
+            sample = sample_for(global_idx)
+            evidence_status = teacher_probe_evidence_status(sample, provider_names)
+            if evidence_status["evidence_present"]:
+                stats["teacher_probe_evidence_present"] += 1
+            if evidence_status["deplot_placeholder"]:
+                stats["teacher_probe_deplot_placeholder"] += 1
+            if evidence_status["deplot_real"]:
+                stats["teacher_probe_deplot_real"] += 1
+            if evidence_status["visual_fact_used"]:
+                stats["teacher_probe_visual_fact_used"] += 1
+
+            if probe_cfg["skip_no_evidence"] and not evidence_status["evidence_present"]:
+                completion_modes[global_idx] = MODE_SFT
+                stats["teacher_probe_skipped_no_evidence"] += 1
+                prompt_idx = global_idx // self.num_generations
+                generation_idx = global_idx % self.num_generations
+                source_idx = source_idx_for(global_idx)
+                reference = reference_for(global_idx)
+                student_output = completions[global_idx] if global_idx < len(completions) else ""
+                append_teacher_probe_record(
+                    output_dir=getattr(self.args, "output_dir", None),
+                    opsd_config=self.opsd_config,
+                    rank=self.accelerator.process_index,
+                    record=build_teacher_probe_record(
+                        sample=sample,
+                        global_step=global_step,
+                        rank=self.accelerator.process_index,
+                        global_idx=global_idx,
+                        source_idx=source_idx,
+                        prompt_idx=prompt_idx,
+                        generation_idx=generation_idx,
+                        provider_names=provider_names,
+                        reference=str(reference),
+                        student_output=student_output,
+                        teacher_output="",
+                        score=0.0,
+                        final_route="sft_no_evidence",
+                        answer_flag=answer_flag,
+                        evidence_status=evidence_status,
+                    ),
+                )
+            else:
+                eligible_indices.append(global_idx)
+
+        candidate_indices = eligible_indices
         max_per_batch = probe_cfg["max_per_batch"]
         if max_per_batch > 0 and len(candidate_indices) > max_per_batch:
             skipped = candidate_indices[max_per_batch:]
@@ -1006,7 +1087,6 @@ class DyMETrainer(Trainer):
         if not candidate_indices:
             return completion_modes, {}, stats
 
-        provider_names = probe_cfg["context_providers"]
         teacher_tensors = build_teacher_prompt_batch(
             self.processing_class,
             inputs,
@@ -1016,8 +1096,15 @@ class DyMETrainer(Trainer):
             opsd_config=self.opsd_config,
             global_step=global_step,
             output_dir=self.args.output_dir,
+            expanded_count=expanded_count,
+            num_generations=self.num_generations,
         )
+        teacher_stats = teacher_tensors.get("teacher_stats", {}) if teacher_tensors else {}
+        gold_rate = float(teacher_stats.get("privileged_suffix_has_gold_rate", 0.0) or 0.0)
+        stats["teacher_probe_gold_suffix"] = int(round(gold_rate * len(candidate_indices)))
         teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        generated_token_counts: list[int] = []
+        generated_clipped_count = 0
         for row, global_idx in enumerate(candidate_indices):
             gen_ids, gen_mask, text = self._teacher_generate_from_tensors(
                 teacher_tensors,
@@ -1028,17 +1115,92 @@ class DyMETrainer(Trainer):
                 top_p=probe_cfg["top_p"],
                 repetition_penalty=probe_cfg["repetition_penalty"],
             )
+            effective_tokens = int(gen_mask.sum().item()) if hasattr(gen_mask, "sum") else int(len(gen_ids))
+            generated_token_counts.append(effective_tokens)
+            eos_id = self.processing_class.tokenizer.eos_token_id
+            has_eos = bool((gen_ids == eos_id).any().item()) if eos_id is not None and hasattr(gen_ids, "numel") else False
+            if not has_eos and int(gen_ids.numel()) >= int(probe_cfg["max_new_tokens"]):
+                generated_clipped_count += 1
             prompt_idx = global_idx // self.num_generations
-            reference = answers[prompt_idx] if prompt_idx < len(answers) else ""
-            score = float(
-                eval_one_chart(
+            generation_idx = global_idx % self.num_generations
+            source_idx = source_idx_for(global_idx)
+            reference = reference_for(global_idx)
+            if probe_cfg["answer_parser"] == "chartqa_final_answer":
+                score, parsed_answer = eval_teacher_probe_chart(
                     text,
-                    str(reference).lower().replace(answer_flag.lower(), "").strip(),
+                    str(reference),
                     probe_cfg["max_relative_change"],
                     answer_flag=answer_flag.lower(),
                 )
-            )
+            else:
+                score = float(
+                    eval_one_chart(
+                        text,
+                        str(reference).lower().replace(answer_flag.lower(), "").strip(),
+                        probe_cfg["max_relative_change"],
+                        answer_flag=answer_flag.lower(),
+                    )
+                )
+                parsed_answer = None
+            if parsed_answer is not None:
+                if parsed_answer.has_answer_flag:
+                    stats["teacher_probe_answer_flag"] += 1
+                if parsed_answer.parse_failed:
+                    stats["teacher_probe_parse_failed"] += 1
             stats["teacher_probe_text"][global_idx] = text[:160].replace("\n", "\\n")
+            final_route = "opd" if score > 0 else "sft"
+            sample = sample_for(global_idx)
+            student_output = completions[global_idx] if global_idx < len(completions) else ""
+            evidence_status = teacher_probe_evidence_status(sample, provider_names)
+            append_teacher_probe_record(
+                output_dir=getattr(self.args, "output_dir", None),
+                opsd_config=self.opsd_config,
+                rank=self.accelerator.process_index,
+                record=build_teacher_probe_record(
+                    sample=sample,
+                    global_step=global_step,
+                    rank=self.accelerator.process_index,
+                    global_idx=global_idx,
+                    source_idx=source_idx,
+                    prompt_idx=prompt_idx,
+                    generation_idx=generation_idx,
+                    provider_names=provider_names,
+                    reference=str(reference),
+                    student_output=student_output,
+                    teacher_output=text,
+                    score=score,
+                    final_route=final_route,
+                    answer_flag=answer_flag,
+                    parsed_answer=parsed_answer.answer if parsed_answer is not None else "",
+                    parse_failed=parsed_answer.parse_failed if parsed_answer is not None else False,
+                    has_answer_flag=parsed_answer.has_answer_flag if parsed_answer is not None else ("answer:" in text.lower()),
+                    evidence_status=evidence_status,
+                ),
+            )
+            if self.accelerator.is_main_process and not self._teacher_probe_preview_logged:
+                self._teacher_probe_preview_logged = True
+                preview_payload = {
+                    "global_step": int(global_step),
+                    "provider_names": list(provider_names),
+                    "max_new_tokens": int(probe_cfg["max_new_tokens"]),
+                    "prompt_idx": int(prompt_idx),
+                    "source_idx": int(source_idx),
+                    "generation_idx": int(generation_idx),
+                    "reference": str(reference)[:160],
+                    "teacher_output_preview": text[:240].replace("\n", "\\n"),
+                    "parsed_answer": (
+                        parsed_answer.answer[:160]
+                        if parsed_answer is not None and parsed_answer.answer is not None
+                        else ""
+                    ),
+                    "score": float(score),
+                    "final_route": final_route,
+                    "evidence_status": dict(evidence_status),
+                }
+                print(
+                    f"[DyME-TEACHER-PROBE] {json.dumps(preview_payload, ensure_ascii=False, sort_keys=True)}",
+                    flush=True,
+                )
             if score > 0:
                 stats["teacher_probe_correct"] += 1
                 completion_modes[global_idx] = MODE_OPSD
@@ -1047,6 +1209,15 @@ class DyMETrainer(Trainer):
             else:
                 stats["teacher_probe_wrong"] += 1
                 completion_modes[global_idx] = MODE_SFT
+
+        if generated_token_counts:
+            ordered_counts = sorted(generated_token_counts)
+            p95_idx = min(len(ordered_counts) - 1, max(0, (95 * len(ordered_counts) + 99) // 100 - 1))
+            stats["teacher_probe_generated_tokens_mean"] = float(
+                sum(generated_token_counts) / len(generated_token_counts)
+            )
+            stats["teacher_probe_generated_tokens_p95"] = float(ordered_counts[p95_idx])
+            stats["teacher_probe_clipped_rate"] = float(generated_clipped_count / len(generated_token_counts))
 
         opsd_debug.log(
             "teacher_probe",
@@ -1161,13 +1332,12 @@ class DyMETrainer(Trainer):
         return inputs
 
     def _source_row_index(self, row: int, raw_count: int, expanded_count: int) -> int:
-        if raw_count <= 0:
-            return 0
-        if raw_count * self.num_generations == expanded_count:
-            return row // self.num_generations
-        if raw_count == expanded_count:
-            return row
-        return min(row, raw_count - 1)
+        return source_row_index(
+            row,
+            raw_count=raw_count,
+            expanded_count=expanded_count,
+            num_generations=self.num_generations,
+        )
 
     def _generate_sft_cold_start_batch(
         self,
@@ -1630,11 +1800,12 @@ class DyMETrainer(Trainer):
                 )
             opsd_debug.log("opsd_router", "recoverable flags computed", recoverable_flags=recoverable_flags)
             with opsd_debug.timed("opsd_router", "route_completion_modes"):
+                route_opsd_config = {**self.opsd_config, "global_step": global_step}
                 completion_modes = route_completion_modes(
                     acc_rewards,
                     self.num_generations,
                     batch_size,
-                    self.opsd_config,
+                    route_opsd_config,
                     recoverable_flags,
                     format_rewards=format_rewards,
                 )
@@ -1648,6 +1819,7 @@ class DyMETrainer(Trainer):
                 completion_modes=completion_modes,
                 acc_rewards=acc_rewards,
                 answers=answers,
+                completions=completions,
                 answer_flag=answer_flag,
                 global_step=global_step,
                 device=device,
@@ -1772,7 +1944,8 @@ class DyMETrainer(Trainer):
                             opsd_skipped_degenerate += 1
                             advantange_[:] = 0
                 if run_opsd:
-                    gold = answers[batch_id] if batch_id < len(answers) else ""
+                    source_idx = self._source_row_index(i, len(answers), batch_size)
+                    gold = answers[source_idx] if source_idx < len(answers) else ""
                     text_i = completions[i] if i < len(completions) else ""
                     if completion_has_leakage_pattern(text_i, gold):
                         run_opsd = False
@@ -1833,6 +2006,12 @@ class DyMETrainer(Trainer):
 
         if self._health_monitor is not None:
             local_routing_n = max(len(sft_replaced_list), 1)
+            probe_candidates = int(teacher_probe_stats.get("teacher_probe_candidates", 0) or 0)
+            probe_correct = int(teacher_probe_stats.get("teacher_probe_correct", 0) or 0)
+            probe_wrong = int(teacher_probe_stats.get("teacher_probe_wrong", 0) or 0)
+            probe_probed = probe_correct + probe_wrong
+            probe_candidate_denom = max(probe_candidates, 1)
+            probe_probed_denom = max(probe_probed, 1)
             self._health_monitor.record_routing(
                 global_step,
                 {
@@ -1842,9 +2021,23 @@ class DyMETrainer(Trainer):
                     "opsd_on_correct_rate": opsd_on_correct / local_routing_n,
                     "grpo_on_correct_rate": grpo_on_correct / local_routing_n,
                     "opd_teacher_call_rate": sum(opsd_mask_list) / local_routing_n,
-                    "teacher_probe_candidate_rate": teacher_probe_stats.get("teacher_probe_candidates", 0) / local_routing_n,
-                    "teacher_probe_correct_rate": teacher_probe_stats.get("teacher_probe_correct", 0) / local_routing_n,
-                    "teacher_probe_wrong_rate": teacher_probe_stats.get("teacher_probe_wrong", 0) / local_routing_n,
+                    "teacher_probe_candidate_rate": probe_candidates / local_routing_n,
+                    "teacher_probe_correct_rate": probe_correct / local_routing_n,
+                    "teacher_probe_wrong_rate": probe_wrong / local_routing_n,
+                    "teacher_probe_skipped_no_evidence_rate": teacher_probe_stats.get("teacher_probe_skipped_no_evidence", 0) / local_routing_n,
+                    "teacher_probe_skipped_budget_rate": teacher_probe_stats.get("teacher_probe_skipped_budget", 0) / local_routing_n,
+                    "teacher_probe_candidate_accuracy": probe_correct / probe_candidate_denom,
+                    "teacher_probe_probed_accuracy": probe_correct / probe_probed_denom,
+                    "teacher_probe_evidence_present_rate": teacher_probe_stats.get("teacher_probe_evidence_present", 0) / probe_candidate_denom,
+                    "teacher_probe_deplot_placeholder_rate": teacher_probe_stats.get("teacher_probe_deplot_placeholder", 0) / probe_candidate_denom,
+                    "teacher_probe_deplot_real_rate": teacher_probe_stats.get("teacher_probe_deplot_real", 0) / probe_candidate_denom,
+                    "teacher_probe_visual_fact_used_rate": teacher_probe_stats.get("teacher_probe_visual_fact_used", 0) / probe_candidate_denom,
+                    "teacher_probe_answer_flag_rate": teacher_probe_stats.get("teacher_probe_answer_flag", 0) / probe_probed_denom,
+                    "teacher_probe_parse_fail_rate": teacher_probe_stats.get("teacher_probe_parse_failed", 0) / probe_probed_denom,
+                    "teacher_probe_gold_suffix_rate": teacher_probe_stats.get("teacher_probe_gold_suffix", 0) / probe_probed_denom,
+                    "teacher_probe_generated_tokens_mean": teacher_probe_stats.get("teacher_probe_generated_tokens_mean", 0.0),
+                    "teacher_probe_generated_tokens_p95": teacher_probe_stats.get("teacher_probe_generated_tokens_p95", 0.0),
+                    "teacher_probe_clipped_rate": teacher_probe_stats.get("teacher_probe_clipped_rate", 0.0),
                     "format_mean": float(format_rewards.mean().item()),
                     "accuracy_mean": float(acc_rewards.mean().item()),
                 },
@@ -2058,6 +2251,8 @@ class DyMETrainer(Trainer):
                         opsd_config=self.opsd_config,
                         global_step=getattr(self.state, "global_step", self._step),
                         output_dir=self.args.output_dir,
+                        expanded_count=local_batch_size,
+                        num_generations=self.num_generations,
                     )
                 teacher_tensors = expand_teacher_tensors_to_full_batch(
                     teacher_tensors,

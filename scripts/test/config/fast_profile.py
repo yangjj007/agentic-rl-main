@@ -20,6 +20,11 @@ COLD_START_FRAC = env_float("DYME_FAST_COLD_START_FRAC", 0.08)
 OUTPUT_ROOT = env_str("DYME_FAST_OUTPUT_ROOT", os.path.join(OUTPUTS_DIR, "test-fast"))
 # Gate warmup scaling when total step count is not known at import time.
 EST_STEPS_PER_EPOCH = env_int("DYME_FAST_EST_STEPS_PER_EPOCH", 600)
+CHARTQA_SHORT_ANSWER_HINT = (
+    "Answer the chart question using only the chart image and provided visual evidence. "
+    "Keep reasoning concise. Finish with exactly one final line:\n"
+    "Answer: <short answer>"
+)
 
 
 def estimated_rl_steps() -> int:
@@ -89,6 +94,7 @@ def apply_dyme_aligned_opd(opsd_config: dict[str, Any]) -> dict[str, Any]:
         "mode": "dyme_teacher_probe_opd",
         "privileged_providers": ["format_only", "visual_facts_deplot"],
         "text_include_gold": False,
+        "format_only_hint": CHARTQA_SHORT_ANSWER_HINT,
         "gate": {
             **opsd_config.get("gate", {}),
             "sft_cold_start_frac": 0.0,
@@ -97,6 +103,25 @@ def apply_dyme_aligned_opd(opsd_config: dict[str, Any]) -> dict[str, Any]:
         "teacher_probe": {
             **opsd_config.get("teacher_probe", {}),
             "enabled": True,
+            "context_providers": ["format_only", "visual_facts_deplot"],
+            "max_new_tokens": int(os.environ.get("DYME_TEACHER_PROBE_MAX_NEW_TOKENS", 96)),
+            "prompt_profile": os.environ.get("DYME_TEACHER_PROBE_PROMPT_PROFILE", "chartqa_short_answer"),
+            "answer_parser": os.environ.get("DYME_TEACHER_PROBE_ANSWER_PARSER", "chartqa_final_answer"),
+            "skip_no_evidence": os.environ.get(
+                "DYME_TEACHER_PROBE_SKIP_NO_EVIDENCE", "1"
+            ).strip().lower() not in ("0", "false", "no", "off"),
+            "probe_all_wrong_after_step": (
+                int(os.environ["DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP"])
+                if os.environ.get("DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP", "").strip()
+                else None
+            ),
+            "candidate_log": {
+                **(opsd_config.get("teacher_probe", {}).get("candidate_log", {})),
+                "enabled": os.environ.get("DYME_TEACHER_PROBE_CANDIDATE_LOG", "1")
+                .strip()
+                .lower()
+                not in ("0", "false", "no", "off"),
+            },
         },
     }
     opsd.pop("visual_supervision", None)

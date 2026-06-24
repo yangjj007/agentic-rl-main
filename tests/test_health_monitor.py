@@ -70,3 +70,28 @@ def test_finish_step_returns_metrics_keys():
     metrics = hm.finish_step(1)
     assert "completions/degenerate_rate" in metrics
     assert "health/alert_count" in metrics
+
+
+def test_finish_step_returns_teacher_probe_diagnostic_metrics():
+    hm = TrainingHealthMonitor({"enabled": True, "metrics_every_step": True, "log_every_step": False})
+    hm.reset_step(2)
+    hm.record_routing(
+        2,
+        {
+            "teacher_probe_skipped_no_evidence_rate": 0.25,
+            "teacher_probe_deplot_real_rate": 0.75,
+            "teacher_probe_visual_fact_used_rate": 0.5,
+            "teacher_probe_generated_tokens_mean": 42.0,
+            "teacher_probe_generated_tokens_p95": 91.0,
+            "teacher_probe_clipped_rate": 0.125,
+        },
+    )
+
+    metrics = hm.finish_step(2)
+
+    assert metrics["routing/teacher_probe_skipped_no_evidence_rate"] == 0.25
+    assert metrics["routing/teacher_probe_deplot_real_rate"] == 0.75
+    assert metrics["routing/teacher_probe_visual_fact_used_rate"] == 0.5
+    assert metrics["teacher_probe/generated_tokens_mean"] == 42.0
+    assert metrics["teacher_probe/generated_tokens_p95"] == 91.0
+    assert metrics["teacher_probe/clipped_rate"] == 0.125

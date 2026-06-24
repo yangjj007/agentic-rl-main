@@ -668,6 +668,11 @@ For specific experimental settings such as different model scales or architectur
 * `main_llm.py`: LLM-specific variants
 * `main_change.py`: additional ablation settings
 
+### 5. Ablation
+
+```bash
+bash scripts/test/run_opd_deplot_ablation.sh --run --run-id deplot_4epoch_main
+```
 
 ## Evaluation
 
@@ -683,6 +688,10 @@ accelerate launch -m eval.<eval_script_name>
 
 ```bash
 accelerate launch -m eval.eval_chartqa
+
+accelerate launch --num_processes "$(nvidia-smi -L | wc -l)" \
+  -m eval.eval_chartqa \
+  --model_path outputs/opd-7b-dyme-probe/final_checkpoint
 ```
 
 ### Evaluation Setup

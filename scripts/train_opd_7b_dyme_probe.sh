@@ -13,7 +13,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-source "$(dirname "$0")/launch_utils.sh"
+source "$(dirname "$0")/test/launch_utils.sh"
 
 # Full training profile — do not inherit smoke profile env from the shell.
 DYME_CONFIG="opd_7b_dyme_probe"
@@ -23,13 +23,16 @@ if [[ -n "${DYME_TRAIN_MAX_STEPS:-}" ]]; then
 fi
 
 export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_deepspeed_zero1_config)}"
+export DYME_OPSD_HANG_DEBUG="${DYME_OPSD_HANG_DEBUG:-0}"
+export DYME_OPSD_HANG_FORCE="${DYME_OPSD_HANG_FORCE:-0}"
 
 prepare_chartqa_training_data "${DYME_CONFIG}"
+ensure_spacy_model
 
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
 
-_TRAIN_PLAN="$(python - <<'PY'
+_TRAIN_PLAN="$("${PYTHON_BIN}" - <<'PY'
 from config.loader import load_config
 c = load_config("opd_7b_dyme_probe")
 args = c["training"]["dyme_args"]
@@ -45,11 +48,9 @@ echo "Config: ${DYME_CONFIG} (${_TRAIN_PLAN})"
 echo "Snapshot: see output_dir/run_config_snapshot.json after launch"
 
 LOG_FILE="$(train_log_path train_opd_7b_dyme_probe)"
-echo "Writing log to: ${LOG_FILE}"
-
-accelerate launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PROCESSES}" main.py \
-  --config "${DYME_CONFIG}" \
-  --mode rl \
-  --opsd_enabled \
-  --no_wandb \
-  2>&1 | tee "${LOG_FILE}"
+run_train_with_log "${LOG_FILE}" \
+  "${PYTHON_BIN}" -m accelerate.commands.launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PROCESSES}" main.py \
+    --config "${DYME_CONFIG}" \
+    --mode rl \
+    --opsd_enabled \
+    "$@"

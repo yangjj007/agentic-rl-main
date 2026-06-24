@@ -298,7 +298,12 @@ def log_probe(section: str, msg: str, **fields: Any) -> None:
 
 
 def hang_debug_enabled() -> bool:
-    raw = os.environ.get("DYME_OPSD_HANG_DEBUG", "1").strip().lower()
+    raw = os.environ.get("DYME_OPSD_HANG_DEBUG", "0").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def hang_force_enabled() -> bool:
+    raw = os.environ.get("DYME_OPSD_HANG_FORCE", "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
 
@@ -318,7 +323,9 @@ def hang_probe(tag: str, **fields: Any) -> None:
 
 
 def hang_probe_force(tag: str, **fields: Any) -> None:
-    """Unconditional flush probe (ignores DYME_OPSD_HANG_DEBUG)."""
+    """Forced flush probe, unless DYME_OPSD_HANG_FORCE explicitly disables it."""
+    if not hang_force_enabled():
+        return
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     step = _DETAIL_STEP if _DETAIL_STEP is not None else "?"
     extra = ""

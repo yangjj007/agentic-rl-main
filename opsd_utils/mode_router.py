@@ -126,6 +126,14 @@ def route_completion_modes(
         group_has_correct = [
             (acc_rewards[p] > threshold).any().item() for p in range(num_prompts)
         ]
+        probe_cfg = opsd_config.get("teacher_probe") or {}
+        probe_all_wrong_after_step = probe_cfg.get("probe_all_wrong_after_step")
+        global_step = int(opsd_config.get("global_step", 0) or 0)
+        probe_all_wrong = (
+            probe_all_wrong_after_step is not None
+            and int(probe_all_wrong_after_step) >= 0
+            and global_step >= int(probe_all_wrong_after_step)
+        )
 
         completion_modes: list[int] = []
         for i in range(batch_size):
@@ -138,8 +146,9 @@ def route_completion_modes(
 
             if not group_has_correct[prompt_idx]:
                 # Strict DyME: all completions in an all-wrong group memorize
-                # GT/refined supervision. No OPD is allowed in this branch.
-                selected = MODE_SFT
+                # GT/refined supervision unless the explicit ablation gate asks
+                # to probe all-wrong groups after a configured step.
+                selected = MODE_OPSD if probe_all_wrong else MODE_SFT
             elif acc_ok and fmt_ok:
                 selected = MODE_GRPO
             else:
@@ -155,6 +164,9 @@ def route_completion_modes(
             num_generations=num_generations,
             mode_name=mode_name,
             require_format_for_opsd=require_format,
+            probe_all_wrong_after_step=probe_all_wrong_after_step,
+            global_step=global_step,
+            probe_all_wrong=probe_all_wrong,
             group_has_correct=group_has_correct,
             completion_modes=[opsd_debug.MODE_NAMES.get(m, m) for m in completion_modes],
         )

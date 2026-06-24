@@ -400,6 +400,105 @@ def prepare_datasets(task: str, dataset_config: Dict[str, Any], mode='rl') -> (D
     return train_dataset, eval_dataset
 
 
+def _deplot_status_from_text(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "missing"
+    if "deplot_placeholder" in text:
+        return "placeholder"
+    if "google/deplot" in text or '"source": "deplot"' in text or "'source': 'deplot'" in text:
+        return "real"
+    return "unknown"
+
+
+def _log_run_config_summary(
+    *,
+    config_path: str,
+    dataset_config: Dict[str, Any],
+    training_config: Dict[str, Any],
+    opsd_config: Dict[str, Any],
+    model_config: Dict[str, Any],
+    launch_config: Dict[str, Any],
+) -> None:
+    if not _is_main_process():
+        return
+    dyme_args = training_config.get("dyme_args", {})
+    probe_cfg = opsd_config.get("teacher_probe", {}) or {}
+    traj_cfg = opsd_config.get("teacher_trajectory", {}) or {}
+    visual_cfg = opsd_config.get("visual_supervision", {}) or {}
+    payload = {
+        "config": config_path,
+        "train_dataset": dataset_config.get("train_dataset"),
+        "output_dir": dyme_args.get("output_dir"),
+        "num_train_epochs": dyme_args.get("num_train_epochs"),
+        "max_steps": dyme_args.get("max_steps"),
+        "opsd_enabled": bool(opsd_config.get("enabled", False)),
+        "opsd_mode": opsd_config.get("mode"),
+        "privileged_providers": opsd_config.get("privileged_providers", []),
+        "text_include_gold": bool(opsd_config.get("text_include_gold", False)),
+        "loss": opsd_config.get("loss", {}),
+        "teacher_model_path": model_config.get("teacher_model_path"),
+        "teacher_device_map": model_config.get("teacher_device_map", launch_config.get("teacher_device_map")),
+        "teacher_probe": {
+            "enabled": bool(probe_cfg.get("enabled", False)),
+            "context_providers": probe_cfg.get("context_providers", []),
+            "max_new_tokens": probe_cfg.get("max_new_tokens"),
+            "max_per_batch": probe_cfg.get("max_per_batch"),
+            "prompt_profile": probe_cfg.get("prompt_profile"),
+            "answer_parser": probe_cfg.get("answer_parser"),
+            "skip_no_evidence": probe_cfg.get("skip_no_evidence"),
+            "candidate_log": probe_cfg.get("candidate_log", {}),
+        },
+        "teacher_trajectory": {
+            "enabled": bool(traj_cfg.get("enabled", False)),
+            "max_new_tokens": traj_cfg.get("max_new_tokens"),
+            "loss_type": traj_cfg.get("loss_type"),
+            "weight": traj_cfg.get("weight"),
+        },
+        "visual_supervision": {
+            "enabled": bool(visual_cfg.get("enabled", False)),
+            "checker_enabled": bool((visual_cfg.get("checker") or {}).get("enabled", False)),
+            "refiner_enabled": bool((visual_cfg.get("refiner") or {}).get("enabled", False)),
+            "prefetch_ic": bool(visual_cfg.get("prefetch_ic", False)),
+            "logging_enabled": bool((visual_cfg.get("logging") or {}).get("enabled", False)),
+        },
+        "hang_debug_env": {
+            "DYME_OPSD_HANG_DEBUG": os.environ.get("DYME_OPSD_HANG_DEBUG", "<unset>"),
+            "DYME_OPSD_HANG_FORCE": os.environ.get("DYME_OPSD_HANG_FORCE", "<unset>"),
+        },
+    }
+    print(f"[DyME-RUN-CONFIG] {json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True)}", flush=True)
+
+
+def _log_dataset_status(train_dataset: Dataset, dataset_config: Dict[str, Any]) -> None:
+    if not _is_main_process():
+        return
+    counts = {
+        "deplot_real": 0,
+        "deplot_placeholder": 0,
+        "deplot_missing": 0,
+        "deplot_unknown": 0,
+        "visual_fact_present": 0,
+        "visual_fact_hint_present": 0,
+    }
+    total = len(train_dataset)
+    for sample in train_dataset:
+        status = _deplot_status_from_text(sample.get("visual_fact_deplot"))
+        counts[f"deplot_{status}"] += 1
+        if str(sample.get("visual_fact") or sample.get("visual_facts") or "").strip():
+            counts["visual_fact_present"] += 1
+        if str(sample.get("visual_fact_hint") or "").strip():
+            counts["visual_fact_hint_present"] += 1
+    payload = {
+        "train_dataset": dataset_config.get("train_dataset"),
+        "num_train_samples": total,
+        **counts,
+        "deplot_real_rate": counts["deplot_real"] / max(total, 1),
+        "deplot_placeholder_rate": counts["deplot_placeholder"] / max(total, 1),
+    }
+    print(f"[DyME-DATA] {json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True)}", flush=True)
+
+
 def main():
     """
     Main function to orchestrate the model training pipeline.
@@ -529,6 +628,14 @@ def main():
     if debug_enabled:
         opsd_debug.log_config("main", "resolved OPSD config", opsd_config)
         opsd_debug.log("main", "training entry", mode=mode, config_path=args.config)
+    _log_run_config_summary(
+        config_path=args.config,
+        dataset_config=dataset_config,
+        training_config=training_config,
+        opsd_config=opsd_config,
+        model_config=model_config,
+        launch_config=launch_config,
+    )
 
     # 2. Setup Environment
     # Default off unless --wandb or config launch.wandb_enabled / WANDB_API_KEY is set.
@@ -667,6 +774,7 @@ def main():
 
     # 4. Prepare Datasets
     train_dataset, eval_dataset = prepare_datasets(task, dataset_config, mode=mode)
+    _log_dataset_status(train_dataset, dataset_config)
 
     # 5. Initialize Reward Calculator
     # checker = RewardCalculator(rl_config, client_config.copy(), gpu_id=device_id)
