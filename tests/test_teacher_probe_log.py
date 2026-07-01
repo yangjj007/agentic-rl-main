@@ -43,6 +43,10 @@ def test_teacher_probe_record_summarizes_route_and_deplot_placeholder():
         score=1.0,
         final_route="opd",
         answer_flag="Answer:",
+        group_has_correct=False,
+        group_reward_std=0.0,
+        is_all_wrong_probe_candidate=True,
+        route_reason="all_wrong_teacher_rescue",
         max_text_chars=32,
     )
 
@@ -50,6 +54,12 @@ def test_teacher_probe_record_summarizes_route_and_deplot_placeholder():
     assert record["rank"] == 2
     assert record["final_route"] == "opd"
     assert record["teacher_correct"] is True
+    assert record["group_has_correct"] is False
+    assert record["group_all_wrong"] is True
+    assert record["group_reward_std"] == 0.0
+    assert record["is_all_wrong_probe_candidate"] is True
+    assert record["is_mixed_wrong_probe_candidate"] is False
+    assert record["route_reason"] == "all_wrong_teacher_rescue"
     assert record["question"] == "What is the highest bar?"
     assert record["student_output"] == "Answer: 41"
     assert record["teacher_output"] == "Reasoning...\\nAnswer: 42"

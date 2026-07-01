@@ -36,6 +36,9 @@ SRKL_ALPHA = 0.1
 OPSD_WEIGHT = 1.0
 GRPO_WEIGHT = 1.0
 TEACHER_TRAJ_FKL_WEIGHT = 0.5
+OPSD_VARIANCE_ADAPTIVE = False
+OPSD_ADAPTIVE_STD_TARGET = 0.25
+OPSD_ADAPTIVE_MAX_MULT = 2.0
 
 # Full ChartQA run: follow num_train_epochs unless DYME_MAX_STEPS is explicitly set.
 NUM_TRAIN_EPOCHS = env_int("DYME_NUM_TRAIN_EPOCHS", 10)
@@ -53,6 +56,9 @@ SRKL_ALPHA = env_float("DYME_OPSD_SRKL_ALPHA", SRKL_ALPHA)
 OPSD_WEIGHT = env_float("DYME_OPSD_WEIGHT", OPSD_WEIGHT)
 GRPO_WEIGHT = env_float("DYME_GRPO_WEIGHT", GRPO_WEIGHT)
 TEACHER_TRAJ_FKL_WEIGHT = env_float("DYME_TEACHER_TRAJ_FKL_WEIGHT", TEACHER_TRAJ_FKL_WEIGHT)
+OPSD_VARIANCE_ADAPTIVE = env_bool("DYME_OPSD_VARIANCE_ADAPTIVE", OPSD_VARIANCE_ADAPTIVE)
+OPSD_ADAPTIVE_STD_TARGET = env_float("DYME_OPSD_ADAPTIVE_STD_TARGET", OPSD_ADAPTIVE_STD_TARGET)
+OPSD_ADAPTIVE_MAX_MULT = env_float("DYME_OPSD_ADAPTIVE_MAX_MULT", OPSD_ADAPTIVE_MAX_MULT)
 
 MODEL_CONFIG = dict(base.MODEL_CONFIG)
 
@@ -61,11 +67,15 @@ _dyme_args = {
     "output_dir": OUTPUT_DIR,
     "num_train_epochs": NUM_TRAIN_EPOCHS,
 }
+_dyme_args["save_strategy"] = env_str("DYME_SAVE_STRATEGY", _dyme_args.get("save_strategy", "epoch"))
 # Do not inherit max_steps from a prior smoke shell export; full run uses epochs.
 _dyme_args.pop("max_steps", None)
 _max_steps = env_optional_int("DYME_MAX_STEPS")
 if _max_steps is not None:
     _dyme_args["max_steps"] = _max_steps
+_save_total_limit = env_optional_int("DYME_SAVE_TOTAL_LIMIT")
+if _save_total_limit is not None:
+    _dyme_args["save_total_limit"] = _save_total_limit
 
 DYME_OPSD_CONFIG = {
     **base.DYME_OPSD_CONFIG,
@@ -79,6 +89,7 @@ DYME_OPSD_CONFIG = {
         **base.DYME_OPSD_CONFIG.get("gate", {}),
         "per_completion_opsd": True,
         "online_sft_on_all_wrong": True,
+        "online_sft_target": env_str("DYME_ONLINE_SFT_TARGET", "hint_answer"),
         "require_format_for_opsd": False,
         # Disable SFT cold-start — all steps run full OPD from step 0.
         "sft_cold_start_steps": 0,
@@ -91,10 +102,14 @@ DYME_OPSD_CONFIG = {
         "opsd_weight": OPSD_WEIGHT,
         "grpo_weight": GRPO_WEIGHT,
         "teacher_traj_fkl_weight": TEACHER_TRAJ_FKL_WEIGHT,
+        "variance_adaptive": OPSD_VARIANCE_ADAPTIVE,
+        "adaptive_std_target": OPSD_ADAPTIVE_STD_TARGET,
+        "adaptive_max_mult": OPSD_ADAPTIVE_MAX_MULT,
     },
     "teacher_probe": {
         "enabled": TEACHER_PROBE_ENABLED,
         "context_providers": PROBE_PROVIDERS,
+        "batch_size": env_int("DYME_TEACHER_PROBE_BATCH_SIZE", 1),
         "max_per_batch": env_int("DYME_TEACHER_PROBE_MAX_PER_BATCH", 0),
         "max_new_tokens": env_int("DYME_TEACHER_PROBE_MAX_NEW_TOKENS", 96),
         "do_sample": env_bool("DYME_TEACHER_PROBE_DO_SAMPLE", False),

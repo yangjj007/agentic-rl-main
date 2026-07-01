@@ -95,3 +95,56 @@ def test_finish_step_returns_teacher_probe_diagnostic_metrics():
     assert metrics["teacher_probe/generated_tokens_mean"] == 42.0
     assert metrics["teacher_probe/generated_tokens_p95"] == 91.0
     assert metrics["teacher_probe/clipped_rate"] == 0.125
+
+
+def test_finish_step_returns_adaptive_opsd_metrics():
+    hm = TrainingHealthMonitor({"enabled": True, "metrics_every_step": True, "log_every_step": False})
+    hm.reset_step(3)
+    hm.record_loss(
+        3,
+        {
+            "reward_std_mean": 0.05,
+            "opsd_effective_weight": 2.7,
+            "opsd_adaptive_multiplier": 1.8,
+        },
+    )
+
+    metrics = hm.finish_step(3)
+
+    assert metrics["signal/reward_std_mean"] == 0.05
+    assert metrics["loss/opsd_effective_weight"] == 2.7
+    assert metrics["loss/opsd_adaptive_multiplier"] == 1.8
+
+
+def test_finish_step_returns_routing_count_and_group_signal_metrics():
+    hm = TrainingHealthMonitor({"enabled": True, "metrics_every_step": True, "log_every_step": False})
+    hm.reset_step(4)
+    hm.record_routing(
+        4,
+        {
+            "grpo_route_rate": 0.25,
+            "opd_route_rate": 0.5,
+            "sft_route_rate": 0.25,
+            "total_completion_count": 8,
+            "wrong_completion_count": 6,
+            "probe_candidate_count": 4,
+            "teacher_correct_count": 2,
+            "opd_route_count": 3,
+            "sft_route_count": 3,
+            "grpo_route_count": 2,
+            "group_all_wrong_rate": 0.75,
+            "group_mixed_rate": 0.25,
+            "reward_std_lt_0_01_rate": 0.5,
+            "reward_std_lt_0_05_rate": 0.75,
+            "reward_std_lt_0_10_rate": 1.0,
+        },
+    )
+
+    metrics = hm.finish_step(4)
+
+    assert metrics["routing/grpo_route_rate"] == 0.25
+    assert metrics["routing/opd_route_rate"] == 0.5
+    assert metrics["routing/total_completion_count"] == 8.0
+    assert metrics["routing/probe_candidate_count"] == 4.0
+    assert metrics["signal/group_all_wrong_rate"] == 0.75
+    assert metrics["signal/reward_std_lt_0_05_rate"] == 0.75

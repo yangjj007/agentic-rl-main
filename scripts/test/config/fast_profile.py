@@ -104,6 +104,7 @@ def apply_dyme_aligned_opd(opsd_config: dict[str, Any]) -> dict[str, Any]:
             **opsd_config.get("teacher_probe", {}),
             "enabled": True,
             "context_providers": ["format_only", "visual_facts_deplot"],
+            "batch_size": int(os.environ.get("DYME_TEACHER_PROBE_BATCH_SIZE", 1)),
             "max_new_tokens": int(os.environ.get("DYME_TEACHER_PROBE_MAX_NEW_TOKENS", 96)),
             "prompt_profile": os.environ.get("DYME_TEACHER_PROBE_PROMPT_PROFILE", "chartqa_short_answer"),
             "answer_parser": os.environ.get("DYME_TEACHER_PROBE_ANSWER_PARSER", "chartqa_final_answer"),

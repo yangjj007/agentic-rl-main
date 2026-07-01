@@ -75,6 +75,18 @@ def _teacher_probe_cfg(**gate_overrides: object) -> dict:
     }
 
 
+def _variant_block(output: str, variant: str) -> str:
+    marker = f"Variant: {variant}\n"
+    start = output.find(marker)
+    assert start >= 0, f"missing dry-run block for {variant}"
+    next_start = output.find("\n============================================================\nVariant: ", start + len(marker))
+    if next_start < 0:
+        next_start = output.find("\nDry-run only.", start + len(marker))
+    if next_start < 0:
+        next_start = len(output)
+    return output[start:next_start]
+
+
 def test_teacher_probe_route_marks_mixed_wrong_completions_for_probe() -> None:
     acc = torch.tensor([[1.0, 0.0, 0.0]])
     modes = route_completion_modes(acc, 3, 3, _teacher_probe_cfg(), [True])
@@ -148,7 +160,7 @@ print(json.dumps(payload, sort_keys=True))
     assert cfg["max_new_tokens"] == 96
 
 
-def test_deplot_ablation_runner_dry_run_lists_three_aligned_variants() -> None:
+def test_deplot_ablation_runner_dry_run_lists_six_aligned_variants() -> None:
     script = ROOT / "scripts/test/run_opd_deplot_ablation.sh"
     result = subprocess.run(
         [
@@ -164,12 +176,16 @@ def test_deplot_ablation_runner_dry_run_lists_three_aligned_variants() -> None:
         check=True,
     )
     out = result.stdout
+    variants = re.findall(r"^Variant: ([^\n]+)$", out, flags=re.MULTILINE)
 
-    assert "Variant: deplot_no_vs_opd" in out
-    assert "Variant: deplot_vs_opd" in out
-    assert "Variant: deplot_vs_srkl" in out
-    assert out.index("Variant: deplot_vs_opd") < out.index("Variant: deplot_vs_srkl")
-    assert out.index("Variant: deplot_vs_srkl") < out.index("Variant: deplot_no_vs_opd")
+    assert variants == [
+        "deplot_vs_opd",
+        "deplot_vs_srkl",
+        "deplot_no_vs_opd",
+        "deplot_no_vs_opd_va",
+        "deplot_no_vs_opd_pcd",
+        "deplot_no_vs_opd_va_pcd",
+    ]
     assert "DYME_NUM_TRAIN_EPOCHS=4" in out
     assert "DYME_STUDENT_MODEL=/home/deepseek_VG/deepseek/models/llava-0.5b-ov" in out
     assert "DYME_TEACHER_MODEL=/home/deepseek_VG/deepseek/models/llava-7b-ov" in out
@@ -183,9 +199,26 @@ def test_deplot_ablation_runner_dry_run_lists_three_aligned_variants() -> None:
     assert "HF_HUB_OFFLINE=1" in out
     assert "DYME_VISUAL_CHECKER=0" in out
     assert "DYME_VISUAL_CHECKER=1" in out
-    assert out.count("DYME_OPSD_LOSS_TYPE=jsd") == 2
+    assert out.count("DYME_OPSD_LOSS_TYPE=jsd") == 5
     assert "DYME_OPSD_LOSS_TYPE=srkl" in out
     assert "bash scripts/train_opd_7b_dyme_probe.sh" in out
+
+    anchor = _variant_block(out, "deplot_no_vs_opd")
+    va = _variant_block(out, "deplot_no_vs_opd_va")
+    pcd = _variant_block(out, "deplot_no_vs_opd_pcd")
+    va_pcd = _variant_block(out, "deplot_no_vs_opd_va_pcd")
+
+    assert "DYME_OPSD_VARIANCE_ADAPTIVE=0" in anchor
+    assert "DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=0" not in anchor
+
+    assert "DYME_OPSD_VARIANCE_ADAPTIVE=1" in va
+    assert "DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=0" not in va
+
+    assert "DYME_OPSD_VARIANCE_ADAPTIVE=0" in pcd
+    assert "DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=0" in pcd
+
+    assert "DYME_OPSD_VARIANCE_ADAPTIVE=1" in va_pcd
+    assert "DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=0" in va_pcd
 
 
 def test_deplot_ablation_runner_rejects_one_step_smoke() -> None:
