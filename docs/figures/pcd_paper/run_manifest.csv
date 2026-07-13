@@ -1,0 +1,5 @@
+variant,role,run_dir,train_log,eval_log,candidate_log_glob,config_path,enabled
+deplot_no_vs_opd,anchor,,,,,,0
+deplot_no_vs_opd_va,va,,,,,,0
+deplot_no_vs_opd_pcd,pcd,,,,,,0
+deplot_no_vs_opd_va_pcd,va_pcd,,,,,,0

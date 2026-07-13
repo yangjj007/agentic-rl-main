@@ -1,0 +1,257 @@
+import torch
+
+from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT
+from opsd_utils import debug_log as opsd_debug
+
+# Anti-leakage modes: correct → GRPO, wrong → OPSD/OPD, else SFT
+_NO_LEAK_MODES = frozenset({"rlsd", "copsd_opd"})
+_TEACHER_PROBE_MODES = frozenset({"dyme_teacher_probe_opd"})
+
+
+def teacher_probe_route_confirmed(
+    *,
+    mode_name: str,
+    completion_mode: int,
+    has_teacher_trajectory: bool,
+) -> bool:
+    """Keep probe correctness independent from optional hard trajectories."""
+    if mode_name in _TEACHER_PROBE_MODES:
+        return completion_mode == MODE_OPSD
+    return has_teacher_trajectory
+
+
+def route_prompt_modes(
+    acc_rewards: torch.Tensor,
+    num_generations: int,
+    opsd_config: dict,
+    recoverable_flags: list[bool],
+) -> list[int]:
+    """
+    Route each prompt (not each completion) to GRPO / OPSD / SFT.
+
+    Args:
+        acc_rewards: (num_prompts, num_generations)
+        recoverable_flags: length num_prompts
+    Returns:
+        list[int] of length num_prompts with MODE_* values
+    """
+    threshold = opsd_config.get("gate", {}).get("correct_threshold", 0.5)
+    mode_name = opsd_config.get("mode", "dyme")
+    enabled = opsd_config.get("enabled", False)
+
+    num_prompts = acc_rewards.shape[0]
+    modes: list[int] = []
+    opsd_debug.log(
+        "mode_router",
+        "route_prompt_modes enter",
+        num_prompts=num_prompts,
+        num_generations=num_generations,
+        mode_name=mode_name,
+        enabled=enabled,
+        threshold=threshold,
+        acc_rewards_shape=tuple(acc_rewards.shape),
+        recoverable_flags=recoverable_flags,
+    )
+
+    for p in range(num_prompts):
+        any_correct = (acc_rewards[p] > threshold).any().item()
+        recoverable = recoverable_flags[p] if p < len(recoverable_flags) else False
+
+        if not enabled or mode_name == "dyme":
+            selected = MODE_GRPO if any_correct else MODE_SFT
+        elif mode_name == "opsd_only":
+            selected = MODE_OPSD
+        elif mode_name == "replace_sft":
+            selected = MODE_GRPO if any_correct else MODE_OPSD
+        elif mode_name == "opsd_on_wrong":
+            if any_correct:
+                selected = MODE_GRPO
+            elif recoverable:
+                selected = MODE_OPSD
+            else:
+                selected = MODE_SFT
+        elif mode_name == "grpo_opsd_joint":
+            selected = MODE_GRPO if any_correct else (MODE_OPSD if recoverable else MODE_SFT)
+        elif mode_name in _NO_LEAK_MODES:
+            if any_correct:
+                selected = MODE_GRPO
+            elif recoverable:
+                selected = MODE_OPSD
+            else:
+                selected = MODE_SFT
+        elif mode_name in _TEACHER_PROBE_MODES:
+            # Prompt-level fallback: strict DyME memorization for all-wrong
+            # groups; mixed groups are expanded per completion below.
+            selected = MODE_GRPO if any_correct else MODE_SFT
+        else:
+            # trimode (legacy/leaky): OPSD on correct; wrong → DyME SFT cold-start
+            selected = MODE_OPSD if any_correct else MODE_SFT
+
+        modes.append(selected)
+        opsd_debug.log(
+            "mode_router",
+            "prompt routed",
+            prompt_index=p,
+            any_correct=any_correct,
+            recoverable=recoverable,
+            selected_mode=opsd_debug.MODE_NAMES.get(selected, selected),
+            acc_rewards_row=acc_rewards[p].tolist(),
+        )
+
+    opsd_debug.log_mode_summary("mode_router", modes)
+    return modes
+
+
+def expand_modes_to_completions(prompt_modes: list[int], num_generations: int, batch_size: int) -> list[int]:
+    """Map per-prompt mode to per-completion mode."""
+    completion_modes = []
+    for i in range(batch_size):
+        batch_id = i // num_generations
+        completion_modes.append(prompt_modes[batch_id])
+    opsd_debug.log(
+        "mode_router",
+        "expand_modes_to_completions",
+        batch_size=batch_size,
+        num_generations=num_generations,
+        completion_modes=[opsd_debug.MODE_NAMES.get(m, m) for m in completion_modes],
+    )
+    return completion_modes
+
+
+def route_completion_modes(
+    acc_rewards: torch.Tensor,
+    num_generations: int,
+    batch_size: int,
+    opsd_config: dict,
+    recoverable_flags: list[bool],
+    format_rewards: torch.Tensor | None = None,
+) -> list[int]:
+    """Route each completion individually (TriMode) or expand per-prompt modes."""
+    gate = opsd_config.get("gate", {})
+    mode_name = opsd_config.get("mode", "dyme")
+    per_completion = gate.get("per_completion_opsd", False)
+    threshold = gate.get("correct_threshold", 0.5)
+    require_format = gate.get("require_format_for_opsd", False)
+
+    if per_completion and mode_name in _TEACHER_PROBE_MODES:
+        num_prompts = acc_rewards.shape[0]
+        group_has_correct = [
+            (acc_rewards[p] > threshold).any().item() for p in range(num_prompts)
+        ]
+        probe_cfg = opsd_config.get("teacher_probe") or {}
+        probe_all_wrong_after_step = probe_cfg.get("probe_all_wrong_after_step")
+        global_step = int(opsd_config.get("global_step", 0) or 0)
+        probe_all_wrong = (
+            probe_all_wrong_after_step is not None
+            and int(probe_all_wrong_after_step) >= 0
+            and global_step >= int(probe_all_wrong_after_step)
+        )
+
+        completion_modes: list[int] = []
+        for i in range(batch_size):
+            prompt_idx = i // num_generations
+            gen_idx = i % num_generations
+            acc_ok = acc_rewards[prompt_idx, gen_idx].item() > threshold
+            fmt_ok = True
+            if require_format and format_rewards is not None:
+                fmt_ok = format_rewards[prompt_idx, gen_idx].item() > 0
+
+            if not group_has_correct[prompt_idx]:
+                # Strict DyME: all completions in an all-wrong group memorize
+                # GT/refined supervision unless the explicit ablation gate asks
+                # to probe all-wrong groups after a configured step.
+                selected = MODE_OPSD if probe_all_wrong else MODE_SFT
+            elif acc_ok and fmt_ok:
+                selected = MODE_GRPO
+            else:
+                # Temporary marker: teacher-probe will later decide whether
+                # this wrong completion stays OPD or is converted to SFT.
+                selected = MODE_OPSD
+            completion_modes.append(selected)
+
+        opsd_debug.log(
+            "mode_router",
+            "route_completion_modes dyme_teacher_probe_opd",
+            batch_size=batch_size,
+            num_generations=num_generations,
+            mode_name=mode_name,
+            require_format_for_opsd=require_format,
+            probe_all_wrong_after_step=probe_all_wrong_after_step,
+            global_step=global_step,
+            probe_all_wrong=probe_all_wrong,
+            group_has_correct=group_has_correct,
+            completion_modes=[opsd_debug.MODE_NAMES.get(m, m) for m in completion_modes],
+        )
+        return completion_modes
+
+    if per_completion and mode_name in _NO_LEAK_MODES:
+        num_prompts = acc_rewards.shape[0]
+        group_has_correct = [
+            (acc_rewards[p] > threshold).any().item() for p in range(num_prompts)
+        ]
+        online_sft_on_all_wrong = gate.get("online_sft_on_all_wrong", True)
+
+        completion_modes: list[int] = []
+        for i in range(batch_size):
+            prompt_idx = i // num_generations
+            gen_idx = i % num_generations
+            acc_ok = acc_rewards[prompt_idx, gen_idx].item() > threshold
+            fmt_ok = True
+            if require_format and format_rewards is not None:
+                fmt_ok = format_rewards[prompt_idx, gen_idx].item() > 0
+            recoverable = (
+                recoverable_flags[prompt_idx] if recoverable_flags and prompt_idx < len(recoverable_flags) else True
+            )
+            all_wrong_group = not group_has_correct[prompt_idx]
+
+            if acc_ok and fmt_ok:
+                selected = MODE_GRPO
+            elif (
+                online_sft_on_all_wrong
+                and all_wrong_group
+                and gen_idx == 0
+            ):
+                # COPSD path C: online SFT cold-start when entire group is wrong
+                selected = MODE_SFT
+            elif not acc_ok and recoverable:
+                selected = MODE_OPSD
+            else:
+                selected = MODE_SFT
+            completion_modes.append(selected)
+        opsd_debug.log(
+            "mode_router",
+            "route_completion_modes rlsd/copsd per-completion",
+            batch_size=batch_size,
+            num_generations=num_generations,
+            mode_name=mode_name,
+            require_format_for_opsd=require_format,
+            completion_modes=[opsd_debug.MODE_NAMES.get(m, m) for m in completion_modes],
+        )
+        return completion_modes
+
+    if mode_name == "trimode" and per_completion:
+        completion_modes = []
+        for i in range(batch_size):
+            prompt_idx = i // num_generations
+            gen_idx = i % num_generations
+            acc_ok = acc_rewards[prompt_idx, gen_idx].item() > threshold
+            fmt_ok = True
+            if require_format and format_rewards is not None:
+                fmt_ok = format_rewards[prompt_idx, gen_idx].item() > 0
+            selected = MODE_OPSD if (acc_ok and fmt_ok) else MODE_SFT
+            completion_modes.append(selected)
+        opsd_debug.log(
+            "mode_router",
+            "route_completion_modes trimode per-completion",
+            batch_size=batch_size,
+            num_generations=num_generations,
+            per_completion_opsd=True,
+            require_format_for_opsd=require_format,
+            completion_modes=[opsd_debug.MODE_NAMES.get(m, m) for m in completion_modes],
+        )
+        return completion_modes
+
+    prompt_modes = route_prompt_modes(
+        acc_rewards, num_generations, opsd_config, recoverable_flags
+    )
+    return expand_modes_to_completions(prompt_modes, num_generations, batch_size)
