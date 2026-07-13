@@ -14,7 +14,8 @@ while IFS= read -r checkpoint_path; do
   CHECKPOINTS+=("${label}:${checkpoint_path}")
 done < <(find "${MODEL_DIR}" -maxdepth 1 -type d -name "checkpoint-*" | sort -V)
 
-if [[ -d "${MODEL_DIR}/final_checkpoint" ]]; then
+INCLUDE_FINAL="${INCLUDE_FINAL:-1}"
+if [[ "${INCLUDE_FINAL}" == "1" && -d "${MODEL_DIR}/final_checkpoint" ]]; then
   CHECKPOINTS+=("final_checkpoint:${MODEL_DIR}/final_checkpoint")
 fi
 

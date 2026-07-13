@@ -1,218 +1,216 @@
-# 实验与绘图设计计划
+# OPD for Sub-Billion VLM 实验与图表设计计划
 
-更新时间：2026-07-01
+更新时间：2026-07-13
 
-本文档按新的论文定位更新：`bash scripts/test/run_pcd_no_visual_10epoch.sh` 作为主效果实验。它对应论文中的 **Ours / Recoverability-guided OPD**，而不是附属小消融。
+本文件只定义论文图表需要回答的问题、数据字段和准入条件。实验命令与 run 状态见
+`docs/opd_experiment_plan.md`，已完成数字见 `experiment_ledger.md`。
 
-核心论文论点：
+## 1. 图表叙事原则
 
-> 小模型在可验证视觉推理训练中同时面临 off-policy imitation 的模板化风险和 sparse GRPO 的低信号风险。Recoverability-guided OPD 用无答案泄漏 teacher 判断错误轨迹是否可恢复，并把可恢复失败转化为 dense on-policy supervision，从而提升训练稳定性、有效更新比例和最终性能。
+论文的证据链按以下顺序展开：
 
-## 0. 主实验定位
+1. matched no-OPD 对照证明 OPD 在统一 4epoch 预算下具有净收益。
+2. OPD-only、GRPO-only、fallback-only 与联合训练证明信号互补性。
+3. unconditional OPD 与 verifier-routed OPD 证明可靠性路由不是额外 teacher loss 的包装。
+4. 全局控制器和动作拆分解释如何让 OPD 随学生自主性介入和退出，并报告 teacher compute。
+5. token-selective OPD 近邻基线与训练尺度分析界定本文方法边界。
 
-主实验命令：
+任何 oracle/privileged 结果都必须在主图中显式标记，不与 gold-hidden-teacher 方法合并平均。`Teacher sees gold` 与 `Verifier uses reference` 必须分列。
 
-```bash
-DYME_PCD_RUN_ID=<run_id> bash scripts/test/run_pcd_no_visual_10epoch.sh
-```
+## 1.1 Motivation-to-Evidence Contract
 
-该脚本实际锚定的设置：
+每条 motivation 必须产生一个可证伪预测。若对应实验不成立，应收缩论文 claim，不能仅用 final accuracy 覆盖机制失败。
 
-| 项 | 设置 | 论文解释 |
-| --- | --- | --- |
-| Variant | `deplot_no_vs_opd_pcd` | Ours / Recoverability-guided OPD |
-| Training budget | 10 epochs | 主效果预算 |
-| Visual supervision | off | 排除额外视觉监督混淆 |
-| Evidence | DePlot textual evidence on | teacher 使用 no-gold visual evidence |
-| OPD loss | JSD | dense token-level distribution guidance |
-| All-wrong rescue | on from step 0 | 低方差/全错 group 也进入 teacher recoverability probe |
-| Teacher trajectory | on | teacher-correct 样本进入 OPD/trajectory guidance |
-| Variance-adaptive weight | off | 主方法先只验证 PCD routing；VA 放入机制/扩展消融 |
+| Motivation | CLRC prediction | Required comparison | Supporting evidence | Falsification condition |
+|---|---|---|---|---|
+| total reward 可掩盖 task signal 消失 | realized GRPO route 比 total-reward mixed/variance 更准确地反映学生自主覆盖率 | controller state: total-reward proxy vs task mixed/zero proxy vs global final GRPO route | state 与 next-window task accuracy、all-wrong、zero-loss 的相关/滞后预测；global/local disagreement | total-reward proxy 在多 seed 上同样或更好地预测 task recovery 与 final accuracy |
+| OPD 填补 SFT 与 RLVR 之间的学生错误状态 | matched verifier-routed OPD 优于 no-OPD | no-OPD vs verifier-routed OPD，固定其余训练流程与 teacher budget accounting | final accuracy、zero-loss、all-wrong recovery、OPD loss/coverage | matched no-OPD 相同或更好 |
+| student-state guidance 比 teacher-sequence imitation 更适合小模型 | OPD-only guidance 优于或至少不弱于 OPD + hard trajectory，并减少空模板塌缩 | verifier-routed OPD without hard imitation vs matched OPD + full trajectory | held-out accuracy、train accuracy、full-template/empty-skeleton/malformed-answer rates | hard trajectory 在相同预算下提高 held-out accuracy且不增加模板失败 |
+| OPD 与现有信号互补 | 完整联合训练优于任一单信号或两信号组合 | OPD-only、GRPO-only、fallback-only、OPD+GRPO、full | final accuracy、route occupancy、各状态分层收益 | 任一单信号在相同预算下达到同等或更高效果 |
+| all-wrong 中只有部分状态适合 OPD | verifier-routed OPD 优于 unconditional OPD | all-wrong 全 OPD vs verifier-confirmed OPD | accepted teacher accuracy、coverage、teacher tokens、final accuracy | unconditional OPD 在 matched compute 下同样或更好 |
+| fixed clock 不代表学生能力 | 改变 batch/data scale 后，CLRC 在相近 autonomy state 触发动作，而 fixed-step 在不同能力状态触发 | fixed step vs normalized progress vs CLRC，至少两种 scale | trigger step、normalized progress、GRPO EMA、task accuracy、final accuracy | CLRC trigger autonomy state 方差不低于 fixed/progress，且无 final/compute 收益 |
+| teacher support 应随真实自主性减少 | joint controller 在保持或提升 accuracy 时降低 teacher calls/tokens | fixed support vs OPD-weight-only vs cap-only vs joint actions | accuracy/teacher-token Pareto、last50 routes、controller trajectory | joint controller 被 fixed support Pareto 支配 |
 
-推荐论文命名：
+主结果超过 baseline 但上述预测均不成立时，只能将方法描述为一个有效 recipe，不能声称 recoverability curriculum 或 closed-loop mechanism 得到验证。
 
-- `Ours`：`deplot_no_vs_opd_pcd`。
-- `Ours w/o PCD rescue`：`deplot_no_vs_opd`。
-- `Ours + variance-adaptive weight`：`deplot_no_vs_opd_va_pcd`，只作为机制增强，不作为默认主方法。
+## 2. Figure 1：方法总览
 
-不要在主表显眼位置使用实现名；实现名只保留在 appendix 或实验复现说明中。
+### 左侧：Completion-Level Recoverability Routing
 
-## 1. 主实验能直接支撑哪些图表
+显示同一 prompt 的 `K` 个 student completions：
 
-一次 10epoch PCD no-visual 主实验可以提供以下证据，但不能单独完成整篇论文的所有比较。
+- correct completion -> GRPO；
+- wrong + gold-hidden teacher answer verified correct -> OPD；
+- wrong + teacher unrecoverable/quality fail -> fallback or skip。
 
-| 图表 | 从主实验提取什么 | 还需要什么对照 |
-| --- | --- | --- |
-| Table 1: Main results | final checkpoint ChartQA accuracy、format-valid rate、平均长度、训练耗时 | Base、SFT、GRPO/DyME、`deplot_no_vs_opd` |
-| Figure 1: Motivation | low reward std、all-wrong group、teacher-recoverable wrong samples | 至少 GRPO/DyME 或 no-PCD anchor |
-| Figure 3: Training dynamics | reward、reward std、OPD coverage、fallback/teacher route、输出长度曲线 | SFT/GRPO/no-PCD 的同预算曲线 |
-| Figure 4: Useful-signal funnel | generated -> wrong -> all-wrong/low-variance -> teacher-recoverable -> OPD/fallback | no-PCD anchor 用于显示 all-wrong rescue 的增量 |
-| Table 3: Cost and reliability | teacher call rate、candidate parse rate、gold suffix rate、DePlot evidence coverage | teacher/evidence sanity controls |
-| Qualitative figure | student wrong、teacher recovery、after-training correction | 至少挑 3-5 个成功与失败案例 |
+图中 teacher 输入只画 image、question、DePlot/visual facts 和 format constraint，不画 gold answer；teacher 输出后单独画 verifier，并明确其在当前 RLVR 设置下可访问 reference。
 
-主实验关键产物路径：
+### 右侧：Global Realized-Autonomy Feedback
+
+显示各 rank 最终互斥 route counts 经 all-reduce 得到：
 
 ```text
-outputs/test-fast/pcd-no-visual/<run_id>/deplot_no_vs_opd_pcd/
-outputs/test-fast/pcd-no-visual/<run_id>/deplot_no_vs_opd_pcd/final_checkpoint
-outputs/test-fast/pcd-no-visual/<run_id>/deplot_no_vs_opd_pcd/teacher_probe_candidates/rank*.jsonl
-outputs/test-fast/logs/pcd_no_visual_<run_id>/deplot_no_vs_opd_pcd/
+a_t = N_grpo / N_total
 ```
 
-final checkpoint eval 可以先用单模型命令：
+再经 EMA、monotonic mastery、smoothstep 输出 OPD weight 和 OPD cap。图旁明确标注
+主方法的 hard-trajectory weight 恒为零；用箭头标明 step `t` snapshot 控制 step `t+1`。
 
-```bash
-CHECKPOINT_DIR=outputs/test-fast/pcd-no-visual/<run_id>/deplot_no_vs_opd_pcd/final_checkpoint \
-EXPERIMENT=pcd_no_visual_10epoch \
-bash scripts/run_eval_ablation.sh
-```
+## 3. Table 1：统一主结果
 
-如果要并行评估该 run 下的所有 epoch checkpoint：
+列定义：
 
-```bash
-MODEL_DIR=outputs/test-fast/pcd-no-visual/<run_id>/deplot_no_vs_opd_pcd \
-OUT_DIR=outputs/eval_chartqa_pcd_no_visual_<run_id> \
-GPU_LIST="0 1 2 3 4 5 6" \
-bash scripts/test/eval_opd_epochs_parallel.sh
-```
+| Method | Student | Teacher | Epoch | Evidence | Teacher sees gold | Verifier uses reference | Controller | Teacher calls | Teacher tokens | ChartQA acc | Processed |
+|---|---|---|---:|---|---|---|---|---|---:|---:|---:|---:|
 
-## 2. 主实验之外必须补跑的实验
+最低行集合：
 
-这些实验是完成主图和主表所需的最低集合。已有 checkpoint 的只需要补 eval；没有 checkpoint 的再补训练。
+- Base/SFT；
+- DyME official；
+- gold-hidden-teacher PCD aligned；
+- gold-hidden-teacher fixed schedule；
+- gold-hidden-teacher recoverability-only；
+- gold-hidden-teacher full CLRC；
+- oracle student_hint_short；
+- oracle official；
+- oracle CLRC upper bound。
 
-| 优先级 | 实验 | 推荐命名 | 目的 | 产物 |
-| --- | --- | --- | --- | --- |
-| 必须 | Base / no training eval | `Base` | 证明训练带来的绝对增益 | final eval |
-| 必须 | 10epoch SFT | `SFT` | 对照 off-policy imitation | final eval + length/format |
-| 必须 | 10epoch GRPO/DyME/RLVR | `GRPO` 或 `DyME` | 对照 sparse verifiable RL | final eval + reward std 曲线 |
-| 必须 | 10epoch no-PCD anchor | `Ours w/o PCD rescue` | 隔离 all-wrong rescue 的贡献 | final eval + route/funnel |
-| 必须 | Teacher/evidence sanity | `No-gold teacher check` | 支撑无答案泄漏 claim | gold suffix、parse、teacher accuracy |
-| 必须 | 主实验 final checkpoint eval | `Ours` | 填 Table 1 主行 | accuracy、format、length |
+主表或紧邻的核心消融表必须直接出现 matched `no-OPD` 与
+`verifier-routed OPD`；否则主结果无法支撑论文标题中的 OPD claim。
 
-建议使用总控脚本补齐主实验之外的必须实验：
+主表不使用训练 reward 替代 test accuracy。正式数字要求 `2500/2500`；若先使用 `2496/2500` 快速结果，必须在 Processed 列标记并在最终稿补齐。
 
-```bash
-bash scripts/test/run_paper_required_10epoch.sh \
-  --dry-run \
-  --run-id paper_required_10epoch \
-  --main-run-id <main_run_id>
-```
+## 4. Figure 2：Accuracy / Teacher-Compute Pareto
 
-确认 dry-run 输出后，可按阶段启动：
+横轴：每个训练 prompt 的 teacher generated tokens，或总 teacher generated tokens。
 
-```bash
-bash scripts/test/run_paper_required_10epoch.sh \
-  --run \
-  --run-id paper_required_10epoch \
-  --main-run-id <main_run_id> \
-  --stages sft_train,dyme_train,no_pcd_anchor
-```
+纵轴：ChartQA held-out accuracy。
 
-训练完成后再补 eval 和 sanity：
+点大小：GPU hours。点颜色：gold-hidden teacher、oracle、no teacher；点形状区分 verifier 是否使用 reference。比较 fixed schedule、recoverability-only、full CLRC 和 action ablations。
 
-```bash
-bash scripts/test/run_paper_required_10epoch.sh \
-  --run \
-  --run-id paper_required_10epoch \
-  --main-run-id <main_run_id> \
-  --stages base_eval,sanity,eval_required
-```
+该图只有在统一统计 teacher calls/tokens 后才能进入主文。若当前日志缺失总量，先放 appendix 计划，不用 candidate accuracy 代替 compute。
 
-如果只想直接跑 no-PCD anchor：
+## 5. Figure 3：闭环训练动力学
 
-```bash
-bash scripts/test/run_opd_deplot_ablation.sh \
-  --run \
-  --epochs 10 \
-  --run-id deplot_10epoch_main_anchor \
-  --variants deplot_no_vs_opd
-```
+使用同一横轴和相同平滑窗口，至少包含四个 panel：
 
-如果 Base/SFT/GRPO 还没有同预算产物，可用现有 fast baseline 入口统一补：
+1. `global_signal/grpo_route_rate`、`opd_route_rate`、`sft_route_rate`；
+2. `adaptive/signal_rate`、`signal_ema`、`mastery`、`supervision`；
+3. OPD weight、OPD cap，以及作为负对照记录的 trajectory weight；主 OPD recipe
+   中 trajectory weight 应始终为零；
+4. task all-wrong、task zero-loss、total-reward zero-loss、disagreement、accuracy。
 
-```bash
-DYME_FAST_NUM_TRAIN_EPOCHS=10 \
-DYME_FAST_SFT_EPOCHS=10 \
-bash scripts/test/run_all_baselines.sh
-```
+辅助 panel：clip、EOS、degenerate 和 teacher candidate/correct/accepted funnel。
 
-注意：如果 `run_all_baselines.sh` 里的 OPD baseline 和主实验设置不完全一致，论文主表中应把它标为 generic OPD 或 fast OPD baseline，不要和 `Ours w/o PCD rescue` 混用。
+行为 panel 额外绘制 `full_cot_template_rate`、`partial_cot_template_rate`、
+`goal_without_answer_rate`、`empty_cot_skeleton_rate` 和
+`malformed_answer_section_rate`。完整 CoT 比例本身不作为失败；只有空骨架或异常答案
+与完整模板共同升高时才定义为 template collapse。来自 teacher-probe candidate JSONL 的
+partial/Goal-without-Answer 曲线必须标注为“conditioned on wrong probed completions”，不得
+与全体 rollout 比例混用。另以虚线画出
+`teacher_traj_effective_weight` 和 `teacher_sft_repair_rate`，证明 OPD isolation run
+没有重新引入 hard imitation。
 
-## 3. 机制增强实验
+禁止只画 rank-local `routing/*` 来证明全局控制器状态；主曲线必须来自 `global_signal/*`。
 
-这些不是主实验成立的必要条件，但能解释“为什么有效”和“哪些设计贡献最大”。
+## 6. Figure 4：训练尺度稳健性
 
-| 实验 | Variant | 目的 | 推荐位置 |
-| --- | --- | --- | --- |
-| Variance-adaptive only | `deplot_no_vs_opd_va` | 检查低 reward std 时放大 OPD 权重是否有用 | Table 2 |
-| PCD only | `deplot_no_vs_opd_pcd` | 主方法；也用于机制表 | Table 1 + Table 2 |
-| VA + PCD | `deplot_no_vs_opd_va_pcd` | 检查 adaptive weight 与 all-wrong rescue 是否互补 | Table 2 |
+比较 fixed-step schedule 与 CLRC，在至少两种训练尺度下记录动作发生时的：
 
-推荐一次性补跑/复用：
+- absolute step；
+- normalized progress；
+- global GRPO route EMA；
+- task accuracy/all-wrong；
+- final accuracy。
 
-```bash
-bash scripts/test/run_opd_deplot_ablation.sh \
-  --run \
-  --epochs 10 \
-  --run-id deplot_10epoch_va_pcd \
-  --variants deplot_no_vs_opd_va,deplot_no_vs_opd_pcd,deplot_no_vs_opd_va_pcd
-```
+理想证据是 fixed-step 在不同规模下对应不同学生能力，而 CLRC 在接近的 realized autonomy state 下产生相近动作。
 
-如果这三个已经跑完，优先做 final checkpoint eval 和日志统计，不需要重复训练。
+## 7. Table 2：OPD 核心消融
 
-## 4. 可选但很加分的补充实验
+### A. Signal Contribution
 
-| 实验 | 目的 | 何时需要 |
-| --- | --- | --- |
-| Budget curve: 1/2/4/10 epoch 或 epoch checkpoints | 证明不是 final checkpoint 偶然好，而是同预算更高效 | 主表结果差距不大时很重要 |
-| Longer continuation | 看方法是否继续提升或过拟合 | 10epoch 曲线仍在上升时 |
-| Visual-supervision controls | 证明收益不是来自额外 VS | 审稿人质疑视觉监督混淆时 |
-| Teacher trajectory off | 隔离 teacher trajectory 与 OPD routing | 机制表空间足够时 |
-| Evidence quality ablation | format-only vs DePlot evidence | 需要证明 DePlot evidence 的必要性时 |
-| Second benchmark | A-OKVQA、geometry 或另一个可验证视觉任务 | 投稿强度需要跨任务泛化时 |
+- no-OPD；
+- OPD-only；
+- GRPO-only；
+- fallback-only；
+- OPD + GRPO；
+- OPD + GRPO + fallback。
 
-如果 10epoch 仍未收敛，longer continuation 可以从主实验继续接：
+这一 block 是论文最重要的机制表，优先于 controller state/action ablation。
 
-```bash
-DYME_PCD_RUN_ID=<run_id> bash scripts/test/run_pcd_no_visual.sh 20 --resume auto
-```
+### B. OPD Routing
 
-## 5. 图表最终组织
+- all-wrong SFT fallback；
+- unconditional OPD；
+- verifier/reward gate；
+- token teachability / position-weighted selective OPD；
+- gold-hidden-teacher multimodal recoverability（reference-verifier）。
 
-推荐正文顺序：
+### B2. OPD Token Reliability
 
-1. **Figure 1: Failure heterogeneity and recoverability.** 用 GRPO/no-PCD/Ours 日志展示 low-variance groups、wrong-but-recoverable samples 和 all-wrong rescue 需求。
-2. **Figure 2: Method overview.** 画宏观训练信号，不画环境变量路由图。
-3. **Table 1: Main results.** Base、SFT、GRPO/DyME、Ours w/o PCD、Ours。
-4. **Figure 3: Training dynamics.** reward、reward std、useful update coverage、format/length。
-5. **Table 2: Mechanism ablations.** no-PCD、VA-only、PCD、VA+PCD、必要时 teacher-trajectory/evidence control。
-6. **Figure 4: Useful-signal conversion funnel.** 主实验和 no-PCD anchor 对比，突出 all-wrong rescue 把低信号失败转化为 OPD。
-7. **Table 3: Cost and reliability.** teacher calls、parse success、gold suffix rate、DePlot evidence coverage、wall-clock。
-8. **Figure 5: Qualitative cases.** 成功恢复、失败回退、teacher 不可恢复三类样例。
+- uniform-token OPD；
+- non-answer-heading selective OPD；
+- token-teachability / position-weighted selective OPD near-neighbor baseline。
 
-## 6. 当前绘图产物如何落地
+报告保留 token 比例、non-answer-heading mask rate、答案/视觉/数值 token coverage 与
+final accuracy。该 block 不对模型生成结构标题施加 reward penalty，只改变 teacher
+distribution loss 在不同 token 位置的可信度权重。
 
-已有 `scripts/analysis/pcd_paper_artifacts.py` 可以继续用来生成机制图，但需要在 manifest 里把主实验路径指向：
+### C. Controller State
 
-```text
-outputs/test-fast/pcd-no-visual/<run_id>/deplot_no_vs_opd_pcd
-```
+- fixed weights；
+- fixed step；
+- normalized progress；
+- mixed-rate × nonzero-loss；
+- realized global GRPO route。
 
-建议分工：
+### D. Controller Actions
 
-- `fig1_motivation`：改成 Figure 1 的 recoverability/failure heterogeneity 面板来源。
-- `fig5_teacher_rescue_funnel`：作为 Figure 4 useful-signal funnel 的核心。
-- `fig6_va_vs_pcd_diagnosis`：放在 Table 2 机制消融附近。
-- 新增或补齐 main-result table 脚本：从 eval summaries 汇总 Table 1，不要从训练 reward 直接替代 held-out eval。
+- OPD weight only；
+- OPD cap only；
+- OPD weight + cap。
 
-## 7. 最小完成清单
+`OPD + hard trajectory` 单独作为 supervision-type 负对照，不混入 controller action
+消融，避免把已观察到的模板污染误写成主方法中的课程动作。
 
-论文主结果达到可写状态前，至少完成：
+每个 block 内只能改变对应因素。若多个因素同时变化，该行只能作为 recipe，不作为因果消融。
 
-- `Ours` 主实验 final checkpoint eval。
-- `Base/SFT/GRPO or DyME/Ours w/o PCD/Ours` 的同预算 Table 1。
-- `Ours` 与 `Ours w/o PCD` 的训练日志曲线和 useful-signal funnel。
-- teacher no-gold/evidence sanity 表。
-- 3-5 个 qualitative correction cases。
+## 8. Figure 5：Failure Taxonomy
 
-VA-only 和 VA+PCD 可以作为次级机制消融；如果它们收益不稳定，也不会动摇主方法，因为主 claim 是 recoverability-guided all-wrong rescue 与 dense on-policy supervision。
+从 eval outputs 统计并交叉：
+
+- correct/incorrect；
+- answer_flag/full_cot/other；
+- clipped/EOS；
+- parse failure；
+- empty or malformed `Answer:`；
+- repeated section template；
+- privileged tag leakage。
+
+上述 full/partial/empty/malformed 行为直接读取 final eval 的 `Template behavior counts`，
+并与 correct/incorrect 交叉；不得用 teacher-probe candidate 条件统计替代 held-out 全体输出。
+
+full-CoT 不是默认错误类。图中应回答“哪一种输出行为与错误相关”，而不是“推理越短越好”。
+
+## 9. Qualitative Cases
+
+至少选择：
+
+1. student wrong、teacher 从 gold-hidden evidence 正确恢复、训练后 student 修正；
+2. teacher 也不可恢复、fallback 避免错误蒸馏；
+3. oracle hint 能恢复但 gold-hidden evidence 不足的上界差异；
+4. full reasoning 正确案例；
+5. 模板化 reasoning + malformed answer 的失败案例。
+
+每例披露 teacher 可见信息，不展示会造成误解的隐藏 gold prompt。
+
+## 10. Artifact 路由
+
+- Run truth: `docs/paper_reconstruction/experiment_ledger.md`
+- Claim status: `docs/paper_reconstruction/claim_evidence_matrix.md`
+- Training logs: `outputs/test-fast/logs/pcd_no_visual_<run>/.../train_*.log`
+- Eval truth: `<run>/<variant>/eval_chartqa/summary.csv`
+- Candidate funnel: `<run>/<variant>/training_health/teacher_candidate_funnel.csv`
+- Health windows: `<run>/<variant>/training_health/training_health_summary.csv`
+
+图表脚本必须从这些 artifact 读取，不从论文 Markdown 反向解析数字。

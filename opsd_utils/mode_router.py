@@ -8,6 +8,18 @@ _NO_LEAK_MODES = frozenset({"rlsd", "copsd_opd"})
 _TEACHER_PROBE_MODES = frozenset({"dyme_teacher_probe_opd"})
 
 
+def teacher_probe_route_confirmed(
+    *,
+    mode_name: str,
+    completion_mode: int,
+    has_teacher_trajectory: bool,
+) -> bool:
+    """Keep probe correctness independent from optional hard trajectories."""
+    if mode_name in _TEACHER_PROBE_MODES:
+        return completion_mode == MODE_OPSD
+    return has_teacher_trajectory
+
+
 def route_prompt_modes(
     acc_rewards: torch.Tensor,
     num_generations: int,

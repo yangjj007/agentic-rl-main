@@ -1,4 +1,4 @@
-from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT
+from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, MODE_SKIP
 from opsd_utils.mode_router import route_prompt_modes, expand_modes_to_completions
 from opsd_utils.opsd_loss import compute_vlm_opsd_loss
 from opsd_utils.privileged import build_privileged_context
@@ -9,6 +9,7 @@ __all__ = [
     "MODE_GRPO",
     "MODE_OPSD",
     "MODE_SFT",
+    "MODE_SKIP",
     "route_prompt_modes",
     "expand_modes_to_completions",
     "compute_vlm_opsd_loss",

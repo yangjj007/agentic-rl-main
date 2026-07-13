@@ -25,6 +25,7 @@ from opsd_utils.teacher_batching import (
 class TeacherGenerateRequest:
     prompt_text: str
     images: list[Any] = field(default_factory=list)
+    response_prefix: str = ""
     max_new_tokens: int = 512
     do_sample: bool = False
     temperature: float = 0.0
@@ -115,9 +116,17 @@ def _decode_new_tokens(
     processor,
     generated: torch.Tensor,
     prompt_len: int,
+    *,
+    prefix_lens: list[int] | None = None,
 ) -> list[str]:
-    new_ids = generated[:, prompt_len:]
-    return [t.strip() for t in processor.batch_decode(new_ids, skip_special_tokens=True)]
+    texts: list[str] = []
+    prefix_lens = prefix_lens or [0] * int(generated.shape[0])
+    for row in range(int(generated.shape[0])):
+        prefix_len = int(prefix_lens[row]) if row < len(prefix_lens) else 0
+        start = max(0, prompt_len - prefix_len)
+        new_ids = generated[row : row + 1, start:]
+        texts.append(processor.batch_decode(new_ids, skip_special_tokens=True)[0].strip())
+    return texts
 
 
 def _generate_rows_sequential(
@@ -135,8 +144,10 @@ def _generate_rows_sequential(
     temperature: float,
     top_p: float,
     repetition_penalty: float,
+    response_prefix_lens: list[int] | None = None,
 ) -> list[str]:
     texts: list[str] = []
+    response_prefix_lens = response_prefix_lens or [0] * int(prompt_ids.shape[0])
     for row in range(prompt_ids.shape[0]):
         pv = pv_list[row]
         sizes = size_list[row] if row < len(size_list) else None
@@ -177,7 +188,14 @@ def _generate_rows_sequential(
                 batch_num_images=bn,
                 **gen_kwargs,
             )
-        texts.append(_decode_new_tokens(processor, generated, row_ids.shape[1])[0])
+        texts.append(
+            _decode_new_tokens(
+                processor,
+                generated,
+                row_ids.shape[1],
+                prefix_lens=[response_prefix_lens[row] if row < len(response_prefix_lens) else 0],
+            )[0]
+        )
     return texts
 
 
@@ -203,7 +221,14 @@ def teacher_generate_batch(
 
     for req in requests:
         pil_images = _images_to_pil(req.images)
-        per_sample_batches.append(process_teacher_sample(processor, req.prompt_text, pil_images))
+        per_sample_batches.append(
+            process_teacher_sample(
+                processor,
+                req.prompt_text,
+                pil_images,
+                response_prefix=req.response_prefix,
+            )
+        )
 
     stacked = stack_teacher_processor_batches(processor, per_sample_batches)
     aligned_ids, aligned_mask, pixel_values, image_sizes, batch_num_images = _align_stacked_batch(
@@ -212,6 +237,7 @@ def teacher_generate_batch(
         stacked,
     )
     prompt_len = int(aligned_ids.shape[1])
+    response_prefix_lens = [int(b.get("response_prefix_len", 0) or 0) for b in per_sample_batches]
 
     try:
         if isinstance(pixel_values, list):
@@ -229,6 +255,7 @@ def teacher_generate_batch(
                 temperature=temperature,
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
+                response_prefix_lens=response_prefix_lens,
             )
         else:
             teacher_device = model_inference_device(teacher_model)
@@ -256,7 +283,12 @@ def teacher_generate_batch(
                 forward_kwargs["batch_num_images"] = batch_num_images
             with torch.no_grad():
                 generated = teacher_model.generate(**forward_kwargs, **gen_kwargs)
-            texts = _decode_new_tokens(processor, generated, prompt_len)
+            texts = _decode_new_tokens(
+                processor,
+                generated,
+                prompt_len,
+                prefix_lens=response_prefix_lens,
+            )
     except Exception:
         texts = []
         for req in requests:
@@ -265,6 +297,7 @@ def teacher_generate_batch(
                 processor,
                 req.prompt_text,
                 req.images,
+                response_prefix=req.response_prefix,
                 max_new_tokens=req.max_new_tokens,
                 do_sample=req.do_sample,
                 temperature=req.temperature,
@@ -291,6 +324,7 @@ def teacher_generate_one(
     prompt_text: str,
     images: Optional[list[Any]] = None,
     *,
+    response_prefix: str = "",
     max_new_tokens: int = 512,
     do_sample: bool = False,
     temperature: float = 0.0,
@@ -303,6 +337,7 @@ def teacher_generate_one(
     req = TeacherGenerateRequest(
         prompt_text=prompt_text,
         images=list(images or []),
+        response_prefix=response_prefix,
         max_new_tokens=max_new_tokens,
         do_sample=do_sample,
         temperature=temperature,

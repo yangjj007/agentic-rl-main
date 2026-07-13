@@ -40,6 +40,8 @@ def batch_size_from_tensor_dict(tensor_dict: dict[str, Any]) -> int:
             return int(tensor.shape[0])
     for value in tensor_dict.values():
         if isinstance(value, torch.Tensor):
+            if value.dim() == 0:
+                continue
             return int(value.shape[0])
         if isinstance(value, list) and value:
             return len(value)
@@ -105,6 +107,18 @@ def expand_teacher_tensors_to_full_batch(
             dtype=torch.long,
         )
 
+    compact_prefix_lens = teacher_tensors.get("teacher_response_prefix_lens")
+    if compact_prefix_lens is not None:
+        if isinstance(compact_prefix_lens, torch.Tensor):
+            prefix_lens = [int(max(0, c)) for c in compact_prefix_lens.detach().cpu().tolist()]
+        else:
+            prefix_lens = [int(max(0, c)) for c in compact_prefix_lens]
+        out["teacher_response_prefix_lens"] = torch.tensor(
+            [prefix_lens[i] for i in reorder],
+            device=compact_ids.device,
+            dtype=torch.long,
+        )
+
     pv_list = teacher_tensors.get("teacher_pixel_values_list")
     if pv_list is not None:
         out["teacher_pixel_values_list"] = [pv_list[i] for i in reorder]
@@ -161,6 +175,8 @@ def split_tensor_dict_for_opsd(
                 chunk[key] = value[b0:b1]
             elif key in TEACHER_IMAGE_STACKED_KEYS:
                 chunk[key] = value[img0:img1]
+            elif isinstance(value, torch.Tensor) and value.dim() == 0:
+                chunk[key] = value
             elif isinstance(value, torch.Tensor):
                 chunk[key] = value[b0:b1]
             else:
@@ -235,6 +251,9 @@ def stack_teacher_processor_batches(
         "pixel_values_list": pixel_list,
         "image_sizes_list": size_list,
         "image_token_counts": image_token_counts,
+        "response_prefix_lens": [
+            int(batch.get("response_prefix_len", 0) or 0) for batch in per_sample_batches
+        ],
     }
     return out
 
@@ -248,7 +267,28 @@ def _messages_for_teacher(teacher_text: str, images: list[Image.Image]) -> list[
     return [{"role": "user", "content": content}]
 
 
-def process_teacher_sample(processor, teacher_text: str, images: list[Any]) -> dict[str, Any]:
+def _tokenize_response_prefix(processor, response_prefix: str) -> torch.Tensor | None:
+    text = str(response_prefix or "")
+    if not text:
+        return None
+    encoded = processor.tokenizer(
+        text,
+        add_special_tokens=False,
+        return_tensors="pt",
+    )
+    ids = encoded.get("input_ids")
+    if ids is None or ids.numel() == 0:
+        return None
+    return ids
+
+
+def process_teacher_sample(
+    processor,
+    teacher_text: str,
+    images: list[Any],
+    *,
+    response_prefix: str = "",
+) -> dict[str, Any]:
     """Tokenize one teacher sample via processor.apply_chat_template(tokenize=True)."""
     pil_images = [img for img in images if isinstance(img, Image.Image)]
     messages = _messages_for_teacher(teacher_text, pil_images)
@@ -267,6 +307,15 @@ def process_teacher_sample(processor, teacher_text: str, images: list[Any]) -> d
         )
     finally:
         tok.padding_side = prev_padding_side
+    prefix_ids = _tokenize_response_prefix(processor, response_prefix)
+    prefix_len = int(prefix_ids.shape[1]) if prefix_ids is not None else 0
+    if prefix_ids is not None:
+        prefix_ids = prefix_ids.to(batch["input_ids"].device)
+        prefix_mask = torch.ones_like(prefix_ids, dtype=batch["attention_mask"].dtype)
+        batch["input_ids"] = torch.cat([batch["input_ids"], prefix_ids], dim=1)
+        batch["attention_mask"] = torch.cat([batch["attention_mask"], prefix_mask], dim=1)
+    batch["response_prefix_len"] = prefix_len
+    batch["response_prefix_text"] = str(response_prefix or "")
     n_img_tok = count_image_tokens(batch["input_ids"], processor)
     opsd_debug.log(
         "teacher_batching",
@@ -275,6 +324,7 @@ def process_teacher_sample(processor, teacher_text: str, images: list[Any]) -> d
         input_ids_shape=tuple(batch["input_ids"].shape),
         pixel_values_shape=tuple(batch["pixel_values"].shape) if "pixel_values" in batch else None,
         image_token_count=n_img_tok,
+        response_prefix_len=prefix_len,
     )
     return batch
 
@@ -695,3 +745,92 @@ def get_teacher_vision_for_sample(
         local,
         counts,
     )
+
+
+def _teacher_num_images_for_row(inputs: dict[str, Any], row: int, pixel_values) -> int:
+    counts = inputs.get("teacher_num_images")
+    if isinstance(counts, torch.Tensor):
+        if counts.dim() == 0:
+            return int(max(0, counts.item()))
+        if row < counts.shape[0]:
+            return int(max(0, counts[row].item()))
+    elif isinstance(counts, (list, tuple)) and row < len(counts):
+        return int(max(0, counts[row]))
+    if isinstance(pixel_values, torch.Tensor) and pixel_values.dim() > 0:
+        return int(max(0, pixel_values.shape[0]))
+    return 0
+
+
+def stack_teacher_vision_for_generate(
+    teacher_tensors: dict[str, Any],
+    rows: list[int],
+) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    """
+    Stack teacher vision rows for one batched LLaVA-OV ``generate`` call.
+
+    This intentionally supports only the safe common case: one image per row
+    with identical processed pixel tensor shapes. Mixed patch counts or
+    multi-image rows force the trainer to fall back to smaller micro-batches.
+    """
+    if not rows:
+        return None, None, None
+
+    vision_inputs = teacher_tensors
+    if "prompt_ids" not in vision_inputs and "teacher_prompt_ids" in vision_inputs:
+        vision_inputs = {**teacher_tensors, "prompt_ids": teacher_tensors["teacher_prompt_ids"]}
+
+    pixel_rows: list[torch.Tensor] = []
+    size_rows: list[Optional[torch.Tensor]] = []
+    saw_text_only = False
+    for row in rows:
+        pixel_values, image_sizes = get_teacher_vision_for_sample(
+            vision_inputs,
+            row,
+            teacher_image_counts_from_dict(vision_inputs, batch_size_from_tensor_dict(vision_inputs)),
+        )
+        if pixel_values is None:
+            saw_text_only = True
+            continue
+        if saw_text_only:
+            raise ValueError("cannot batch mixed text-only and vision teacher rows")
+        if not isinstance(pixel_values, torch.Tensor):
+            raise ValueError("teacher pixel_values must be a tensor for batched generate")
+        num_images = _teacher_num_images_for_row(vision_inputs, row, pixel_values)
+        if num_images != 1:
+            raise ValueError("batched teacher generate currently supports one image per row")
+        if pixel_rows and tuple(pixel_values.shape) != tuple(pixel_rows[0].shape):
+            raise ValueError(
+                f"teacher vision shape mismatch: {tuple(pixel_values.shape)} != {tuple(pixel_rows[0].shape)}"
+            )
+        if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
+            raise ValueError("teacher image_sizes must be tensor-like for batched generate")
+        pixel_rows.append(pixel_values)
+        size_rows.append(image_sizes)
+
+    if not pixel_rows:
+        return None, None, None
+
+    if saw_text_only:
+        raise ValueError("cannot batch mixed text-only and vision teacher rows")
+
+    pixel_values = torch.cat(pixel_rows, dim=0)
+    batch_num_images = torch.ones(len(pixel_rows), device=pixel_values.device, dtype=torch.long)
+
+    if all(size is None for size in size_rows):
+        image_sizes = None
+    elif all(isinstance(size, torch.Tensor) for size in size_rows):
+        normalized_sizes: list[torch.Tensor] = []
+        first_shape: tuple[int, ...] | None = None
+        for size in size_rows:
+            assert isinstance(size, torch.Tensor)
+            size_i = size.unsqueeze(0) if size.dim() == 1 else size
+            if first_shape is None:
+                first_shape = tuple(size_i.shape)
+            elif tuple(size_i.shape) != first_shape:
+                raise ValueError("teacher image_sizes shape mismatch")
+            normalized_sizes.append(size_i)
+        image_sizes = torch.cat(normalized_sizes, dim=0)
+    else:
+        raise ValueError("cannot batch mixed missing and present teacher image_sizes")
+
+    return pixel_values, image_sizes, batch_num_images

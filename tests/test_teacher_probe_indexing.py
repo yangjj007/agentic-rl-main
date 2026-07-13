@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from opsd_utils.constants import MODE_OPSD, MODE_SFT
 from opsd_utils.indexing import source_row_index
+from opsd_utils.mode_router import teacher_probe_route_confirmed
 
 
 def test_expanded_completion_row_uses_same_row_sample_and_answer() -> None:
@@ -41,3 +43,16 @@ def test_raw_prompt_row_maps_completion_row_to_prompt_group() -> None:
     )
 
     assert samples[source_idx]["answer"] == "No"
+
+
+def test_teacher_probe_confirmation_does_not_require_trajectory_payload() -> None:
+    assert teacher_probe_route_confirmed(
+        mode_name="dyme_teacher_probe_opd",
+        completion_mode=MODE_OPSD,
+        has_teacher_trajectory=False,
+    )
+    assert not teacher_probe_route_confirmed(
+        mode_name="dyme_teacher_probe_opd",
+        completion_mode=MODE_SFT,
+        has_teacher_trajectory=False,
+    )

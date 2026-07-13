@@ -28,6 +28,16 @@ def test_validate_local_requires_weights(tmp_path):
         assert "student" in str(exc)
 
 
+def test_validate_missing_absolute_path_fails_early(tmp_path):
+    missing = tmp_path / "missing-model"
+    try:
+        validate_local_model_dir(str(missing), role="student")
+        assert False, "expected FileNotFoundError"
+    except FileNotFoundError as exc:
+        assert "student" in str(exc)
+        assert "does not exist" in str(exc)
+
+
 def test_discover_local_model_from_env(tmp_path, monkeypatch):
     model = tmp_path / "llava-0.5b-ov"
     model.mkdir()

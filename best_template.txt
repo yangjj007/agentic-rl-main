@@ -1,1 +1,2 @@
-Infect mortality rate by sex, pre-demographic division, 2000 to 2010
+Goal: [State objective]
+Observation: [data]

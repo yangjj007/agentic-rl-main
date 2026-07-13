@@ -60,7 +60,7 @@ bash scripts/test/run_all_baselines.sh
 ### 可选：SFT 后再跑 OPD
 
 ```bash
-export DYME_PRETRAINED_MODEL=outputs/test-fast/sft/final_checkpoint
+export DYME_STUDENT_MODEL=outputs/test-fast/sft/final_checkpoint
 bash scripts/test/train_opd.sh
 ```
 

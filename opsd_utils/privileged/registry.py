@@ -5,11 +5,13 @@ from opsd_utils.privileged.base import PrivilegedContextProvider
 from opsd_utils.privileged.image_utils import resolve_teacher_images
 from opsd_utils.privileged.profiles import DEFAULT_PROFILE, effective_profile, resolve_profile_config
 from opsd_utils.privileged.providers import (
+    CHARTQA_ORACLE_HINT,
     CHARTQA_SHORT_ANSWER_HINT,
     CropProvider,
     DeplotOnlyProvider,
     FormatOnlyProvider,
     HybridProvider,
+    OracleHintProvider,
     TextProvider,
     VisualFactsProvider,
 )
@@ -17,6 +19,7 @@ from opsd_utils.privileged.providers import (
 PROVIDER_REGISTRY: dict[str, type[PrivilegedContextProvider]] = {
     "text": TextProvider,
     "format_only": FormatOnlyProvider,
+    "oracle_hint": OracleHintProvider,
     "visual_facts": VisualFactsProvider,
     "visual_facts_deplot": DeplotOnlyProvider,
     "crop": CropProvider,
@@ -25,12 +28,14 @@ PROVIDER_REGISTRY: dict[str, type[PrivilegedContextProvider]] = {
 
 
 def _format_only_hint_from_config(cfg: dict[str, Any]) -> str | None:
+    probe_cfg = cfg.get("teacher_probe") or {}
+    if probe_cfg.get("prompt_profile") == "chartqa_oracle_hint":
+        return CHARTQA_ORACLE_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_short_answer":
+        return CHARTQA_SHORT_ANSWER_HINT
     hint = cfg.get("format_only_hint")
     if hint:
         return str(hint)
-    probe_cfg = cfg.get("teacher_probe") or {}
-    if probe_cfg.get("prompt_profile") == "chartqa_short_answer":
-        return CHARTQA_SHORT_ANSWER_HINT
     return None
 
 
@@ -71,6 +76,8 @@ def get_providers(
             providers.append(TextProvider(include_gold=text_include_gold))
         elif name == "format_only":
             providers.append(FormatOnlyProvider(format_only_hint))
+        elif name == "oracle_hint":
+            providers.append(OracleHintProvider())
         elif name in PROVIDER_REGISTRY:
             providers.append(PROVIDER_REGISTRY[name]())
     return providers

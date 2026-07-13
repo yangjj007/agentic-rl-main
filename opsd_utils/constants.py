@@ -1,6 +1,7 @@
 MODE_GRPO = 0
 MODE_OPSD = 1
 MODE_SFT = 2
+MODE_SKIP = 3
 
 DEFAULT_OPSD_CONFIG = {
     "enabled": False,

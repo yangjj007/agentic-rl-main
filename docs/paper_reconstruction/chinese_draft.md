@@ -1,267 +1,333 @@
-# 中文论文初稿：面向稀疏可验证推理的可恢复性感知 On-Policy Distillation
+# On-Policy Distillation for Sub-Billion Vision-Language Reasoning
 
-工作标题：
+中文工作标题：**面向十亿参数以下视觉语言推理的在策略蒸馏**
 
-**Recoverability-Guided On-Policy Distillation for Small Vision-Language Reasoning**
-
-> 当前稿按“训练方法论文”重写：弱化实现变量和小消融命名，强调宏观算法、公式、训练动力学和论文论点。ChartQA/DePlot 只作为实验场景与证据来源，不作为相关工作主轴。
+> 论文状态：方法与实现章节可按当前代码写作；效果数字以
+> `claim_evidence_matrix.md` 和 `experiment_ledger.md` 为准。当前 oracle CLRC
+> 仍在训练，gold-hidden-teacher CLRC 主实验尚未完成，因此摘要不预填 CLRC 最终准确率。
+> 术语勘误：当前非 oracle 设置是 teacher prompt 不含 gold、但 routing verifier
+> 使用 reference answer；正式稿应称为 gold-hidden-teacher / verifier-available，
+> 不能称为“完全无 gold recoverability estimator”。
 
 ## 摘要
 
-小规模视觉语言模型在专用场景和边缘部署中具有实际价值，但其推理训练仍然脆弱。监督微调提供稳定的离线目标，却容易让小模型记忆固定的推理模板；基于可验证奖励的强化学习能够鼓励探索，却经常受到稀疏奖励、低组内方差和长序列信用分配的限制。本文提出一种可恢复性感知的 on-policy distillation 训练范式。核心思想是：错误轨迹并不等价。对不可恢复的失败轨迹，离线模仿仍然是稳定的保底信号；对能够被无答案泄漏 teacher 从视觉证据中恢复的错误轨迹，则应转化为稠密的 on-policy 分布监督。基于这一观察，我们将稀疏 outcome reward、teacher recoverability 和 token-level distribution guidance 结合到统一目标中，在低奖励方差阶段自适应增强可恢复错误轨迹的监督强度。该方法旨在把原本对 GRPO 近似无贡献的失败区域转化为有效学习信号，从而提升小模型推理训练的稳定性、样本利用率和最终任务表现。
+小型视觉语言模型（small VLM）具有部署成本低、任务适配快等优势，但让不足十亿参数的模型学会可靠推理仍然困难。监督微调（SFT）能够提供稳定目标，却要求学生模仿 teacher 生成的离线推理轨迹，容易形成与视觉证据脱节的固定模板；基于可验证奖励的强化学习（RLVR）直接优化学生自己的输出，但当一组采样全部答错时，GRPO 几乎得不到有效的相对优势。两种训练信号分别稳定却偏离学生状态、贴近学生状态却过于稀疏。
+
+据我们所知，本文首次系统研究 **on-policy distillation（OPD）在 sub-1B VLM 可验证推理中的作用**。OPD 不要求学生复现 teacher 的完整轨迹，而是在学生自己生成的 token states 上提供稠密分布指导，因而能够直接补充小模型最缺少的训练信号：学生当前答错、GRPO 无法形成有效优势，但 teacher 仍能给出可靠纠正的 on-policy states。为可靠地引入 OPD，我们提出 Closed-Loop Recoverability Curriculum（CLRC）：学生已经答对的 completion 用 GRPO 强化；学生答错但 gold-hidden teacher 给出 verifier-confirmed 正确答案的 completion 使用 OPD；其余低信号状态进入受控 fallback。系统再根据实际进入 GRPO 的全局 completion 比例连续调整 teacher support，使 OPD 在学生自主探索稀少时提供帮助，并随自主能力形成而逐步退出。
+
+本文的核心经验问题不是控制器本身是否复杂，而是 **OPD 是否有效，以及它是否提供了 SFT 与 GRPO 均不能替代的互补信号**。我们在 ChartQA 上采用统一 4epoch 协议，对比 no-OPD、unconditional OPD、OPD-only、GRPO-only、fallback-only 与完整联合训练，并分别报告 teacher 是否看到 gold、verifier 是否使用 reference、teacher compute、训练动力学和完整 held-out accuracy。当前实验仍在进行；最终稿仅在有效 `summary.csv` 完成后填入 CLRC 的最终结果。
 
 ## 1. 引言
 
-视觉语言模型正在从通用感知系统走向面向专用任务的推理系统。对于图表理解、医学视觉问答、几何推理等任务，模型不仅要识别视觉内容，还要执行数值比较、关系推断和多步计算。大模型可以通过大量指令数据、长链推理示例或大规模在线 RL 获得此类能力；但在小模型上，简单放大这些训练范式通常并不稳定。
+视觉语言模型正在从识别图像内容走向基于视觉证据进行推理。图表理解、几何推理和视觉问答不仅要求模型识别物体或文字，还要求它定位相关证据、执行比较或计算，并给出可验证答案。大规模 VLM 可以通过长链监督数据和强化学习获得这些能力，但实际部署常需要参数量不足十亿的小型 VLM。此类模型推理成本低、适合专用领域，却也更容易受容量、指令遵循和稀疏奖励限制 [Zhou2024TinyLLaVA; Chu2024MobileVLMV2; Marafioti2025SmolVLM; Liu2025DyME]。
 
-一种直接路线是监督微调。它把人工或强模型生成的推理轨迹作为 hard target，使模型快速获得格式和任务模板。然而，小模型容量有限，长 CoT 往往包含大量与视觉证据无关的语言模式；模型可能学会“像在推理”的文本，而不是学会从图像中恢复关键事实。另一种路线是基于可验证奖励的强化学习。它不要求每一步都有人工标注，只要最终答案可验证，就能用 outcome reward 优化策略。但这类奖励通常是稀疏的：当一组采样结果全错、全对或格式不可解析时，组内相对优势信号会变弱，训练更新变成低效甚至不稳定。
+现有方法主要依赖 SFT 和 RLVR。多模态 CoT、LLaVA-CoT、Insight-V 和 Mulberry 等工作通过高质量推理轨迹教模型逐步作答 [Zhang2023MultimodalCoT; Xu2024LLaVACoT; Zhang2024InsightV; Yao2024Mulberry]。这种监督对学习输出格式和基本解题步骤很有效，但离线 teacher 轨迹并不一定落在小模型能够实现的分布内。对于容量有限的学生，模仿冗长 rationale 可能牺牲视觉 grounding，并产生看似完整但答案错误的 pseudo reasoning。SFT-or-RL 的系统比较也观察到，SFT 形成的刚性推理模式可能妨碍后续强化学习 [Yang2025SFTorRL]。另一方面，Visual-RFT、VLM-R1、Reason-RFT、LMM-R1 和 R1-VL 表明，可验证奖励能够直接激励多模态推理 [Liu2025VisualRFT; Shen2025VLMR1; Zhang2025ReasonRFT; Peng2025LMMR1; Zhang2025R1VL]；但小模型很难稳定地产生正确且可解析的候选。当同组 completion 全错或奖励相同时，GRPO 的相对优势接近零，训练会频繁浪费更新。
 
-本文关注这两个训练信号之间的空白区域：**错误但可恢复的 on-policy 轨迹**。这类轨迹在最终答案上失败，因此从稀疏 reward 看是负样本；但它们并非完全无用。如果一个 teacher 在不访问 gold answer 的条件下，仅依据输入和可用视觉证据即可恢复正确答案，那么该错误轨迹仍携带接近正确推理区域的状态信息。将其直接丢回离线 SFT 会浪费 on-policy 分布；将所有错误都蒸馏又会放大 teacher 噪声。我们因此引入 recoverability-guided OPD：只在 teacher 可恢复时，把错误轨迹转化为 token-level 分布监督；在不可恢复时，保留稳定的 imitation fallback。
+DyME 对这一困境给出了直接答案：当学生尚未找到正确解时使用 SFT 记忆，当学生已经产生正确解时使用 RL 探索 [Liu2025DyME]。这一动态切换显著优于静态两阶段训练，但仍留下一个关键空白。SFT 在 teacher 生成的离线序列上优化，GRPO 则只从少量有奖励差异的学生序列中学习；大量“学生当前答错、但 teacher 能够在该学生状态上提供有用纠正”的 on-policy states 没有得到合适的训练信号。把它们全部送回 SFT 会离开学生真实访问的状态，把它们留给 GRPO 又几乎没有梯度。
 
-方法上，我们把训练信号看作三类互补来源：可验证奖励负责保留探索，teacher recoverability 负责判断失败轨迹是否仍有学习价值，on-policy distillation 负责把可恢复错误转化为逐 token 的稠密指导。奖励越稀疏、组内差异越弱时，方法越倾向于提高这类稠密指导的权重；teacher 也无法恢复的样本则回到稳定的 fallback supervision。这样，我们不是把所有错误都当作 SFT 样本，也不是无条件蒸馏 teacher，而是在当前策略分布上选择性地修复可恢复失败。
+OPD 为这个空白提供了自然工具。与序列级蒸馏不同，OPD 让学生先生成输出，再让 teacher 在这些学生生成的前缀上给出下一 token 分布 [Agarwal2023GKD]。因此，它不直接强制学生复现一条 teacher sequence，也不要求学生先偶然采样到正确答案，便能在自己的状态分布上获得稠密指导。需要强调的是，避免 exact-sequence imitation 并不自动消除 teacher 风格迁移；teacher distribution 仍可能优先强化结构标题等低价值 token，因此局部 token reliability 必须被测量和消融。这一性质对 sub-1B VLM 尤其重要：模型容量越小，teacher 离线轨迹与学生可实现轨迹之间的差距越大，而纯 RLVR 找到首个正确解的概率又越低。已有 VOLD、Decomposed OPD 和 Visual-Advantage OPD 已证明 OPD 可用于视觉语言推理 [Bousselham2025VOLD; Yoon2026DecomposedOPD; Liu2026VAOPD]，但它们主要关注更大 VLM 的推理迁移、视觉 grounding 或 token weighting。**据我们所知，本文是首个面向 sub-1B VLM 可验证推理、系统研究 OPD 有效性及其与 RLVR 和监督学习互补性的工作。** 我们不声称首次提出 VLM OPD；我们的新意在于把 OPD 引入此前主要由 SFT/RLVR 切换主导的小模型训练区间，并用统一预算和正交消融回答它何时有效、为何有效、能否被现有信号替代。
 
-本文贡献如下：
+直接对所有错误 completion 使用 OPD 也并不可靠。teacher 可能误读视觉证据，长 student prefix 上的纠正能力可能衰减，不同 token 的 teachability 也并不相同 [Fu2026RevisitingOPD; Xie2026IWOPD; Wang2026TeachabilityOPD; Liu2026PWOPSD; Liu2026SFD]。此外，学生对 teacher 的需求会随训练变化：早期需要更多稠密指导，后期若继续保持高强度蒸馏，则可能压制学生自己的探索。于是，真正的问题不是简单地“加一个 OPD loss”，而是确定 **何时使用 OPD、何时保留 GRPO、何时采用 fallback，以及 teacher support 应在何时退出**。
 
-1. 提出 recoverability-guided on-policy distillation，将稀疏 outcome reward 中被视为失败的轨迹进一步区分为可恢复与不可恢复区域。
-2. 提出一个统一训练目标，将组内相对 RL、teacher-gated dense distillation 和稳定 fallback 结合起来，提高小模型推理训练中的有效更新比例。
-3. 给出奖励方差自适应的监督强度调节，使方法在低 reward-diversity 阶段仍能提供有用梯度。
-4. 设计整体实验与诊断框架，从主结果、训练动力学、有效信号转化、泛化/预算和 teacher 代价五个层面验证方法，而不是只依赖单个消融设置。
+为此，我们提出 CLRC。对每个学生 completion，系统首先使用可验证任务 reward 判断学生答案。正确 completion 进入 GRPO；错误 completion 由不接收 reference answer 的多模态 teacher 重新作答，其答案再由 RLVR verifier 检查，只有 teacher 被验证正确时才进入 OPD；其余 completion 使用受控 fallback。这里的 gold-hidden 只描述 teacher 输入，routing verifier 仍可访问与 RLVR reward 相同的 reference。局部三路路由使三种训练信号承担不同职责：GRPO 强化学生已经发现的解，OPD 在学生错误状态上提供稠密纠正，fallback 处理 teacher 也无法可靠纠正的低信号状态。全局上，CLRC 统计最终实际进入各路线的 completion，而不是把预设 loss weight 当作训练状态；随后依据 realized GRPO coverage 调整下一步 teacher support。
+
+这一设计的目的不是提出一个脱离 OPD 的通用控制器，而是让 OPD 在小模型训练中成为可靠、可测量的独立学习信号。本文不把 full-CoT 或结构化 reasoning 格式视为污染；我们关心的是这些输出是否建立在正确视觉证据上，以及训练信号是否真正改善任务答案。我们也不把 teacher prompt 不含 gold 等同于整个算法 reference-free：所有结果将分别披露 `Teacher sees gold` 与 `Verifier uses reference`。
+
+本文的贡献如下：
+
+1. 据我们所知，我们首次系统研究 OPD 在 sub-1B VLM 可验证推理中的有效性，指出它补充了纯 SFT 的 student-state mismatch 与纯 RLVR 的稀疏、零优势信号。
+2. 为使 OPD 在多模态错误状态上可靠工作，我们提出 verifier-confirmed completion routing：GRPO 学习学生已经发现的解，OPD 纠正 teacher 可恢复的学生状态，fallback 处理剩余低信号状态；基于 realized GRPO coverage 的连续控制仅作为调节 OPD 介入强度的配套机制。
+3. 我们通过 no-OPD、unconditional OPD、OPD-only、GRPO-only、fallback-only 和完整三路训练的统一预算对照，检验 OPD 的净收益、适用边界及其与现有训练信号的互补性，并报告 accuracy、zero-loss、route occupancy 与 teacher compute。
 
 ## 2. 相关工作
 
-### 2.1 小模型与多模态推理训练
+### 2.1 小型视觉语言模型与多模态推理监督
 
-**视觉指令调优与小模型训练。** LLaVA、InstructBLIP、MiniGPT-4、Qwen-VL、InternVL、LLaVA-NeXT 等工作奠定了视觉编码器、投影模块和语言模型组合的主流 VLM 训练范式 [1-6]。TinyLLaVA、MobileVLM、SmolVLM 进一步面向小模型结构、数据配方和部署效率优化，说明小 VLM 具备实际应用价值 [7-9]。DyME 则指出，小 VLM 推理训练需要在记忆式监督和探索式 RL 之间动态平衡 [10]。这些工作主要解决对齐、效率和训练模式切换问题，而本文关注稀疏可验证奖励下错误轨迹如何被重新利用。
+视觉指令微调奠定了通用 VLM 的训练范式，代表工作包括 LLaVA、InstructBLIP、MiniGPT-4、Qwen-VL 和 InternVL [Liu2023LLaVA; Dai2023InstructBLIP; Zhu2023MiniGPT4; Bai2023QwenVL; Chen2023InternVL]。TinyLLaVA、MobileVLM V2 和 SmolVLM 进一步研究了更小规模、更低部署成本的视觉语言模型 [Zhou2024TinyLLaVA; Chu2024MobileVLMV2; Marafioti2025SmolVLM]。这些模型具备基本视觉问答能力，但较小容量使长推理监督、视觉 grounding 和严格格式遵循之间的冲突更加突出。
 
-**多模态 CoT 与视觉推理监督。** Multimodal-CoT、LLaVA-CoT、Insight-V、Mulberry、MatCha、TinyChart 等方法通过人工 rationale、结构化阶段、搜索轨迹、图表预训练或 PoT 数据构造提升视觉推理能力 [11-16]。这些方法说明推理轨迹对 VLM 重要，但仍以离线 hard target 为主，容易让小模型学习固定解释模板。近期工作也指出，过强或过长的 CoT imitation 可能诱导 pseudo reasoning，并压缩后续 RL 的探索空间 [17]。
+多模态 CoT 通过生成中间 rationale 提升视觉推理 [Zhang2023MultimodalCoT]。LLaVA-CoT 将视觉推理组织为结构化阶段 [Xu2024LLaVACoT]，Insight-V 探索长链视觉推理 [Zhang2024InsightV]，Mulberry 使用搜索构造反思式多模态轨迹 [Yao2024Mulberry]。这类方法说明高质量 rationale 可以提供有效监督，但 rationale 的长度和语言完整性并不保证视觉事实正确。SFT-or-RL 进一步表明，模仿强模型轨迹可能形成 pseudo reasoning 并限制后续 RL [Yang2025SFTorRL]。本文不是反对 CoT，而是研究如何在学生实际生成状态上补充 teacher 信号，降低对完整离线轨迹模仿的依赖。
 
-**多模态 RLVR。** Visual-RFT、VLM-R1、Reason-RFT、Visual Aha、LMM-R1、MM-Eureka、Vision-R1、OpenVLThinker 等工作将 rule-based reward 和 GRPO/PPO 类优化引入视觉问答、定位、图表理解和多模态数学推理 [18-25]。与这些方法相比，本文不主要设计新的任务 reward 或更长的冷启动 CoT，而是关注 sparse reward 中被浪费的失败区域：当学生生成错误但 teacher 能在无答案证据下恢复时，该轨迹应成为 dense on-policy supervision。
+### 2.2 多模态可验证强化学习
 
-### 2.2 稀疏可验证奖励与在线强化学习
+PPO、GRPO 和 RLVR 为无需逐步人工标注的推理训练提供了基础 [Schulman2017PPO; Shao2024DeepSeekMath; Guo2025DeepSeekR1]。DAPO、Dr.GRPO、Open-Reasoner-Zero 和 SimpleRL-Zoo 分析并改进了长链 RL 中的 clipping、采样、长度偏差和训练稳定性 [Yu2025DAPO; Liu2025DrGRPO; Hu2025OpenReasonerZero; Zeng2025SimpleRLZoo]。这些工作主要面向语言推理，但其稀疏奖励和低有效更新率问题在小型 VLM 中更严重。
 
-**在线偏好优化与可验证奖励。** PPO 是 RLHF 中最常用的在线策略优化基础，InstructGPT、Constitutional AI、HHH/RLHF 和 RLAIF 展示了 SFT、奖励模型与在线优化结合的典型路线 [26, 27, 63, 64, 69]。DPO、IPO、KTO、ORPO 则用离线偏好数据降低在线 RL 复杂度 [28-31]。这些方法适合对齐和偏好学习；在数学、代码、图表问答等可自动验证任务中，rule-based outcome reward 更便宜，但也更稀疏。
+在多模态领域，Visual-RFT 将可验证奖励用于视觉感知任务 [Liu2025VisualRFT]；VLM-R1、Visual-Aha、LMM-R1、MM-Eureka 和 Vision-R1 探索 R1-style 多模态强化学习 [Shen2025VLMR1; Zhao2025VisualAha; Peng2025LMMR1; Meng2025MMEureka; Chen2025VisionR1]；Reason-RFT、R1-VL 和 OpenVLThinker 分别研究视觉推理 RFT、step-wise GRPO 和迭代 SFT-RL [Zhang2025ReasonRFT; Zhang2025R1VL; Wang2025OpenVLThinker]。这些工作证明 RLVR 能够发现超越直接模仿的推理行为，但通常依赖模型先产生一定比例的正确候选。本文关注正确探索极少的 sub-1B 区域，并用 OPD 为错误 on-policy states 提供稠密信号。
 
-**GRPO 与 R1-style RL。** GRPO 用同一 prompt 的多条采样构造组内相对 advantage，避免额外 value model。DeepSeekMath 和 DeepSeek-R1 将 GRPO/rule-based RL 推向数学与长链推理训练，Kimi k1.5、Open-Reasoner-Zero、SimpleRL-Zoo 和 Minimalist Reasoning 进一步从不同规模和实现角度分析这一范式 [35-42]。这类方法强化了最终答案可验证任务中的探索能力，但当 group 全错、全对或方差过低时，训练信号会明显变弱。
+### 2.3 SFT、专家指导与 RL 的动态组合
 
-**稀疏信号稳定化。** DAPO、Dr.GRPO、VinePPO、ReMax、RLOO、REINFORCE++、PRIME 以及过程监督方法指出，长推理中的 outcome reward 会带来长度偏置、无效 group、截断、credit assignment 和 step-level supervision 缺失等问题 [38, 39, 43-49, 33, 34]。本文采取互补路线：不直接丢弃所有低方差失败区域，而是用 teacher recoverability 判断其中哪些错误轨迹仍可转化为稠密 OPD 信号。
+静态 SFT 后接 RL 容易出现阶段间分布不匹配。DyME 根据当前 batch 是否产生正确答案，在 memorization 和 exploration 之间动态切换，是本文最直接的 small-VLM baseline [Liu2025DyME]。LUFFY 使用 off-policy guidance 支持推理学习 [Yan2025LUFFY]，CHORD 从全局系数和 expert-token 权重两层动态调和 SFT 与 on-policy RL [Zhang2025CHORD]，SRFT 在单阶段内联合 supervised 与 reinforcement fine-tuning [Chen2025SRFT]，KDRL 则统一知识蒸馏和强化学习 [Xu2025KDRL]。
 
-**SFT-RL 混合训练。** LUFFY、CHORD、SRFT 和 rejection sampling fine-tuning 等方法试图在离线示范和在线探索之间取得平衡 [48-50, 32, 70]。它们通常从全局 schedule、动态权重或筛选数据角度管理 SFT 与 RL 的比例。本文的区别是：训练信号由局部 recoverability 决定，而不是只由训练阶段、prompt 级过滤或全局权重决定。
+CLRC 与这些工作的共同点是承认 imitation 和 exploration 互补。差异在于 OPD 的作用位置：它不在离线 expert sequence 上提供另一个 SFT loss，而是在 student-generated prefixes 上构成独立学习状态。我们的实验必须通过 no-OPD、OPD-only、GRPO-only、fallback-only 和完整三路训练证明这一差异，而不能仅以“动态加权”作为创新。
 
-### 2.3 On-Policy Distillation 与 teacher-guided training
+### 2.4 知识蒸馏与 On-Policy Distillation
 
-**知识蒸馏与生成式蒸馏。** KD、sequence-level KD、Born-Again Networks、DistilBERT、TinyBERT、MiniLM、MiniLLM 等工作表明，teacher 的 soft distribution 能提供比 hard label 更丰富的学习信号，并可用于压缩、自蒸馏和生成式训练 [51-57]。传统 KD 常在 reference 或 teacher 序列上训练，容易与测试时学生自己的前缀分布不匹配；GKD 等 on-policy distillation 方法则让学生先生成轨迹，再让 teacher 在 student-generated contexts 上提供 token-level 反馈 [58]。
+经典知识蒸馏匹配 teacher soft targets [Hinton2015KD]，sequence-level KD 使用 teacher 生成序列训练学生 [Kim2016SeqKD]，DistilBERT、TinyBERT、MiniLM 和 MiniLLM 将蒸馏扩展到预训练语言模型和生成模型 [Sanh2019DistilBERT; Jiao2019TinyBERT; Wang2020MiniLM; Gu2023MiniLLM]。这些方法通常在固定数据或 teacher-generated sequence 上训练，存在 exposure bias 和 student-state mismatch。
 
-**自训练与 teacher-guided reasoning。** STaR、Self-Improve、ReST、Self-Rewarding、RFT、RAFT 和 best-of-N rejection sampling 通过采样、验证、过滤和再训练获得更高质量轨迹 [59-62, 32, 66, 70]。RLHF、RLAIF、Constitutional AI、RRHF、DPO、process reward models、Distilling Step-by-Step 和 step verification 则用人类或 AI teacher 提供 preference、critique、ranking、rationale 或过程信号 [27, 69, 63, 65, 28, 68, 67, 33]。这些 teacher 信号通常在离线数据构造阶段被固定，或对所有选中样本统一使用，缺少对当前 student failure state 的在线判别。
+GKD 将 teacher feedback 移到 student-generated sequences 上，系统化提出 on-policy distillation [Agarwal2023GKD]。近期研究快速扩展了这一方向：VOLD 将 LLM reasoning 迁移到 VLM [Bousselham2025VOLD]；Decomposed OPD 和 VA-OPD 分别处理视觉 grounding 与视觉优势加权 [Yoon2026DecomposedOPD; Liu2026VAOPD]；IW-OPD、control-variate OPD 和 best-of-N teacher selection研究位置偏差、方差和 teacher rollout 选择 [Xie2026IWOPD; Oh2026vOPD; Zhang2026BRTS]；RG-OPD、DOPD 和 SCOPE 研究 verifier gating、privileged supervision 与自适应权重 [Akhondzadeh2026RGOPD; Yu2026DOPD; Zheng2026SCOPE]；TA-OPD、PW-OPSD 和 SFD 则说明 teacher disagreement、token position 和长 student prefix 上的纠正信号并非同等可靠 [Wang2026TeachabilityOPD; Liu2026PWOPSD; Liu2026SFD]。Prefix distribution matching 与 disagreement-adaptive rewarding 进一步表明，OPD 的收益取决于学生访问状态和 teacher-student disagreement，而不能把所有位置视为均匀有效 [Zheng2026PrefixOnPolicy; Lee2026DEAR]。GateKD 也使用 confidence-gated closed-loop distillation 的表述 [Sermsri2026GateKD]。
 
-**Recoverability-guided OPD。** 本文将 teacher-guided supervision 放入可验证奖励训练循环中。teacher 不是无条件标签生成器，而是 recoverability probe：只有当 teacher 在无答案泄漏证据下能恢复正确答案时，它的分布才被用于指导学生当前错误轨迹。因此，OPD 不再只是 dataset-level compression，而是与 on-policy sampling、verifiable reward 和 reward variance 联动的训练信号选择机制。
+因此，本文不声称首次提出 VLM OPD、teacher reliability gating 或 closed-loop distillation。我们的核心定位是：**据我们所知，首次在 sub-1B VLM 可验证推理中系统引入和评估 OPD，并以严格消融证明 OPD 相对 no-OPD 的净收益以及它与 GRPO、fallback supervision 的互补性。** verifier routing 与闭环 teacher support 是为这一核心问题服务的方法设计，而不是与 OPD 并列的独立论文主线。
 
-## 3. 方法
+### 2.5 课程学习、图表推理与实验设置
 
-### 3.1 Training Signal as Recoverability
+自动课程学习根据学生进度选择训练任务或环境，说明训练日程应随能力变化，而非只依赖固定 step [Matiisen2017TSCL; Portelas2019ALPGMM]。这一思想也被扩展到可靠 LLM reasoning 和 self-evolving reasoning curriculum [Zhao2024AutoCEI; Chen2025SelfEvolvingCurriculum]。CLRC 的 controller 与课程学习共享能力驱动的思想，但它不选择下一个数据样本，而是观察已经发生的 GRPO/OPD/fallback route occupancy，并调节下一步 teacher support。因此 controller 是 OPD 主线的配套机制，其独立价值必须由 fixed-weight、fixed-progress 和 proxy-state 消融验证。
 
-我们考虑可验证视觉推理任务。输入 \(x\) 包含问题和视觉上下文，学生策略 \(\pi_\theta\) 采样轨迹 \(y\)，验证函数 \(R(x,y)\in[0,1]\) 只在完整输出后给出 outcome reward。传统 RL 只从 \(R\) 中学习，而 SFT 只从离线目标 \(y^\star\) 中学习。本文引入第三个训练信号：recoverability。
+ChartQA 同时要求视觉感知与逻辑推理，是评估小型 VLM 的合适场景 [Masry2022ChartQA]。MatCha 和 TinyChart 研究图表理解与小型 chart model [Liu2022MatCha; Zhang2024TinyChart]，DePlot 将图表转换为结构化表格，为 teacher 提供额外视觉证据 [Liu2022DePlot]。本文的 gold-hidden setting 不把 reference 放入 teacher prompt，但 routing verifier 与标准 RLVR 一样可使用 reference；oracle setting 额外给 teacher answer hint，只作为上界。两者在所有结果表中分栏。
 
-Recoverability 衡量的是：在不访问 gold answer 的条件下，一个外部 teacher 是否能从输入证据和当前错误状态中恢复正确答案。记 teacher 分布为 \(q_T\)，可用证据为 \(e(x)\)。对于学生采样轨迹 \(y_i\)，recoverability 定义为：
+## 3. 预备知识
 
-\[
-c_i = \mathbf{1}\{\mathrm{Verify}(\hat{y}^{T}_i)=1,\ 
-\hat{y}^{T}_i\sim q_T(\cdot|x,e(x),y_i)\}.
-\]
+### 3.1 Group Relative Policy Optimization
 
-它不是额外的 gold label，而是一个在线可验证判别信号。若 \(r_i=0\) 但 \(c_i=1\)，说明该轨迹虽然最终失败，但处在 teacher 可恢复区域；若 \(c_i=0\)，说明 teacher 也无法可靠修复，继续蒸馏可能放大噪声。
+对 prompt `x`，学生策略 `pi_theta` 采样 `K` 个 completion：
 
-### 3.2 Objective
+```text
+Y = {y_1, ..., y_K},  y_i ~ pi_theta(. | x).
+```
 
-训练目标由 sparse RL、recoverability-guided distillation 和 fallback imitation 三部分构成：
+可验证 reward `r_i` 对最终答案和输出约束评分。组内标准化优势可写为：
 
-\[
-\mathcal{L}(\theta)
-= \mathbb{E}_{x,Y\sim\pi_\theta}
-\left[
-\mathcal{L}_{\mathrm{grp}}(\theta)
-+ \lambda(\sigma_R)\mathcal{L}_{\mathrm{rec}}(\theta)
-+ \mu\mathcal{L}_{\mathrm{fb}}(\theta)
-\right].
-\]
+```text
+A_i = (r_i - mean(r_1, ..., r_K)) / (std(r_1, ..., r_K) + epsilon).
+```
 
-第一项 \(\mathcal{L}_{\mathrm{grp}}\) 是 group-relative policy optimization，用同组奖励构造 advantage：
+当所有 `r_i` 近似相同，`A_i` 接近零。本文把“task accuracy 全零”与“总 reward 优势全零”分开记录，因为格式或思考奖励可能制造总 reward 方差，却不能证明任务学习信号存在。
 
-\[
-A_i = \frac{r_i-\mathrm{mean}(R)}{\mathrm{std}(R)+\epsilon}.
-\]
+### 3.2 On-Policy Distribution Guidance
 
-第二项只作用于错误但可恢复的轨迹：
+给定 teacher 生成的固定 trajectory `y^T`，sequence-level SFT/KD 优化：
 
-\[
-\mathcal{L}_{\mathrm{rec}}
-= \sum_i (1-r_i)c_i
-D_{\mathrm{tok}}(q_T,\pi_\theta;y_i),
-\]
+```text
+L_traj = - sum_t log pi_theta(y^T_t | x, y^T_<t).
+```
 
-第三项为不可恢复或训练初期不稳定区域提供保底监督：
+训练状态 `(x, y^T_<t)` 来自 teacher 分布。对于容量有限的学生，teacher prefix 可能并非
+学生在推理时会访问或能够稳定延续的状态。相比之下，OPD 先从当前学生采样
+`y^S ~ pi_theta(.|x)`，再在 student-generated prefix 上匹配 teacher distribution：
 
-\[
-\mathcal{L}_{\mathrm{fb}}
-= \sum_i (1-r_i)(1-c_i)\cdot
-\ell_{\mathrm{imit}}(\theta;x,y^\star).
-\]
+```text
+L_OPD = E_{y^S ~ pi_theta(.|x)} [
+    sum_t D(pi_T(.|x,y^S_<t) || pi_theta(.|x,y^S_<t))
+].
+```
 
-这三个项的分工是：RL 保留对正确轨迹的探索压力；distillation 将可恢复错误轨迹转化为稠密 token-level 信号；fallback 避免 teacher 失败区域被错误蒸馏。
+其中 `D` 可取 JSD、forward KL 或其他分布距离。两种方法都使用 teacher，但监督发生的
+状态分布不同：hard trajectory 要求学生复现 teacher sequence，OPD 则纠正学生实际访问的
+状态。因此本文的核心比较不是“有无 teacher”，而是 **teacher supervision 是否作用于
+student states**。teacher 在某个 student state 是否可信仍需 verifier 或质量门单独估计。
 
-### 3.3 Adaptive Dense Guidance
+## 4. Reliable On-Policy Distillation for Sub-Billion VLMs
 
-稀疏奖励下的主要问题之一是 group reward 方差不足。当 \(\sigma_R\) 很低时，\(\mathcal{L}_{\mathrm{grp}}\) 的有效区分能力下降。我们因此令 distillation 权重依赖 reward diversity：
+本文方法的核心是把 OPD 引入 sub-1B VLM 的可验证推理训练。Closed-Loop
+Recoverability Curriculum（CLRC）是实现这一目标的具体训练框架：verifier-confirmed
+routing 决定哪些学生错误状态适合接受 OPD，realized-autonomy controller 决定 OPD
+应以多大强度介入。二者都服务于 OPD 的可靠使用，而不是独立于 OPD 的平行创新。
 
-\[
-\lambda(\sigma_R)
-=\lambda_0
-\left(1+\alpha\cdot
-\mathrm{clip}\left(1-\frac{\sigma_R}{\tau},0,1\right)\right).
-\]
+### 4.1 局部可恢复性学习状态
 
-该设计有两个性质。第一，当 group 已有足够 reward diversity 时，训练主要依赖 RL；第二，当 group 进入低方差区域时，可恢复错误轨迹获得更强的 dense guidance。它不修改 verifier reward，也不改变 teacher 的正确性判定，而是调节不同训练信号在低信号阶段的组合比例。
+对每个 completion `y_i`，首先用可验证答案 reward 判断学生是否正确。正确 completion 进入 GRPO。对于错误 completion，teacher probe 接收问题、图像和允许的视觉证据，并生成可解析答案。gold-hidden-teacher 设置禁止把 reference answer 放入 probe prompt，但随后使用 RLVR verifier 和 reference 判断 teacher answer 是否正确。
 
-### 3.4 Discussion
+定义 teacher recoverability indicator：
 
-该目标可以看作在 sparse outcome RL 和 hard imitation 之间插入一个 teacher-verifiable 中间信号。与直接 SFT 相比，它不强制学生复制离线 CoT；与普通 RL 相比，它不把所有错误都视为同样无用；与普通蒸馏相比，它只在 teacher 可验证恢复时使用 teacher distribution。宏观上，该方法提升的是 useful-update coverage：更多 on-policy 轨迹在每个训练阶段都能获得非零且可信的学习信号。
+```text
+q_i = 1[teacher answer is verifiably correct and passes evidence/quality gates].
+```
 
-## 4. 实验设计
+局部 route 为：
 
-实验应从整体训练方法角度组织，而不是从环境变量或小消融命名出发。
+```text
+GRPO,      if student completion is correct;
+OPD,       if student is wrong and q_i = 1;
+fallback,  if student is wrong and q_i = 0.
+```
 
-### 4.1 主结果
+fallback 可以是受控 trajectory/SFT repair，也可以在 teacher 信号不可信时跳过。论文主实验必须固定 fallback 定义，避免把多个机制同时变化。
 
-主表比较 base、SFT、GRPO/RLVR、SFT-RL 混合、generic OPD 与本文方法，在相同模型、数据和训练预算下报告 held-out accuracy、format-valid rate、输出长度和训练开销。若条件允许，应覆盖多个小模型规模和多个可验证视觉推理任务。
+### 4.2 三路联合目标
 
-### 4.2 训练动力学
+令 `M_G`、`M_O`、`M_F` 分别为最终 GRPO、OPD 和 fallback masks。主方法目标写为：
 
-训练曲线应展示方法如何改变优化过程：
+```text
+L_t = lambda_G L_GRPO(M_G)
+    + lambda_O(t) L_OPD(M_O)
+    + lambda_F(t) L_fallback(M_F).
+```
 
-- answer reward / held-out accuracy over training。
-- reward std / nonzero advantage rate。
-- recoverable-wrong coverage。
-- useful update rate。
-- format-valid rate、degeneration rate 和 output length。
+`L_fallback` 可以是受控 SFT，也可以为零损失 skip，但在 matched 消融中必须保持定义不变。
+teacher hard-trajectory loss `L_traj` 不属于核心 OPD 目标，仅作为序列模仿对照；已有
+oracle 实验表明把它与 OPD 直接混合会造成明显 train-eval gap。`lambda_O(t)` 由全局
+闭环控制器根据 realized autonomy 调节。实现中最终 route 互斥，避免一个 completion
+同时接受相互冲突的 GRPO、OPD 与 fallback 更新。
 
-核心结论不是某个 checkpoint 偶然更好，而是方法持续提高有效训练信号密度。
+### 4.3 全局 realized-autonomy feedback
 
-### 4.3 机制分析
+在局部 route 完成后，各 rank 统计：
 
-机制实验回答三个问题：
+```text
+N_grpo, N_opd, N_sft, N_skip, N_total.
+```
 
-1. 去掉 recoverability gate 是否导致错误蒸馏或训练不稳定？
-2. 去掉 adaptive dense guidance 是否降低低方差阶段的样本利用率？
-3. 去掉对低信号失败区域的 teacher recovery 是否让训练退回 sparse RL 或 imitation dominated 状态？
+通过一次跨 rank sum-reduction 得到全局快照。定义实际自主覆盖率：
 
-四个 no-VS 4epoch 运行可放在这一节作为局部机制消融，但不应成为整篇论文的实验目标。
+```text
+a_t = N_grpo / N_total.
+```
 
-### 4.4 成本、可靠性与边界
+该值直接表示当前 batch 中最终进入 GRPO 的 completion 比例，而不是 mixed-group proxy 或包含格式奖励的 total-reward variance。
 
-需要报告 teacher call rate、teacher token cost、wall-clock overhead、no-gold evidence 检查、gold leakage rate、teacher parse success 和 teacher correctness。若 teacher 证据不足或任务需要视觉属性而中间证据丢失，应在失败案例中明确展示。
+### 4.4 连续控制器
 
-## 5. 预期论文图表与叙事顺序
+控制器首先平滑自主覆盖率：
 
-参考 `best_paper.pdf` 的写法，图表不应只是补充材料，而应承担论文推进功能。我们的主线建议如下：
+```text
+z_t = alpha * a_t + (1 - alpha) * z_(t-1).
+```
 
-第一，Figure 1 应是强 motivation/teaser 图，而不是路由统计图。它同时展示一个直观样例和一组训练现象：SFT 可以给格式但易模板化，RL 可以探索但在低 reward-diversity 区域失效，而本文方法把一部分错误轨迹恢复成有效监督。这张图的作用等价于 VAR 的 Figure 1：让读者在第一页看到“方法改变了什么”。
+当前主配置使用 `alpha = 0.10`。定义单调 mastery：
 
-第二，Figure 2 应是范式对比图。左侧画 hard imitation：所有失败都被离线目标覆盖；中间画 sparse RL：只有最终 reward 提供信号；右侧画 recoverability-guided OPD：错误轨迹先经过 teacher-verifiable recoverability，再转化为 dense on-policy guidance 或 fallback。这张图对应 VAR 的 AR vs VAR 对比图，强调本文是训练范式重组，而不是局部 loss trick。
+```text
+m_t = max(m_(t-1), z_t).
+```
 
-第三，Table 1 应前置为主结果表，比较 base、SFT、GRPO/RLVR、SFT-RL hybrid、generic OPD 和 ours。随后 Figure 3 再解释训练动力学，Table 2 再验证机制消融。这样的顺序比先讲四个小消融更符合方法论文写法：先证明有效，再证明为什么有效。
+再映射为 teacher support：
 
-| 图表 | 目的 |
-| --- | --- |
-| Figure 1 | 强 motivation/teaser：展示小模型 sparse RL 中的失败异质性、可恢复错误轨迹和方法效果 |
-| Figure 2 | 范式对比：hard imitation vs sparse RL vs recoverability-guided OPD |
-| Table 1 | 主结果：base/SFT/RL/SFT-RL/OPD/Ours |
-| Figure 3 | 训练动力学：reward、reward std、useful update、输出稳定性 |
-| Table 2 | 机制消融：recoverability、adaptive guidance、teacher evidence |
-| Figure 4 | useful-signal conversion funnel |
-| Figure 5 | 模型规模、训练预算或 teacher compute tradeoff |
-| Table 3 | anti-leakage 与 teacher cost |
-| Figure 6 | 成功与失败案例 |
+```text
+u_t = clip(m_t / tau, 0, 1),
+s_t = 1 - smoothstep(u_t),
+smoothstep(u) = u^2 (3 - 2u).
+```
 
-## 6. 局限性
+当前 target `tau = 0.30`。控制器实现可让多个 teacher-support 动作共享同一
+snapshot，例如：
 
-方法依赖 teacher 在无答案泄漏证据下的可靠性；如果 teacher 自身无法恢复，distillation 不应被触发。第二，teacher 调用会带来额外计算开销，需要通过 coverage-cost ratio 证明收益合理。第三，若视觉证据缺失关键属性，teacher recoverability 会低估可学习样本。第四，当前主要面向可验证推理任务；对于开放式生成或主观评价任务，需要将 verifier 替换为更可靠的评价器。
+```text
+lambda_O: 1.5 -> 0.5,
+OPD cap per prompt: 8 -> 2.
+```
 
-## 7. 结论草稿
+其中 `lambda_T` 表示可选 hard teacher-trajectory loss。它在早期联合实验中曾按
+`0.5 -> 0` 衰减，但该实验的 held-out accuracy 仅为 `0.5120`，并出现严重固定模板
+污染。因此当前 OPD isolation recipe 将 `lambda_T` 从训练开始固定为 `0`，同时关闭
+teacher-SFT repair；闭环只调节 OPD weight 与 OPD completion budget。hard trajectory
+仅保留为负对照和消融，不是论文主方法的组成部分。
 
-本文提出 recoverability-guided on-policy distillation，用 teacher-verifiable recoverability 弥合 hard imitation 与 sparse RL 之间的训练信号空白。该方法不把所有错误轨迹统一视为失败，也不无条件蒸馏 teacher，而是只在错误轨迹可被无答案 teacher 恢复时提供稠密分布监督。通过与 reward diversity 联动的自适应权重，方法在低信号阶段提高 useful-update coverage，为小视觉语言模型的可验证推理训练提供了一种更稳定、更高效的训练范式。
+使用单调 mastery 的目的是避免偶然坏 batch 让 teacher support 反复振荡。其局限是学生发生长期能力回退时不能自动恢复 support，本文将在局限和非单调控制器消融中讨论。
 
-## 参考文献候选表
+### 4.5 因果顺序与分布式一致性
 
-下表用于后续整理 BibTeX。正文相关工作使用数字引用；`cite_key` 仅作为内部整理键名，便于后续转成正式 BibTeX。当前保持 2.1/2.2/2.3 三类，数量超过 40 篇，均为训练方法或训练机制相关工作；ChartQA/DePlot 不作为核心相关工作列入。对应的 seed BibTeX 已生成到 `docs/paper_reconstruction/references_seed.bib`，后续投稿前需要按目标会议格式补齐 authors/year/venue。
+step `t` 的生成和路由使用 step `t-1` 后保存的控制状态。step `t` 最终 route 完成后，系统才计算 `a_t` 并更新控制器，供 step `t+1` 使用。该一拍延迟避免同一步 route 既是动作结果又是动作输入。
 
-| # | cite_key | 论文 | 类别 | 链接 |
-| ---: | --- | --- | --- | --- |
-| 1 | Liu2023LLaVA | Visual Instruction Tuning | VLM instruction tuning | https://arxiv.org/abs/2304.08485 |
-| 2 | Dai2023InstructBLIP | InstructBLIP | VLM instruction tuning | https://arxiv.org/abs/2305.06500 |
-| 3 | Zhu2023MiniGPT4 | MiniGPT-4 | VLM alignment training | https://arxiv.org/abs/2304.10592 |
-| 4 | Bai2023QwenVL | Qwen-VL | VLM pretraining/instruction tuning | https://arxiv.org/abs/2308.12966 |
-| 5 | Chen2023InternVL | InternVL | VLM training | https://arxiv.org/abs/2312.14238 |
-| 6 | Liu2024LLaVANeXT | LLaVA-NeXT / LLaVA-1.6 | VLM instruction tuning | https://llava-vl.github.io/blog/2024-01-30-llava-next/ |
-| 7 | Zhou2024TinyLLaVA | TinyLLaVA | small VLM recipe | https://arxiv.org/abs/2402.14289 |
-| 8 | Chu2024MobileVLMV2 | MobileVLM V2 | mobile VLM training | https://arxiv.org/abs/2402.03766 |
-| 9 | Marafioti2025SmolVLM | SmolVLM | efficient small VLM | https://arxiv.org/abs/2504.05299 |
-| 10 | Liu2025DyME | DyME | small VLM SFT/RL training | https://arxiv.org/abs/2506.23061 |
-| 11 | Zhang2023MultimodalCoT | Multimodal Chain-of-Thought Reasoning in Language Models | multimodal CoT SFT | https://arxiv.org/abs/2302.00923 |
-| 12 | Xu2024LLaVACoT | LLaVA-CoT | structured visual reasoning SFT | https://arxiv.org/abs/2411.10440 |
-| 13 | Zhang2024InsightV | Insight-V | long-chain visual reasoning | https://arxiv.org/abs/2411.14432 |
-| 14 | Yao2024Mulberry | Mulberry | MCTS-generated multimodal reasoning | https://arxiv.org/abs/2412.18319 |
-| 15 | Liu2022MatCha | MatCha | chart/math reasoning pretraining | https://arxiv.org/abs/2212.09662 |
-| 16 | Zhang2024TinyChart | TinyChart | small chart VLM training | https://arxiv.org/abs/2404.16635 |
-| 17 | Yang2025SFTorRL | SFT or RL? | SFT vs RL for VLM reasoning | https://arxiv.org/abs/2504.11468 |
-| 18 | Liu2025VisualRFT | Visual Reinforcement Fine-Tuning | VLM RLVR | https://arxiv.org/abs/2503.01785 |
-| 19 | Shen2025VLMR1 | VLM-R1 | R1-style VLM training | https://arxiv.org/abs/2504.07615 |
-| 20 | Zhang2025ReasonRFT | Reason-RFT | SFT+GRPO visual reasoning | https://arxiv.org/abs/2503.20752 |
-| 21 | Zhao2025VisualAha | R1-Zero's Aha Moment in Visual Reasoning | small VLM RL | https://arxiv.org/abs/2503.05132 |
-| 22 | Peng2025LMMR1 | LMM-R1 | multimodal rule-based RL | https://arxiv.org/abs/2503.07536 |
-| 23 | Meng2025MMEureka | MM-Eureka | multimodal RLVR | https://arxiv.org/abs/2503.07365 |
-| 24 | Chen2025VisionR1 | Vision-R1 | cold-start visual RL | https://arxiv.org/abs/2503.06749 |
-| 25 | Wang2025OpenVLThinker | OpenVLThinker | iterative SFT/RL multimodal reasoning | https://arxiv.org/abs/2503.17352 |
-| 26 | Schulman2017PPO | Proximal Policy Optimization Algorithms | PPO | https://arxiv.org/abs/1707.06347 |
-| 27 | Ouyang2022InstructGPT | Training Language Models to Follow Instructions with Human Feedback | RLHF | https://arxiv.org/abs/2203.02155 |
-| 28 | Rafailov2023DPO | Direct Preference Optimization | DPO | https://arxiv.org/abs/2305.18290 |
-| 29 | Azar2023IPO | A General Theoretical Paradigm to Understand Learning from Human Preferences | IPO/preference theory | https://arxiv.org/abs/2310.12036 |
-| 30 | Ethayarajh2024KTO | KTO | direct alignment | https://arxiv.org/abs/2402.01306 |
-| 31 | Hong2024ORPO | ORPO | single-stage preference optimization | https://arxiv.org/abs/2403.07691 |
-| 32 | Yuan2023RFTScaling | Scaling Relationship on Learning Mathematical Reasoning with LLMs | rejection sampling fine-tuning | https://arxiv.org/abs/2308.01825 |
-| 33 | Lightman2023VerifyStep | Let’s Verify Step by Step | process supervision | https://arxiv.org/abs/2305.20050 |
-| 34 | Wang2023MathShepherd | Math-Shepherd | process reward model | https://arxiv.org/abs/2312.08935 |
-| 35 | Shao2024DeepSeekMath | DeepSeekMath | GRPO | https://arxiv.org/abs/2402.03300 |
-| 36 | Guo2025DeepSeekR1 | DeepSeek-R1 | RLVR reasoning | https://arxiv.org/abs/2501.12948 |
-| 37 | Team2025Kimik15 | Kimi k1.5 | long-CoT RL | https://arxiv.org/abs/2501.12599 |
-| 38 | Yu2025DAPO | DAPO | GRPO stabilization | https://arxiv.org/abs/2503.14476 |
-| 39 | Liu2025DrGRPO | Understanding R1-Zero-Like Training / Dr.GRPO | GRPO bias analysis | https://arxiv.org/abs/2503.20783 |
-| 40 | Hu2025OpenReasonerZero | Open-Reasoner-Zero | open RLVR | https://arxiv.org/abs/2503.24290 |
-| 41 | Zeng2025SimpleRLZoo | SimpleRL-Zoo | zero-RL analysis | https://arxiv.org/abs/2503.18892 |
-| 42 | Gandhi2025Minimalist | A Minimalist Approach to LLM Reasoning | RL/rejection analysis | https://arxiv.org/abs/2504.11343 |
-| 43 | Cui2025PRIME | PRIME | implicit process reward | https://arxiv.org/abs/2502.01456 |
-| 44 | Kazemnejad2024VinePPO | VinePPO | PPO for long reasoning | https://arxiv.org/abs/2410.01679 |
-| 45 | Li2023ReMax | ReMax | critic-free RLHF | https://arxiv.org/abs/2310.10505 |
-| 46 | Ahmadian2024RLOO | Back to Basics: Revisiting REINFORCE Style Optimization | RLOO/REINFORCE | https://arxiv.org/abs/2402.14740 |
-| 47 | Hu2025REINFORCEPP | REINFORCE++ | critic-free policy optimization | https://arxiv.org/abs/2501.03262 |
-| 48 | Yan2025LUFFY | LUFFY | off-policy guidance with RL | https://arxiv.org/abs/2504.14945 |
-| 49 | Zhang2025CHORD | CHORD | dynamic SFT-RL weighting | https://arxiv.org/abs/2508.11408 |
-| 50 | Chen2025SRFT | SRFT | single-stage SFT+RL | https://arxiv.org/abs/2506.19767 |
-| 51 | Hinton2015KD | Distilling the Knowledge in a Neural Network | knowledge distillation | https://arxiv.org/abs/1503.02531 |
-| 52 | Kim2016SeqKD | Sequence-Level Knowledge Distillation | seq2seq distillation | https://arxiv.org/abs/1606.07947 |
-| 53 | Furlanello2018BornAgain | Born Again Neural Networks | self-distillation | https://proceedings.mlr.press/v80/furlanello18a.html |
-| 54 | Sanh2019DistilBERT | DistilBERT | language model distillation | https://arxiv.org/abs/1910.01108 |
-| 55 | Jiao2019TinyBERT | TinyBERT | transformer distillation | https://arxiv.org/abs/1909.10351 |
-| 56 | Wang2020MiniLM | MiniLM | deep self-attention distillation | https://arxiv.org/abs/2002.10957 |
-| 57 | Gu2023MiniLLM | MiniLLM | generative KD | https://arxiv.org/abs/2306.08543 |
-| 58 | Agarwal2023GKD | Generalized Knowledge Distillation for Auto-regressive Language Models | GKD / on-policy distillation | https://arxiv.org/abs/2306.13649 |
-| 59 | Zelikman2022STaR | STaR | self-training reasoning | https://arxiv.org/abs/2203.14465 |
-| 60 | Huang2022SelfImprove | Large Language Models Can Self-Improve | self-distillation | https://arxiv.org/abs/2210.11610 |
-| 61 | Gulcehre2023ReST | ReST | self-training with feedback | https://arxiv.org/abs/2308.08998 |
-| 62 | Yuan2024SelfRewarding | Self-Rewarding Language Models | self-reward/teacher feedback | https://arxiv.org/abs/2401.10020 |
-| 63 | Bai2022ConstitutionalAI | Constitutional AI | RLAIF / critique training | https://arxiv.org/abs/2212.08073 |
-| 64 | Bai2022HHH | Training a Helpful and Harmless Assistant with RLHF | RLHF | https://arxiv.org/abs/2204.05862 |
-| 65 | Yuan2023RRHF | RRHF | ranking feedback | https://arxiv.org/abs/2304.05302 |
-| 66 | Dong2023RAFT | RAFT | reward-ranked filtering | https://arxiv.org/abs/2304.06767 |
-| 67 | Hsieh2023DistillStep | Distilling Step-by-Step! | rationale distillation | https://arxiv.org/abs/2305.02301 |
-| 68 | Uesato2022ProcessOutcome | Solving Math Word Problems with Process- and Outcome-based Feedback | process/outcome feedback | https://arxiv.org/abs/2211.14275 |
-| 69 | Lee2023RLAIFvsRLHF | RLAIF vs. RLHF | AI feedback | https://arxiv.org/abs/2309.00267 |
-| 70 | Cobbe2021Verifiers | Training Verifiers to Solve Math Word Problems | verifier / rejection sampling | https://arxiv.org/abs/2110.14168 |
+所有 controller rank 读取同一个跨 rank snapshot。早期诊断显示 rank-local mixed/zero-loss 与 global task state 可显著不同，因此论文只使用全局最终 route 作为控制信号，local health metrics 仅作诊断。
+
+### 4.6 算法流程
+
+```text
+Input: student policy, teacher, verifiable reward, visual evidence
+Initialize EMA z_0=0, mastery m_0=0, full teacher support
+For each training step t:
+  1. Sample K student completions per prompt.
+  2. Compute verifiable rewards and GRPO advantages.
+  3. Probe wrong completions with the allowed teacher evidence.
+  4. Apply quality/leakage gates and assign mutually exclusive routes.
+  5. Optimize GRPO + OPD + the matched fallback objective using current actions;
+     keep hard teacher-trajectory loss disabled in the main OPD recipe.
+  6. Sum final route counts across all ranks.
+  7. Compute a_t, update EMA/mastery, and derive next-step actions.
+  8. Log route, task-zero, disagreement, compute and leakage metrics.
+```
+
+## 5. 实验设计
+
+### 5.1 研究问题
+
+- RQ1：在 matched 4epoch 预算下，OPD 是否相对 no-OPD 带来稳定的 ChartQA 净收益？
+- RQ2：OPD 是否与 GRPO 和 fallback supervision 互补，而不能被任一单独信号替代？
+- RQ3：verifier-routed OPD 是否优于 unconditional OPD，证明可靠性选择而非单纯增加 teacher compute 产生收益？
+- RQ4：realized-autonomy adaptive support 是否能进一步改善 OPD 的 accuracy/teacher-compute Pareto？
+- RQ5：OPD 的收益是否在改变 epoch、batch 或数据规模后仍然成立？
+
+### 5.2 数据、模型与评估
+
+主任务为 ChartQA，student 为 LLaVA-OneVision 0.5B，teacher 为 7B。所有主结果固定 4epoch，并报告有效 batch、训练样本数、视觉证据、gold access、teacher calls、generated tokens、GPU hours 和 eval processed count。
+
+正式主表要求 `2500/2500`；8-GPU 分片 eval 的 `2496/2500` 可用于快速迭代决策，但必须标注 processed count。最终准确率只从 `eval_chartqa/summary.csv` 读取。
+
+### 5.3 主结果设置
+
+至少比较：
+
+1. Base/SFT；
+2. DyME official；
+3. matched gold-hidden-teacher no-OPD；
+4. gold-hidden-teacher unconditional OPD；
+5. gold-hidden-teacher verifier-routed OPD without controller；
+6. gold-hidden-teacher verifier-routed OPD with adaptive support；
+7. oracle official；
+8. oracle OPD upper bound。
+
+oracle 行与 gold-hidden-teacher 行必须在 `Teacher sees gold` 列明确分开；所有行另设 `Verifier uses reference`。
+
+### 5.4 消融与分析
+
+第一组核心消融比较 no-OPD、OPD-only、GRPO-only、fallback-only、OPD+GRPO
+和完整三路训练，直接检验信号互补性。第二组比较 unconditional OPD、reward gate、
+token-selective OPD 和 verifier-confirmed completion routing，检验 OPD 的可靠使用方式。
+只有在 OPD 主效应成立后，第三组才比较 fixed weights、fixed step、normalized progress、
+mixed/zero-loss proxy 和 global GRPO route，并拆分 OPD weight 与 OPD completion cap。
+hard trajectory 作为 supervision-type 负对照单列，不作为主 controller action。
+
+训练动力学统一报告 global GRPO/OPD/SFT、task all-wrong、task zero-loss、total-reward zero-loss、disagreement、accuracy、clip、EOS、degenerate、controller EMA/mastery/support 和 teacher funnel。full-CoT 比例不是单独的负指标；只有它与错误模板、截断、parse failure 或答案错误关联时才作为失败分析。
+
+## 6. 当前结果与实验进度
+
+### 6.1 已验证基线
+
+| Method | Teacher sees gold | Verifier uses reference | Epoch | ChartQA accuracy | Processed |
+|---|---|---|---:|---:|---:|
+| gold-hidden-teacher PCD aligned | no | yes | 4 | 0.5420 | 2500/2500 |
+| oracle route_guard | yes | yes | 4 | 0.5592 | 2500/2500 |
+| oracle full-template repair | yes | yes | 4 | 0.5624 | 2500/2500 |
+| oracle constrained repair | yes | yes | 4 | 0.5656 | 2500/2500 |
+| oracle student_hint_short | yes | yes | 4 | 0.5800 | 2500/2500 |
+| oracle official | yes | yes | 4 | 0.5872 | 2500/2500 |
+| oracle OPD + full teacher trajectory | yes | yes | 4 | 0.5120 | 2500/2500 |
+
+这些数字来自 `experiment_ledger.md` 中列出的 eval artifacts。它们说明短目标 repair 改善了现有 oracle pipeline，但不证明 gold-hidden-teacher OPD 有效。更重要的是，OPD 与 full teacher-trajectory hard supervision 的直接组合只得到 `0.5120`：尽管该 run 的 last50 train accuracy/global GRPO route 已达到约 `0.445/0.486`，held-out 输出中却有 `2397/2500` 被归为 full-CoT，`Goal:` 出现 2415 次，并伴随大量空 section 与异常 `Answer:`。因此，训练 reward 上升不能证明 teacher trajectory 形成了可迁移推理；hard imitation 可能把格式先验强化为 train-eval mismatch。
+
+这一负结果进一步明确本文的 OPD motivation。我们并不反对 full-CoT，也不把结构化推理本身视为错误；问题是 student 是否被迫复现 teacher 的固定 hard sequence。OPD 的目标恰恰是避免这一点：teacher distribution 应作用于 student-generated states，而不是用整条 teacher trajectory 替换学生状态。后续 matched 实验因此关闭 teacher trajectory 和 teacher-SFT repair，仅保留 verifier-routed OPD。
+
+### 6.2 当前运行实验
+
+`global_grpo_route_full_4epoch_20260712_205549` 已完成，其 `0.5120` 结果作为“OPD + hard trajectory”负对照。
+
+当前运行 `oracle_opd_no_hard_imitation_adaptive_4epoch_20260713_121946`。它只改变一个核心因素：关闭 teacher trajectory 与 teacher-SFT repair，同时保留 verifier-routed OPD、GRPO/fallback、effective sampling 与 realized-autonomy support。训练日志强制报告 hard-imitation invariants，以及 full-template、partial-template、Goal-without-Answer、empty-skeleton 和 malformed-answer 行为指标；持续完整模板塌缩会自动停止任务。partial drift 仅作为早期告警，因为它在被 probe 的错误 completion 上是条件统计，历史 `0.5872` oracle run 也曾短暂达到很高比例，不能单独预测 held-out 失败。该 run 仍使用 oracle hint，只能作为 OPD 隔离实验与 oracle upper bound，不能支持 gold-hidden-teacher 主张。
+
+### 6.3 论文完成门槛
+
+效果主张只有在以下条件满足后进入摘要：
+
+1. matched gold-hidden-teacher no-OPD 与 verifier-routed OPD 均完成 4epoch 和完整 eval；
+2. OPD 明确优于统一预算 no-OPD/DyME 对照；
+3. leakage metric 为 0；
+4. teacher compute 有可比较统计；
+5. OPD-only、GRPO-only、fallback-only 与联合训练支持互补性；
+6. 若声称超过 60%，必须存在 accuracy `>0.60` 的有效 summary artifact。
+
+## 7. 讨论与局限
+
+OPD 的有效性依赖 teacher 在学生生成状态上的可靠性。如果 DePlot 或 visual facts 错误，teacher-correct gate 可能把错误证据转成高置信监督。gold-hidden teacher 降低直接答案模仿，但 verifier 仍使用 reference，且该设置不自动保证视觉 grounding。未来需要使用更严格的 evidence attribution、reference-free reliability diagnostic 或视觉 token reliability。
+
+单调 mastery 提供稳定课程，但假设学生自主能力总体不回退。若高学习率、数据分布变化或灾难性遗忘导致长期 regression，控制器可能继续保持过低 teacher support。非单调滞回控制器是重要消融方向。
+
+单一 realized-GRPO 信号还存在另一种潜在失效：当 GRPO coverage 很低时，controller
+按设计保持最大 OPD support；但若某些 teacher token 主要传递格式偏好而非可迁移答案
+信息，高 OPD 又可能延迟有效 GRPO 的出现，从而形成“低 autonomy -> 强 OPD -> 继续低
+autonomy”的正反馈。本文不通过向 controller 临时加入第二个健康信号来掩盖该问题，
+而把它视为 local OPD reliability 问题：比较统一 token OPD 与 token-selective OPD，
+并分别报告结构标题、答案位置和视觉相关 token 的接受率。
+
+当前主任务是 ChartQA，短答案可验证性强。几何、医学或开放式视觉推理中的 verifier noise 和 teacher recoverability 定义可能不同。跨任务实验是证明方法普适性的必要后续，而不是从单任务结果直接外推。
+
+## 8. 结论
+
+本文研究如何把 OPD 引入 sub-1B VLM 的可验证推理训练。OPD 在学生自己生成的错误状态上提供稠密分布指导，填补了离线 SFT 的状态分布偏移与 RLVR 的稀疏、零优势信号之间的空白。为使这一信号可靠工作，我们使用 verifier-confirmed routing 选择可恢复状态，并以学生实际 GRPO coverage 调节 OPD 的介入强度。论文的核心结论将由 matched no-OPD 对照和单信号/联合信号消融决定：OPD 是否有效，以及它是否与 GRPO 和 fallback supervision 互补。
+
+最终版本将以统一 4epoch、明确 gold access、完整 held-out eval 和 teacher compute 对照验证该目标；在证据完成前，不提前宣称 OPD 方法已超过 60% 或已优于 DyME。

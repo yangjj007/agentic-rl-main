@@ -46,6 +46,7 @@ from opsd_utils.deepspeed_utils import (
     should_disable_gradient_checkpointing,
     uses_deepspeed_json_file,
 )
+from opsd_utils.trusted_torch_load import maybe_allow_trusted_torch_load
 
 
 def apply_launch_config(launch_config: dict[str, Any]) -> None:
@@ -376,6 +377,9 @@ def prepare_datasets(task: str, dataset_config: Dict[str, Any], mode='rl') -> (D
     # Create training dataset
     _log_startup(f"Loading training data: {dataset_config['train_dataset']}")
     train_data_list = data_func(json_path=dataset_config['train_dataset'])
+    for idx, sample in enumerate(train_data_list):
+        if isinstance(sample, dict):
+            sample.setdefault("_dyme_index", idx)
     train_dataset = Dataset.from_list(train_data_list)
     max_n = dataset_config.get("max_train_samples")
     if max_n is not None and int(max_n) > 0:
@@ -432,6 +436,7 @@ def _log_run_config_summary(
         "output_dir": dyme_args.get("output_dir"),
         "num_train_epochs": dyme_args.get("num_train_epochs"),
         "max_steps": dyme_args.get("max_steps"),
+        "resume_from_checkpoint": os.environ.get("DYME_RESUME_FROM_CHECKPOINT", "").strip() or None,
         "opsd_enabled": bool(opsd_config.get("enabled", False)),
         "opsd_mode": opsd_config.get("mode"),
         "privileged_providers": opsd_config.get("privileged_providers", []),
@@ -567,6 +572,12 @@ def main():
         help="Disable Weights & Biases logging (or set WANDB_MODE=offline/disabled)",
     )
     parser.set_defaults(wandb=None)
+    parser.add_argument(
+        '--resume_from_checkpoint',
+        type=str,
+        default=None,
+        help="Resume Trainer state from a checkpoint directory. Env DYME_RESUME_FROM_CHECKPOINT is also supported.",
+    )
 
     args = parser.parse_args()
     mode = args.mode
@@ -790,6 +801,12 @@ def main():
     )
     # 6. Define Training Arguments
     dyme_args = dict(training_config['dyme_args'])
+    resume_from_checkpoint = (
+        args.resume_from_checkpoint
+        or dyme_args.pop("resume_from_checkpoint", None)
+        or os.environ.get("DYME_RESUME_FROM_CHECKPOINT", "").strip()
+        or None
+    )
     if ds_zero_stage is not None and ds_zero_stage >= 3:
         dyme_args.setdefault("ds3_gather_for_generation", True)
     if not use_wandb:
@@ -826,10 +843,16 @@ def main():
             opsd_config=opsd_config,
             training_args=training_args,
             generation_config=dyme_trainer.generation_config,
-        )
+    )
 
     # 8. Start Training
-    dyme_trainer.train()
+    if accelerator.is_main_process and resume_from_checkpoint:
+        print(f"[DyME] Resuming training from checkpoint: {resume_from_checkpoint}", flush=True)
+    maybe_allow_trusted_torch_load(
+        resume_from_checkpoint=resume_from_checkpoint,
+        log=print if accelerator.is_main_process else (lambda _: None),
+    )
+    dyme_trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     output_dir = training_args.output_dir
     output_dir = os.path.join(output_dir, "final_checkpoint")

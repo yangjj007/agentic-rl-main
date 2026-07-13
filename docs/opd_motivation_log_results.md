@@ -3,6 +3,10 @@
 日期：2026-06-23  
 关联规划：`docs/opd_experiment_plan.md`
 
+> **术语校正（2026-07-13）**：本文件中的 `no-gold OPD` 是 legacy run label，
+> 只表示 teacher prompt 不直接包含 gold answer，不表示训练算法 reference-free。
+> routing/reward verifier 的 reference access 需按当前实验账本单独披露。
+
 本文档只记录 Step 1 零训练日志分析结果。为避免过度依赖最后 20 step 的摘要，本版使用 **每 10 个 training step 分箱取均值** 的折线图。指标只选直接训练/算法指标，不使用 `degenerate_rate`、`collapse_rate` 等二级健康指标。
 
 ## 1. 使用日志

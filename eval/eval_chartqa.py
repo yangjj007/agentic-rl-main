@@ -11,6 +11,8 @@ from transformers import AutoProcessor, AutoConfig, AutoTokenizer, LlavaOnevisio
 
 from data_utils.chart.evaluator import eval_one_chart
 from data_utils.rl_prompt import PROMPT_TEMPLATE
+from eval.distributed_eval_utils import distributed_batch_plan
+from eval.output_behavior import summarize_output_behavior_counts
 from reward_utils.compute_rewards import split_initial_context
 
 accelerator = Accelerator()
@@ -215,7 +217,7 @@ if task == 'chart':
         local_end_index = local_start_index + num_local_items
         eval_datasets_local = eval_datasets_all_prepared[local_start_index:local_end_index]
 
-        BATCH_SIZE = 32  # Adjust according to your VRAM
+        BATCH_SIZE = max(1, int(os.environ.get("DYME_EVAL_BATCH_SIZE", "32")))  # Adjust according to your VRAM
         REPORT_INTERVAL_BATCHES = 1  # Report once every N local batches (main process prints global stats)
 
         # if accelerator.is_main_process:
@@ -229,17 +231,20 @@ if task == 'chart':
 
         dt_record_local['res'] = []
         dt_record_local['output_types'] = {}
-        num_local_batches = (len(eval_datasets_local) + BATCH_SIZE - 1) // BATCH_SIZE
+        dt_record_local['template_behavior'] = summarize_output_behavior_counts([])
+        batch_plan = distributed_batch_plan(
+            total_items=total_items,
+            num_processes=num_processes,
+            batch_size=BATCH_SIZE,
+        )
+        num_sync_batches = batch_plan.sync_batches
 
-        for batch_idx_local in range(num_local_batches):
+        for batch_idx_local in range(num_sync_batches):
             start_idx = batch_idx_local * BATCH_SIZE
             end_idx = min((batch_idx_local + 1) * BATCH_SIZE, len(eval_datasets_local))
             current_batch_list = eval_datasets_local[start_idx:end_idx]
 
-            if not current_batch_list:
-                continue
-
-            batch_predictions_texts = run_kh_batch(current_batch_list)
+            batch_predictions_texts = run_kh_batch(current_batch_list) if current_batch_list else []
 
             for item_idx_in_batch, full_pred_text in enumerate(batch_predictions_texts):
                 original_item = current_batch_list[item_idx_in_batch]
@@ -253,6 +258,9 @@ if task == 'chart':
                 dt_record_local['res'].append(score)
                 out_type = classify_output_type(full_pred_text)
                 dt_record_local['output_types'][out_type] = dt_record_local['output_types'].get(out_type, 0) + 1
+                sample_behavior = summarize_output_behavior_counts([full_pred_text])
+                for key, value in sample_behavior.items():
+                    dt_record_local['template_behavior'][key] += value
 
                 # (Optional) Main process prints a few prediction details
                 if accelerator.is_main_process:
@@ -262,20 +270,13 @@ if task == 'chart':
                 pbar.update(len(current_batch_list))
 
             # --- Intermediate reporting logic ---
-            is_last_local_batch = (batch_idx_local == num_local_batches - 1)
+            is_last_sync_batch = (batch_idx_local == num_sync_batches - 1)
             # Every REPORT_INTERVAL_BATCHES local batches, or on the last local batch of this process,
             # perform synchronization and reporting
-            should_sync_and_report = ((batch_idx_local + 1) % REPORT_INTERVAL_BATCHES == 0) or is_last_local_batch
+            should_sync_and_report = ((batch_idx_local + 1) % REPORT_INTERVAL_BATCHES == 0) or is_last_sync_batch
 
             # Make sure that even if REPORT_INTERVAL_BATCHES is 1, we do not report when there is no data
             # (e.g., len(eval_datasets_local) == 0)
-            if len(eval_datasets_local) == 0:  # If the current process has no data, skip reporting logic
-                should_sync_and_report = False
-                # If num_local_batches > 0, this check ensures we report only when there is data
-
-            if num_local_batches == 0 and is_last_local_batch:  # Special case: process has no data but must join final sync
-                should_sync_and_report = True
-
             if should_sync_and_report:
                 accelerator.wait_for_everyone()  # Wait for all processes to reach the sync point
 
@@ -290,11 +291,14 @@ if task == 'chart':
                 if accelerator.is_main_process:
                     current_global_scores_list = []
                     output_type_counts = {}
+                    template_behavior_counts = summarize_output_behavior_counts([])
                     for process_data_dict in gathered_all_processes_data:
                         if process_data_dict and 'res' in process_data_dict:
                             current_global_scores_list.extend(process_data_dict['res'])
                             for key, value in process_data_dict.get('output_types', {}).items():
                                 output_type_counts[key] = output_type_counts.get(key, 0) + value
+                            for key, value in process_data_dict.get('template_behavior', {}).items():
+                                template_behavior_counts[key] = template_behavior_counts.get(key, 0) + value
 
                     total_samples_processed_globally = len(current_global_scores_list)
 
@@ -302,11 +306,11 @@ if task == 'chart':
                     # Check whether this is the final reporting point where all processes have finished
                     # A simple heuristic: if this is the last local batch on the main process
                     # and the total collected samples equal the total number of items
-                    if is_last_local_batch and total_samples_processed_globally == total_items:
+                    if is_last_sync_batch and total_samples_processed_globally == total_items:
                         report_title = "--- Final Report ---"
-                    elif is_last_local_batch:  # Last batch on main process but perhaps not all samples are done yet
+                    elif is_last_sync_batch:  # Last shared sync batch but perhaps not all samples are done yet
                         report_title = (
-                            f"--- Report (Main Proc Last Batch, {batch_idx_local + 1}/{num_local_batches}) ---"
+                            f"--- Report (Last Sync Batch, {batch_idx_local + 1}/{num_sync_batches}) ---"
                         )
 
                     tqdm.write(f"\n{report_title}")  # Use tqdm.write to avoid clashing with the progress bar
@@ -316,6 +320,7 @@ if task == 'chart':
                             print(f"Global samples processed: {total_samples_processed_globally} / {total_items}")
                             print(f"Current Global Mean Accuracy: {mean_acc_global:.4f}")
                             print(f"Output type counts: {output_type_counts}")
+                            print(f"Template behavior counts: {template_behavior_counts}")
                             if pbar:
                                 pbar.set_description(
                                     f"Global Acc: {mean_acc_global:.4f} ({total_samples_processed_globally}/{total_items})"

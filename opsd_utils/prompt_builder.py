@@ -7,6 +7,7 @@ from PIL import Image
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils.indexing import source_row_index
 from opsd_utils.privileged import build_privileged_context, maybe_save_privileged_images
+from opsd_utils.privileged.providers import split_teacher_response_prefix
 from opsd_utils.teacher_batching import (
     count_image_tokens,
     process_teacher_sample,
@@ -113,6 +114,7 @@ def build_teacher_prompt_batch(
             crop_cfg=crop_cfg,
             opsd_config=opsd_config,
         )
+        suffix, response_prefix = split_teacher_response_prefix(suffix)
         if not teacher_images:
             from opsd_utils.privileged.image_utils import load_rgb
 
@@ -141,6 +143,8 @@ def build_teacher_prompt_batch(
                 "teacher_text": teacher_text,
                 "images": teacher_images,
                 "suffix_len": len(suffix.strip()),
+                "response_prefix": response_prefix,
+                "response_prefix_len": len(response_prefix.strip()),
                 "num_teacher_images": len(teacher_images),
             }
         )
@@ -160,6 +164,11 @@ def build_teacher_prompt_batch(
     if not teacher_num_images:
         teacher_num_images = [p["num_teacher_images"] for p in sample_payloads]
     out["teacher_num_images"] = torch.tensor(teacher_num_images, device=device, dtype=torch.long)
+    out["teacher_response_prefix_lens"] = torch.tensor(
+        [int(max(0, n)) for n in batch.get("response_prefix_lens", [])],
+        device=device,
+        dtype=torch.long,
+    )
 
     student_len = None
     first_sample = sample_for_completion_row(indices[0])
@@ -222,9 +231,11 @@ def build_teacher_prompt_batch(
             crop_cfg=crop_cfg,
             opsd_config=opsd_config,
         )
+        priv_suffix, _ = split_teacher_response_prefix(priv_suffix)
         if privileged_suffix_has_gold(priv_suffix, sample):
             gold_suffix_count += 1
     suffix_lens = [p["suffix_len"] for p in sample_payloads]
+    response_prefix_lens = [p["response_prefix_len"] for p in sample_payloads]
     n_idx = max(len(indices), 1)
     out["teacher_stats"] = {
         "teacher_suffix_len_mean": float(sum(suffix_lens) / len(suffix_lens)) if suffix_lens else 0.0,
@@ -234,6 +245,9 @@ def build_teacher_prompt_batch(
             sum(p["num_teacher_images"] for p in sample_payloads) / len(sample_payloads)
         )
         if sample_payloads
+        else 0.0,
+        "teacher_response_prefix_len_mean": float(sum(response_prefix_lens) / len(response_prefix_lens))
+        if response_prefix_lens
         else 0.0,
     }
     return out
@@ -259,6 +273,7 @@ def _build_teacher_batch_with_oom_retry(
                             processor,
                             payload["teacher_text"],
                             payload["images"],
+                            response_prefix=payload.get("response_prefix", ""),
                         )
                     )
             return stack_teacher_processor_batches(processor, per_sample_batches)

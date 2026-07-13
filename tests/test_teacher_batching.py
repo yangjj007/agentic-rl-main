@@ -13,6 +13,7 @@ from opsd_utils.teacher_batching import (
     expected_image_feature_count,
     get_teacher_vision_for_sample,
     split_tensor_dict_for_opsd,
+    stack_teacher_vision_for_generate,
     stack_teacher_processor_batches,
     student_batch_num_images_tensor,
     truncate_image_tokens,
@@ -26,11 +27,13 @@ def test_expand_teacher_tensors_compact_to_full_batch():
         "teacher_prompt_ids": torch.zeros(1, 10),
         "teacher_prompt_mask": torch.ones(1, 10, dtype=torch.long),
         "teacher_num_images": torch.tensor([2], dtype=torch.long),
+        "teacher_response_prefix_lens": torch.tensor([17], dtype=torch.long),
         "teacher_pixel_values_list": [torch.zeros(2, 7, 3, 4, 4)],
     }
     expanded = expand_teacher_tensors_to_full_batch(compact, [0], batch_size)
     assert expanded["teacher_prompt_ids"].shape[0] == batch_size
     assert expanded["teacher_num_images"].tolist() == [2] * batch_size
+    assert expanded["teacher_response_prefix_lens"].tolist() == [17] * batch_size
     assert len(expanded["teacher_pixel_values_list"]) == batch_size
 
     chunks = split_tensor_dict_for_opsd(
@@ -42,6 +45,7 @@ def test_expand_teacher_tensors_compact_to_full_batch():
     )
     assert len(chunks) == 4
     assert chunks[-1]["teacher_num_images"].tolist() == [2, 2]
+    assert chunks[-1]["teacher_response_prefix_lens"].tolist() == [17, 17]
 
 
 def test_split_tensor_dict_dual_image_chunks_legacy_stacked():
@@ -107,6 +111,43 @@ def test_get_teacher_vision_for_sample_from_list():
     pv, sz = get_teacher_vision_for_sample(inputs, 1, [2, 2])
     assert pv.shape == (2, 5, 3, 4, 4)
     assert sz.shape == (2, 2)
+
+
+def test_stack_teacher_vision_for_generate_batches_single_image_rows():
+    tensors = {
+        "teacher_pixel_values_list": [
+            torch.zeros(1, 7, 3, 4, 4),
+            torch.ones(1, 7, 3, 4, 4),
+        ],
+        "teacher_image_sizes_list": [
+            torch.tensor([[800, 600]]),
+            torch.tensor([[640, 480]]),
+        ],
+        "teacher_num_images": torch.tensor([1, 1]),
+    }
+
+    pixel_values, image_sizes, batch_num_images = stack_teacher_vision_for_generate(tensors, [0, 1])
+
+    assert pixel_values.shape == (2, 7, 3, 4, 4)
+    assert image_sizes.tolist() == [[800, 600], [640, 480]]
+    assert batch_num_images.tolist() == [1, 1]
+
+
+def test_stack_teacher_vision_for_generate_rejects_mixed_patch_shapes():
+    tensors = {
+        "teacher_pixel_values_list": [
+            torch.zeros(1, 7, 3, 4, 4),
+            torch.ones(1, 5, 3, 4, 4),
+        ],
+        "teacher_num_images": torch.tensor([1, 1]),
+    }
+
+    try:
+        stack_teacher_vision_for_generate(tensors, [0, 1])
+    except ValueError as exc:
+        assert "shape" in str(exc)
+    else:
+        raise AssertionError("mixed patch shapes should force trainer fallback")
 
 
 def test_stack_teacher_processor_batches_keeps_per_sample_pixels():

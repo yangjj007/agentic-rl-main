@@ -650,7 +650,7 @@ bash scripts/train_chartqa_sft.sh
 # or: accelerate launch main_sft.py --config config/config_rlsd_chartqa.py
 ```
 
-Then point RLSD/OPD at the SFT checkpoint via `DYME_PRETRAINED_MODEL` or `MODEL_CONFIG.pretrained_model_path`.
+Then point RLSD/OPD at the SFT checkpoint via `DYME_STUDENT_MODEL` or `MODEL_CONFIG.pretrained_model_path`.
 
 #### Reinforcement Learning (GRPO / RL)
 
@@ -672,6 +672,52 @@ For specific experimental settings such as different model scales or architectur
 
 ```bash
 bash scripts/test/run_opd_deplot_ablation.sh --run --run-id deplot_4epoch_main
+bash scripts/test/run_opd_deplot_ablation.sh --run --run-id deplot_4epoch_va_pcd --variants deplot_no_vs_opd_va,deplot_no_vs_opd_pcd,deplot_no_vs_opd_va_pcd
+```
+
+No-visual PCD staged run:
+
+```bash
+# First run 4 epochs.
+bash scripts/test/run_pcd_no_visual_4epoch.sh
+
+# If the 4-epoch result looks good, continue the same run to a 10-epoch target.
+# This resumes from the latest checkpoint-* in the same output dir and keeps
+# epoch checkpoints from the full run.
+bash scripts/test/run_pcd_no_visual_10epoch.sh
+```
+
+Use `DYME_PCD_RUN_ID=<id>` to isolate a new staged run.
+
+### 6. PCD-OPD Paper Artifacts
+
+Fill `docs/figures/pcd_paper/run_manifest.csv` with the four no-VS runs, then build the non-main-result paper artifacts:
+
+```bash
+python scripts/analysis/pcd_paper_artifacts.py \
+  --manifest docs/figures/pcd_paper/run_manifest.csv \
+  --out-dir docs/figures/pcd_paper \
+  --make all
+```
+
+This generates paper-style Figure 1/4/5/6, Table 1/3/4, CSVs, reports, and `index.html`. Figure 2 is intentionally not generated here.
+
+Recoverability-control dry-run:
+
+```bash
+python scripts/analysis/pcd_probe_controls.py \
+  --manifest docs/figures/pcd_paper/run_manifest.csv \
+  --variant deplot_no_vs_opd_pcd \
+  --modes teacher_only,completion_conditioned,shuffled_completion \
+  --max-samples 512 \
+  --out docs/figures/pcd_paper/table3_recoverability_controls.csv \
+  --dry-run
+```
+
+Preview dashboard:
+
+```bash
+python -m http.server 8060 -d docs/figures/pcd_paper
 ```
 
 ## Evaluation

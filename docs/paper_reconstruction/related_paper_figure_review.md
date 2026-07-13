@@ -1,6 +1,6 @@
 # 训练方法论文行文、实验与图表设计复盘
 
-更新时间：2026-07-01
+更新时间：2026-07-12
 
 本文件按用户反馈重写：移除 DePlot 与 ChartQA 作为“优秀论文样例”的位置。它们是任务/数据/工具背景，不适合作为训练方法论文的写作模板。本文只保留训练方法类论文，用来指导我们的论文结构、相关工作、方法表达和实验图表。
 
@@ -223,3 +223,77 @@ DAPO 的主线很适合作为训练方法论文模板：先指出 naive GRPO 复
 4. 不要把 DePlot/ChartQA 写成核心相关工作。它们是 task/evidence context。
 5. 实验计划应先证明 overall effectiveness，再分析 mechanism，最后讲 cost/reliability。
 
+## 9. CLRC 最邻近方法边界
+
+中文稿现以 Closed-Loop Recoverability Curriculum 为核心。相关工作不能再只写
+“OPD 有 gate”，而应直接比较状态粒度、teacher trust signal 与全局控制闭环。
+
+| Method | Granularity | Teacher trust signal | Multimodal evidence | Learning routes | Global feedback | Teacher budget control |
+|---|---|---|---|---|---|---|
+| DyME | batch/optimization step | student batch correctness state | optional visual supervision | SFT or RLVR | discrete current-step state selection | no |
+| CHORD | global + expert token | training schedule and student probability on expert token | not specific to multimodal evidence | off-policy SFT + on-policy RL | scheduled global coefficient plus token weights | no |
+| GKD | student-generated sequence/token | teacher distribution generally assumed available | task-dependent | on-policy KD, optionally mixed with RL | no realized-route controller | no |
+| RG-OPD | trajectory/sample | verifier reward estimates teacher reliability | not inherently multimodal | reward-gated OPD | reward-weighted teacher trust | no explicit completion-route feedback budget |
+| IW-OPD | token position | accumulated teacher-student discrepancy | not inherently multimodal | position-weighted OPD | no route-level autonomy feedback | no |
+| DOPD | token | privileged teacher/student advantage gap and relative probability | includes VLM experiments but relies on privileged branches | dual token-level distillation | dynamic local routing, no realized GRPO coverage controller | no |
+| TA-OPD | token | teacher corrective mass on the student's current top-K support | not inherently multimodal | retain high-teachability OPD positions | no completion-route or curriculum feedback | no |
+| PW-OPSD | token position / branch | privileged branch viability and sequence position | not inherently multimodal | position-weighted OPSD | no route-level autonomy feedback | no |
+| SFD / Lookahead Group Reward | token branch | next-step teacher confidence under student prefixes | not inherently multimodal | OPD plus lookahead group reward | no teacher-support curriculum | entropy-triggered compute only |
+| GateKD | token / representation | teacher confidence | not inherently multimodal | gated soft, hidden-state, and attention distillation | confidence-modulated closed-loop framing, no realized route occupancy | no |
+| CLRC | completion + global training state | gold-hidden teacher answer verified by RLVR reference plus quality gates | image + DePlot/visual facts; optional oracle hint only in upper bound | GRPO / OPD / fallback | realized global GRPO completion coverage | yes, OPD cap and teacher-support weights |
+
+该表限定论文 novelty：
+
+1. 不把 dynamic weighting、position weighting、reward gating、privileged routing 或 selective OPD 单独称为首次提出。
+2. 主贡献是局部 recoverability learning state 与全局 realized-autonomy feedback 的双时间尺度闭环。
+3. oracle hint 配置只作为 upper bound；no-gold 主方法必须以 leakage metric `0.0` 验证。
+4. 若实验只证明 controller 稳定而未证明 final accuracy/compute 改善，摘要应将其写成机制贡献而非效果结论。
+
+### Recoverability novelty 风险
+
+“不是所有 teacher signal 都可学习”已经不能作为 CLRC 的独立新颖性主张：TA-OPD 明确定义 token teachability，PW-OPSD 分析 privileged branch viability，SFD 工作分析长前缀下 teacher corrective signal 的衰减。因此正文必须避免使用“首次识别可学习 teacher signal”之类表述。
+
+CLRC 尚可验证的差异是一个跨粒度组合命题：
+
+1. 局部判据作用于完整 multimodal completion 的 outcome recoverability，而不是单个 token 的 support overlap、position 或 teacher entropy；
+2. 判据决定 GRPO、OPD、fallback 三种不同优化目标，而不是只对 OPD token 重加权或筛选；
+3. 最终互斥 route counts 形成全局 realized-autonomy feedback，并进一步控制下一步 teacher weight 与 per-prompt budget；
+4. gold-hidden-teacher 设置不把 reference 放入 teacher prompt，但当前 routing verifier 仍使用 RLVR reference；这必须与 oracle answer hint 分栏披露。
+
+这四点必须通过 local-routing、token-selective OPD、controller-state 和分层 gold-access 消融共同证明。GateKD 也说明“closed-loop distillation”这一名称本身不是贡献；CLRC 必须明确其反馈量是 realized route occupancy，而不是 teacher confidence。若 full CLRC 不能优于 TA-OPD/PW-OPSD 风格的简单 selective OPD baseline，则 recoverability curriculum 的 AAAI 级方法 claim 不成立。
+
+## 10. AAAI 图表叙事
+
+建议主文只保留能直接证明核心论点的图表：
+
+- Figure 1：左侧 completion-level recoverability routing，右侧 global autonomy feedback loop。
+- Figure 2：统一 4epoch 下 accuracy 与 teacher generated tokens 的 Pareto 图。
+- Figure 3：GRPO/OPD/SFT routes、controller signal/support 和 task zero-loss 的同步曲线。
+- Figure 4：改变 epoch/batch/data scale 后，fixed-step 与 CLRC 动作发生时学生自主覆盖率的比较。
+- Table 1：带 `Gold access`、teacher evidence、processed count 的主结果。
+- Table 2：local routing、controller state、controller actions 三组正交消融。
+
+图表不把 full-CoT 比例本身画成负向性能。应将输出类型与准确率、截断、parse
+failure 和模板错误交叉分析，避免把“会推理”误判为污染。
+
+## 11. OPD-first 论文定位（2026-07-13）
+
+用户确认论文核心应聚焦 OPD 的引入、有效性与互补性。经近邻审计后，允许与禁止的定位如下。
+
+禁止：
+
+- “首个将 OPD 引入 VLM reasoning”；VOLD、Decomposed OPD 与 VA-OPD 已覆盖。
+- “首次发现 teacher signal 并非都可学习”；TA-OPD、PW-OPSD、SFD 已覆盖。
+- “首次 closed-loop distillation”；GateKD 已使用该表述。
+
+候选主张：
+
+> To our knowledge, this is the first systematic study of on-policy distillation for sub-billion-parameter VLM reasoning under verifiable rewards.
+
+该主张的论文价值不应依赖狭窄的“first”本身，而应由三类证据支撑：
+
+1. **Effectiveness**：统一 4epoch 下，加入 OPD 相对 DyME/no-OPD 显著提升 held-out accuracy；
+2. **Complementarity**：OPD 回收 student-generated wrong states，GRPO 强化已发现解，fallback 稳定完全低信号状态；正交消融证明三者不能被任一单一路线替代；
+3. **Small-model analysis**：说明 sub-1B 学生为何比 2B/3B/7B VLM 更依赖 dense on-policy feedback，并报告 zero-loss、all-wrong、route occupancy 与 teacher compute。
+
+controller 降为使 OPD 随学生自主能力退出的配套机制；除非 state/action 消融和 compute Pareto 均成立，不把 controller 单独写成第一贡献。

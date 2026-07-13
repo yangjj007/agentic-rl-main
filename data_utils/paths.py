@@ -94,6 +94,14 @@ def validate_local_model_dir(path: str, *, role: str = "model") -> str:
 
     HuggingFace repo ids (e.g. ``llava-hf/...``) are returned unchanged.
     """
+    raw = (path or "").strip()
+    expanded = os.path.expanduser(raw)
+    if raw and (raw.startswith("~") or os.path.isabs(expanded)) and not os.path.exists(expanded):
+        raise FileNotFoundError(
+            f"{role} path '{os.path.abspath(expanded)}' does not exist. "
+            f"Set DYME_{role.upper()}_MODEL to a valid local model directory, "
+            "or use a HuggingFace repo id."
+        )
     resolved = resolve_model_path(path)
     if not os.path.isdir(resolved):
         return resolved

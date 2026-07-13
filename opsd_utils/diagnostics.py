@@ -13,6 +13,14 @@ from opsd_utils import debug_log as opsd_debug
 from opsd_utils.vocab_align import align_cross_model_logits
 
 PAREN_TOKEN_ID = 340
+_COT_SECTION_RE = re.compile(
+    r"(?im)^\s*(goal|observation|reasoning|conclusion|answer)\s*[:.,]\s*"
+)
+_COT_SECTION_ORDER = ("goal", "observation", "reasoning", "conclusion", "answer")
+_PARTIAL_COT_SECTION_RE = re.compile(
+    r"(?im)^\s*(goal(?:\s+statement)?|observation|reasoning|conclusion)\b\s*(?::|=|-)?\s*"
+)
+_ANSWER_HEADING_RE = re.compile(r"(?im)^\s*answer\s*[:=]\s*")
 
 # Reuse logits from the OPSD loss path instead of running extra forwards.
 _OPSD_JSD_DETAIL_CAPTURE: dict[str, Any] = {
@@ -356,6 +364,71 @@ def _count_paren_then_eos(
     return count
 
 
+def summarize_template_behavior(completions: Optional[list[str]]) -> dict[str, float]:
+    texts = completions or []
+    if not texts:
+        return {
+            "full_cot_template_rate": 0.0,
+            "partial_cot_template_rate": 0.0,
+            "goal_without_answer_rate": 0.0,
+            "empty_cot_skeleton_rate": 0.0,
+            "malformed_answer_section_rate": 0.0,
+        }
+
+    full_template = 0
+    partial_template = 0
+    goal_without_answer = 0
+    empty_skeleton = 0
+    malformed_answer = 0
+    numeric_answer = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*%?$")
+
+    for text in texts:
+        text = text or ""
+        matches = list(_COT_SECTION_RE.finditer(text))
+        names = tuple(match.group(1).lower() for match in matches)
+        partial_names = {
+            match.group(1).lower().replace(" statement", "")
+            for match in _PARTIAL_COT_SECTION_RE.finditer(text)
+        }
+        has_goal = "goal" in partial_names
+        has_answer = _ANSWER_HEADING_RE.search(text) is not None
+        if has_goal and not has_answer:
+            goal_without_answer += 1
+        if names != _COT_SECTION_ORDER and has_goal and len(partial_names) >= 2:
+            partial_template += 1
+        if names != _COT_SECTION_ORDER:
+            continue
+        full_template += 1
+        sections = {}
+        for idx, match in enumerate(matches):
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+            sections[names[idx]] = text[match.end():end].strip()
+
+        substantive = 0
+        for name in _COT_SECTION_ORDER[:-1]:
+            content = sections.get(name, "")
+            if len(re.sub(r"[^\w\u4e00-\u9fff]+", "", content)) >= 4:
+                substantive += 1
+        if substantive <= 1:
+            empty_skeleton += 1
+
+        answer = sections.get("answer", "").strip()
+        if not answer or (
+            answer[0] in ".,;:"
+            and numeric_answer.fullmatch(answer) is None
+        ):
+            malformed_answer += 1
+
+    n = max(len(texts), 1)
+    return {
+        "full_cot_template_rate": full_template / n,
+        "partial_cot_template_rate": partial_template / n,
+        "goal_without_answer_rate": goal_without_answer / n,
+        "empty_cot_skeleton_rate": empty_skeleton / n,
+        "malformed_answer_section_rate": malformed_answer / n,
+    }
+
+
 def summarize_generate_probe_stats(
     completion_ids: torch.Tensor,
     completion_mask: torch.Tensor,
@@ -406,7 +479,7 @@ def summarize_generate_probe_stats(
             degenerate_repeat_count += 1
     char_repeat_count = _count_char_repeat_samples(completions)
     n = max(completion_ids.size(0), 1)
-    return {
+    stats = {
         "effective_tokens_mean": float(lengths.mean().item()),
         "char_repeat_count": char_repeat_count,
         "one_token_count": int((lengths == 1).sum().item()),
@@ -424,6 +497,8 @@ def summarize_generate_probe_stats(
         "clipped_count": clipped_count,
         "clipped_rate": clipped_count / n,
     }
+    stats.update(summarize_template_behavior(completions))
+    return stats
 
 
 def log_generate_context(

@@ -2,6 +2,14 @@
 
 日期：2026-06-22
 
+> **历史定位说明（2026-07-13）**：本文保留早期研究过程，不再作为论文 claim
+> 的事实源。文中的 `no-gold` 应解释为 **teacher input 不含 gold answer**；当前
+> routing verifier 仍使用 reference，因此规范名称是 **gold-hidden teacher /
+> verifier-available routing**。当前核心创新定位以
+> `docs/paper_reconstruction/chinese_draft.md` 和
+> `docs/paper_reconstruction/claim_evidence_matrix.md` 为准：OPD 是主创新，routing
+> 与 controller 是使 OPD 可靠工作的支撑机制。
+
 这份笔记整理当前项目中 OPD 的算法理解、和 DyME/相关工作的 novelty 边界、需要补充的 related work、可用的 research question 和 motivation 叙事。主体用中文写，必要的专有名词保留英文或中英并列。
 
 ## 1. 当前项目背景
@@ -392,4 +400,3 @@ CHORD/LUFFY 主要通过 weighting 或 off-policy guidance 管理 SFT/RL balance
 中文版：
 
 > 我们提出面向小 VLM 推理的可恢复性感知 OPD。不同于把所有失败 rollout 都回退到 SFT，我们用无答案泄漏的视觉 teacher probe 判断错误 completion 是否可恢复；只有 teacher 能在 no-gold 条件下解出时，才对学生的 on-policy 错误轨迹做 token-level 分布蒸馏，同时保留正确 rollout 的 GRPO 和不可恢复失败的 SFT fallback。
-

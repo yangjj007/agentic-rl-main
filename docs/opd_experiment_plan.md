@@ -1,400 +1,202 @@
-# OPD 低成本实验规划
+# Sub-Billion VLM On-Policy Distillation 实验计划
 
-日期：2026-06-23  
-关联定位笔记：`docs/opd_research_positioning.md`  
-Motivation 日志结果：`docs/opd_motivation_log_results.md`
+更新时间：2026-07-13
 
-这份文档只保留实验思路、motivation 证据链、创新点验证逻辑和最小执行顺序。具体日志提取数值和 Step 1 结果记录放到 `docs/opd_motivation_log_results.md`，避免规划文件变成流水账。
+设计文档：`docs/superpowers/specs/2026-07-12-closed-loop-recoverability-curriculum-paper-design.md`
 
-## 0. 核心研究问题
+统一账本：`docs/paper_reconstruction/experiment_ledger.md`
 
-小 VLM 的失败 rollout 是否应该被一概 SFT 回退？
+## 1. 成功标准
 
-我们的主张是：在可验证任务中，错误 completion 并不都等价。有些错误来自完全不可恢复的状态，应回退 SFT；有些错误发生在“学生已有正确 rollout、但部分 completion 失败”的局部可解区域，可以由 no-gold teacher probe 判断是否 recoverable，并对 teacher-correct wrong completion 施加 OPD token-level 分布监督。
+### 训练方法目标
 
-对应方法定位：
+- 统一 4epoch 预算；
+- gold-hidden teacher 主设置 `teacher/privileged_suffix_has_gold_rate=0.0`，routing verifier 仍可使用 reference；
+- final ChartQA accuracy 目标 `>0.60`；
+- 至少优于统一预算 DyME/gold-hidden fixed schedule；
+- 报告 teacher calls、generated tokens 和 GPU hours。
 
-> Recoverability-aware OPD = correct rollout 走 GRPO；all-wrong 或 teacher-wrong 走 SFT；wrong 但 no-gold teacher 可修复的 completion 走 OPD。
+### 论文目标
 
-## 1. 论文需要支撑的三条证据链
+- 第一优先级证明 OPD 相对 no-OPD 的净收益；
+- 第二优先级证明 OPD 与 GRPO、fallback supervision 的互补性；
+- verifier routing 与 global controller 作为使 OPD 可靠介入和退出的支撑机制分别消融；
+- oracle upper bound 与 gold-hidden-teacher 主结果分栏，并分别披露 verifier reference access。
 
-### 1.1 Motivation：小 VLM 在 DyME/GRPO 类训练中容易退化
+## 2. 当前实验状态
 
-要证明的问题：
-
-- DyME clean fast run 中直接训练信号较早消失：accuracy reward 与 GRPO route 长期接近 0；
-- 训练长期处于 SFT-dominated 状态：SFT route ratio 接近 1；
-- OPD 能在相同 fast budget 后段恢复 answer/format reward，并让更多 completion 进入 GRPO route。
-
-最重要图表：
-
-- Figure B：training health curves。
-- 建议使用直接训练/算法指标：`rewards/accuracy/mean`、`rewards/format/mean`、`reward`、`loss`、`routing/sft_replaced_ratio`、`routing/grpo_on_correct_rate`、`routing/opd_teacher_call_rate`。
-- 横轴按每 10 training steps 分箱取均值，不依赖最后 20 step 摘要。
-
-结果记录位置：`docs/opd_motivation_log_results.md`。
-
-### 1.2 方法创新：OPD 是 recoverability-aware 第三学习状态
-
-要证明的问题：
-
-- OPD 不是“给 DyME 加一个 teacher”；
-- 真实训练中存在三路 routing：SFT / GRPO / OPD；
-- OPD call 只发生在 teacher probe 判断可恢复的错误 completion 上。
-
-最重要图表：
-
-- Figure C：routing stacked area plot。
-- Figure D：method flow diagram。
-
-推荐展示：
+### 正在运行：Oracle CLRC Upper Bound
 
 ```text
-student rollouts
-  -> correct completion -> GRPO
-  -> wrong completion + no-gold teacher correct -> OPD
-  -> all-wrong / teacher wrong -> SFT
+run id: global_grpo_route_full_4epoch_20260712_205549
+variant: deplot_no_vs_opd_pcd_oracle_hint_full_cot_adaptive_supervision
+steps: 592
+train tmux: dyme_grpo_route_full_205549
+monitor tmux: dyme_grpo_route_monitor_205549
 ```
 
-### 1.3 边界与可信度：收益不能来自 gold leakage 或 Visual Supervision 混淆
+该 run 使用 `oracle_hint`，不能作为 gold-hidden-teacher 主结果。训练成功后自动执行 8-GPU final eval。
 
-要证明的问题：
+### 正在运行：Oracle OPD Without Hard Imitation
 
-- 主方法 teacher context 不包含 gold answer；
-- Visual Supervision 版本必须单独标注，不能混入 clean main claim；
-- leaky/gold diagnostic 只能作为反例或上界诊断，不作为正式 baseline。
+```text
+run id: oracle_opd_no_hard_imitation_adaptive_4epoch_20260713_121946
+variant: deplot_no_vs_opd_pcd_oracle_hint_opd_no_hard_imitation_adaptive_supervision
+train tmux: dyme_opd_no_hard_full_121946
+monitor tmux: dyme_opd_no_hard_monitor_121946
+```
 
-需要检查的混淆字段：
+该 run 是对 `0.5120` full-trajectory 负结果的单因素修正：关闭 teacher trajectory
+与 teacher-SFT repair，保留 verifier-routed OPD、GRPO/fallback、effective sampling
+和同一 adaptive controller。在线监控完整五段格式、空模板骨架、异常 answer section，
+并对 hard-imitation signal 采用零容忍。
 
-- `teacher/privileged_suffix_has_gold_rate`
-- `visual/ic_ok_rate`
-- `routing/teacher_probe_candidate_rate`
-- `routing/teacher_probe_correct_rate`
-- `routing/teacher_probe_wrong_rate`
+## 3. P0：必须完成的证据链
 
-## 2. 实验预算原则
+| ID | Experiment | Base config | Unique change | Budget | Health gate | Paper claim |
+|---|---|---|---|---|---|---|
+| P0-E0 | Oracle OPD upper bound | current oracle full-CoT recipe | verifier-routed OPD + adaptive support | 4epoch | last50 routes、all-wrong、clip/degenerate | OPD 在 privileged evidence 下的性能上界 |
+| P0-E1 | Gold-hidden no-OPD | matched base recipe | 禁用 OPD，保留相同 GRPO/fallback、采样和预算 | 4epoch | teacher gold-rate=0 | OPD 净收益的直接对照 |
+| P0-E2 | Gold-hidden unconditional OPD | P0-E1 | 所有 eligible wrong completions 使用 OPD，无 verifier routing/controller | 4epoch | OPD coverage、teacher tokens | OPD 本身有效，但无条件使用可能不可靠 |
+| P0-E3 | Gold-hidden verifier-routed OPD | P0-E2 | 仅 verifier-confirmed wrong completions 使用 OPD，fixed support | 4epoch | teacher precision/coverage funnel | 可靠路由对 OPD 的贡献 |
+| P0-E4 | Gold-hidden full method | P0-E3 | 加入 realized global GRPO adaptive support | 4epoch | gold-rate=0；controller metrics complete | OPD 主方法与最强效果 |
+| P0-E5 | Signal complementarity | matched P0-E4 | OPD-only、GRPO-only、fallback-only、OPD+GRPO、完整三路 | 4epoch 或先 matched-budget screening、关键行 full | final acc、zero-loss、route occupancy | OPD 不能被 GRPO 或 fallback 替代 |
+| P0-E6 | Token-selective OPD baseline | P0-E3 | completion routes 固定，仅将 uniform-token OPD 替换为 token teachability/position-reliability weighting | 4epoch | accepted token coverage、teacher tokens、final acc | 区分 completion routing 与 token reliability 的贡献 |
 
-### Tier 0：零训练日志分析
+### P0-E6 实现候选：Non-Answer Heading-Selective OPD
 
-优先级最高。复用已有 `outputs/test-fast/logs/` 和 `resolved_config.json`，几乎没有计算成本。
+该候选只在当前 no-hard-imitation run 的 final forensic 证明 uniform-token OPD 与
+模板泛化失败相关时启用。它不是对 `Goal/Observation/Reasoning/Conclusion` 输出的
+显式惩罚，也不改变 generation reward：
 
-用途：
+1. 在每个 student-generated prefix 上计算原有 teacher/student divergence；
+2. 若 teacher top token 属于非答案 section heading token 集合，则该位置的 OPD
+   token weight 设为零或较小值；
+3. `Answer` heading、答案内容、普通 reasoning token 与视觉/数值 token 保持原 OPD；
+4. GRPO、fallback、teacher correctness gate、global controller 和 completion route
+   全部保持不变；
+5. 记录 `opd/non_answer_heading_mask_rate`、保留 token 比例与按 token 类别分解的 JSD。
 
-- 形成 motivation 曲线；
-- 检查 DyME collapse 与 OPD 稳定性；
-- 统计 route ratio、teacher probe candidate/correct/wrong；
-- 排查 gold leakage 和 Visual Supervision 混淆。
+这一设计检验 teacher distribution 中“格式先于答案”的局部可靠性，而不是假设
+full-CoT 有害。matched baseline 必须保持相同 completion routes 和 OPD compute；若只
+降低整体 OPD weight，不能把差异归因于 token selection。
 
-### Tier 1：短 run / 500-step ablation
+执行顺序：P0-E0 完成并评估后，先运行 P0-E1 与 P0-E3，建立最关键的
+OPD-vs-no-OPD 因果对照；若 OPD 有净收益，再补 P0-E2 和 P0-E5 解释可靠性与
+互补性，并以 P0-E4 冲击最高分。P0-E6 是 novelty-critical near-neighbor baseline。
+controller state/action 消融只有在 OPD 主效应成立后才占用完整 4epoch 预算。
 
-只用于关键 ablation，不做大规模搜索。
+## 4. P1：OPD 支撑机制、效率与稳健性
 
-优先用于：
+| ID | Experiment | Unique change | Budget | Required output |
+|---|---|---|---|---|
+| P1-E1 | OPD weight only | hard trajectory 固定为零，controller 不改变 cap | 4epoch | final acc + route dynamics |
+| P1-E2 | teacher cap only | weights fixed，仅 cap `8->2` | 4epoch | teacher tokens + final acc |
+| P1-E3 | joint OPD actions | hard trajectory 固定为零，联合控制 OPD weight 与 cap | 4epoch | Pareto point |
+| P1-E4 | changed effective batch | batch/accumulation 改变 | matched 4epoch | action trigger autonomy state |
+| P1-E5 | changed data scale | train subset/full scale | matched updates | fixed-step vs CLRC robustness |
+| P1-E6 | non-monotonic hysteresis | mastery 可回退但带滞回 | matched diagnostic/full if promising | regression recovery |
+| P1-E7 | controller state | mixed/zero proxy vs global GRPO route | matched diagnostic + promising rows full | state-variable contribution |
 
-- no-gold probe vs no-probe；
-- OPD only vs OPD + teacher trajectory；
-- OPD without VS vs OPD + VS。
+## 5. P2：泛化和行为分析
 
-### Tier 2：4 epoch fast baseline
+- 另一个可验证视觉推理任务；
+- teacher evidence source 消融：format only、DePlot、visual facts；
+- full reasoning 与 concise reasoning 的 accuracy-conditioned 分析；
+- recoverable/unrecoverable qualitative cases。
 
-用于 main table 和核心图。保持 `scripts/test/` 的训练规模，不主动扩大。
+P2 不应在 ChartQA 主效果和 P0 因果链完成前占用主要训练预算。
 
-## 3. 实验矩阵
+## 6. 运行门槛
 
-| ID | 目的 | 方法/对照 | 训练规模 | 优先级 | 论文产物 |
-| --- | --- | --- | --- | --- | --- |
-| E0 | 主结果对比 | Base / SFT / DyME / OPD | 已有 checkpoint 或 4 epoch fast | P0 | main table + bar chart |
-| E1 | motivation：退化与稳定性 | DyME vs OPD training health | 复用日志 | P0 | Figure B |
-| E2 | 三路路由机制 | OPD route statistics | 复用日志 | P0 | Figure C/D |
-| E3 | teacher probe 必要性 | no-gold probe vs no-probe | 500 steps 起 | P1 | Figure E |
-| E4 | loss 组件拆分 | OPD only vs OPD + teacher trajectory | 500 steps 起 | P1 | ablation table |
-| E5 | VS 混淆控制 | OPD without VS vs OPD + VS | 复用/短 run | P1 | controlled table |
-| E6 | SFT 平台期/模板化 | SFT 1/2/4 epoch | 复用或短 run | P2 | epoch curve |
-| E7 | 质性样例 | SFT/DyME/OPD outputs | eval outputs | P2 | qualitative figure |
+### Smoke
 
-P0 是最小论文证据链。P1 用于增强 novelty 与排除替代解释。P2 用于 introduction/motivation 补充。
+- 8-GPU 4 steps；
+- 所有 rank 正常退出；
+- `global_signal/*` 与 `adaptive/signal_*` 存在；
+- step `t` snapshot 不影响同一步；
+- 无 OOM/NCCL/NaN。
 
-## 4. E0：主结果对比
+### Early window
 
-核心问题：在同等 fast training budget 下，OPD 是否比 SFT 和 DyME 有更高 ChartQA held-out performance？
+早期 clip collapse 不能单独停止，因为历史 `0.5800` run 在 step 8–20 也出现该现象。至少比较：
 
-推荐命令：
+- steps 21–30；
+- steps 31–40；
+- steps 41–50；
+- steps 51–70。
+
+若到 step 70 仍同时满足 accuracy≈0、global GRPO≈0、degenerate>0.9、clip>0.9，且明显差于历史同窗口，则停止并研究。
+
+### Full-run health
+
+目标窗口：
+
+- last50 global GRPO route `>0.30`；
+- last50 SFT route `<0.30`；
+- task all-wrong 明显低于早期；
+- leakage 与 privileged tags 符合实验角色；
+- controller actions 有实际变化但不在低 autonomy 时提前衰减。
+
+这些是诊断目标，不替代 final eval。
+
+## 7. Eval 协议
+
+训练完成后优先 8-GPU：
 
 ```bash
-CHECKPOINT_DIR=outputs/test-fast/sft/final_checkpoint EXPERIMENT=sft \
-  bash scripts/run_eval_ablation.sh
-
-CHECKPOINT_DIR=outputs/test-fast/dyme/final_checkpoint EXPERIMENT=dyme \
-  bash scripts/run_eval_ablation.sh
-
-CHECKPOINT_DIR=outputs/test-fast/opd-7b-ds/final_checkpoint EXPERIMENT=opd \
-  bash scripts/run_eval_ablation.sh
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+DYME_EVAL_BATCH_SIZE=1 \
+/home/deepseek_VG/.conda/envs/dyme/bin/python -m accelerate.commands.launch \
+  --config_file scripts/test/accelerate_single_gpu_no_deepspeed.yaml \
+  --num_processes 8 \
+  -m eval.eval_chartqa \
+  --model_path <run>/<variant>/final_checkpoint
 ```
 
-图表建议：
-
-- Figure A：Base / SFT / DyME / OPD bar chart。
-- Table A：checkpoint、epoch、Rel-Corr、训练时间、teacher-probe 额外开销。
-
-当前备注：主结果用户已有，本轮不重复 eval。
-
-## 5. E1：Motivation 训练健康曲线
-
-核心问题：DyME 是否出现 collapse，OPD 是否改善训练健康？
-
-解析命令：
-
-```bash
-python3 scripts/analyze_opd_routes.py \
-  --compare DyME=outputs/test-fast/logs/train_test_dyme_20260621_112902.log \
-            OPD=outputs/test-fast/logs/train_test_opd_20260621_212323.log \
-  --step-interval 10 \
-  --csv-out docs/figures/opd_motivation_direct_metrics_10step.csv \
-  --plot-out docs/figures/opd_motivation_direct_metrics_10step.png
-```
-
-推荐图：
-
-- task/format/total reward vs step；
-- SFT / GRPO / OPD route ratio vs step；
-- training loss vs step。
-
-结果记录位置：`docs/opd_motivation_log_results.md`。
-
-## 6. E2：Recoverability-Aware 三路路由
-
-核心问题：OPD 是否真实形成 GRPO / OPD / SFT 三种学习状态？
-
-关键字段：
-
-- `routing/sft_replaced_ratio`
-- `routing/grpo_on_correct_rate`
-- `routing/opd_teacher_call_rate`
-- `routing/teacher_probe_candidate_rate`
-- `routing/teacher_probe_correct_rate`
-- `routing/teacher_probe_wrong_rate`
-
-推荐图：
-
-- stacked area：SFT / GRPO / OPD；
-- 折线：teacher-probe candidate/correct；
-- method flow diagram：解释 route rule。
-
-## 7. E3：No-Gold Teacher Probe Ablation
-
-核心问题：no-gold teacher probe 是否必要？如果关闭 probe，让 wrong completions 直接走 OPD，是否会带来错误蒸馏或不稳定？
-
-最小对照：
-
-1. **no-gold probe OPD**：当前方法。
-2. **no-probe OPD**：关闭 teacher probe。
-3. **leaky/gold diagnostic**：仅作 leakage diagnostic，不进入主方法 claim。
-
-已准备脚本：
-
-```bash
-# 不启动训练，只检查配置、已有日志字段和 dry-run 命令
-bash scripts/test/smoke_opd_probe_ablation.sh
-
-# 默认 dry-run，不启动训练
-bash scripts/test/run_opd_probe_ablation.sh --dry-run --max-steps 500
-
-# GPU 空闲后再跑
-bash scripts/test/run_opd_probe_ablation.sh --run --max-steps 500
-```
-
-脚本设计原则：
-
-- 关闭 Visual Supervision；
-- 关闭 teacher trajectory；
-- 关闭 DePlot；
-- 保持 no-gold teacher context；
-- 日志必须包含 health、routing、teacher-probe 和 `loss/opsd` 字段。
-
-推荐图：
-
-- Figure E 左图：no-gold probe vs no-probe 的 final 10-step-bin accuracy reward 或 held-out Rel-Corr；
-- Figure E 右图：SFT / GRPO / OPD route ratio 与 OPD call rate；
-- caption 强调 no-gold probe 是 recoverability gate，而不是 gold answer leakage。
-
-## 8. E4/E5：组件与混淆控制
-
-### E4：OPD loss vs teacher trajectory
-
-命令：
-
-```bash
-DYME_TRAIN_MAX_STEPS=500 DYME_TEACHER_TRAJECTORY=0 bash scripts/train_opd_7b_dyme_probe.sh
-DYME_TRAIN_MAX_STEPS=500 DYME_TEACHER_TRAJECTORY=1 bash scripts/train_opd_7b_dyme_probe.sh
-```
-
-目的：区分收益来自 student wrong trajectory 上的 OPD，还是 teacher-generated trajectory FKL。
-
-### E5：Visual Supervision control
-
-必须单独报告：
-
-- OPD without VS：clean main；
-- OPD + VS：diagnostic/control，不混入 clean claim。
-
-表格列必须包含：
-
-- Visual Supervision 是否开启；
-- teacher trajectory 是否开启；
-- teacher context 是否包含 gold；
-- `teacher/privileged_suffix_has_gold_rate`。
-
-### E5b：4epoch DePlot OPD 消融
-
-目标：在固定 4epoch fast budget 下，分离 DePlot evidence、Visual Supervision 和 OPD loss 形式的影响。
-
-统一脚本：
-
-```bash
-# 默认 dry-run，不启动训练
-bash scripts/test/run_opd_deplot_ablation.sh --dry-run
-
-# 至少 2 step 的冒烟测试，覆盖第 2 个 training step 后的日志字段
-bash scripts/test/run_opd_deplot_ablation.sh --smoke --smoke-steps 2 --run-id smoke_check
-
-# GPU 空闲后顺序运行三个 4epoch 变体
-bash scripts/test/run_opd_deplot_ablation.sh --run --run-id deplot_4epoch_main
-```
-
-三个变体：
-
-| variant | DePlot evidence | Visual Supervision | OPD token loss | 说明 |
-| --- | --- | --- | --- | --- |
-| `deplot_no_vs_opd` | 开 | 关 | `jsd` | 与已有 no-DePlot 4epoch 权重对照，观察只加 DePlot evidence 的影响 |
-| `deplot_vs_opd` | 开 | 开 | `jsd` | 单独观察 Visual Supervision 带来的增益或干扰 |
-| `deplot_vs_srkl` | 开 | 开 | `srkl` | 在相同 VS/DePlot 设置下比较普通 OPD loss 与 SRKL |
-
-注意：这里“普通 OPD”指 token-level divergence 使用 `jsd`；GRPO 主训练仍由 `DYME_GRPO_WEIGHT=1.0` 控制，不能把 `DYME_OPSD_LOSS_TYPE` 写成 `grpo`。
-
-关键配置必须固定：
-
-- `DYME_NUM_TRAIN_EPOCHS=4`
-- `DYME_OPSD_PROVIDERS=format_only,visual_facts_deplot`
-- `DYME_TEACHER_PROBE_PROVIDERS=format_only,visual_facts_deplot`
-- `DYME_TEACHER_PROBE_MAX_NEW_TOKENS=96`
-- `DYME_TEACHER_TRAJ_MAX_NEW_TOKENS=128`
-- `DYME_DEPLOT_ENABLED=0`，只使用已写入数据集的 DePlot 结果，不在训练时重新生成；
-- `DYME_OPSD_HANG_DEBUG=0`、`DYME_OPSD_HANG_FORCE=0`。
-
-日志必须包含：
-
-- 启动配置：`[DyME-RUN-CONFIG]`
-- 数据状态：`[DyME-DATA]`，需要确认 `deplot_real_rate=1.0` 且 placeholder/missing 为 0；
-- `routing/teacher_probe_skipped_no_evidence_rate`
-- `routing/teacher_probe_deplot_real_rate`
-- `routing/teacher_probe_visual_fact_used_rate`
-- `teacher_probe/generated_tokens_mean`
-- `teacher_probe/generated_tokens_p95`
-- `teacher_probe/clipped_rate`
-- `loss/opsd`
-
-## 9. 建议的最小执行顺序
-
-### Step 1：零训练日志图
-
-目标：快速形成 motivation 证据。
-
-输入：
-
-- DyME clean fast log；
-- OPD no-gold clean fast log。
-
-产物：
-
-- Figure B：training health curves；
-- Figure C：routing stacked area plot；
-- `docs/opd_motivation_log_results.md` 中的日志结果表。
-
-### Step 2：确认 4 epoch main baselines
-
-目标：得到主结果表。
-
-当前状态：用户已有主结果，本轮不重复训练或 eval。
-
-产物：
-
-- Figure A；
-- Table A。
-
-### Step 3：teacher-probe 最小消融
-
-目标：证明 recoverability gate 必要。
-
-先做：
-
-```bash
-bash scripts/test/smoke_opd_probe_ablation.sh
-bash scripts/test/run_opd_probe_ablation.sh --dry-run --max-steps 500
-```
-
-GPU 空闲后再做：
-
-```bash
-bash scripts/test/run_opd_probe_ablation.sh --run --max-steps 500
-```
-
-产物：
-
-- Figure E；
-- 一张简洁 ablation table。
-
-### Step 3b：4epoch DePlot OPD 控制消融
-
-目标：在固定 4epoch budget 下，检查 DePlot evidence、Visual Supervision 和 `srkl` loss 的影响。
-
-先做：
-
-```bash
-bash scripts/test/run_opd_deplot_ablation.sh --dry-run
-bash scripts/test/run_opd_deplot_ablation.sh --smoke --smoke-steps 2 --run-id smoke_check
-```
-
-GPU 空闲后再做：
-
-```bash
-bash scripts/test/run_opd_deplot_ablation.sh --run --run-id deplot_4epoch_main
-```
-
-产物：
-
-- Table B：三变体控制消融；
-- 简洁折线图：每 10 step 的 `reward`、`rewards/accuracy/mean`、`routing/grpo_on_correct_rate`、`routing/opd_teacher_call_rate`；
-- 一张日志诊断小表：DePlot real rate、teacher probe skipped no evidence rate、visual fact used rate。
-
-### Step 4：质性样例
-
-目标：补充 2-3 个直观样例。
-
-展示：
-
-- SFT 模板化但视觉值错误；
-- DyME 退化或截断；
-- OPD 输出短、格式稳定、答案正确。
-
-## 10. 推荐论文图表
-
-| 图表 | 放置位置 | 目的 | 数据来源 | 必要性 |
-| --- | --- | --- | --- | --- |
-| Figure A：主结果 bar chart | Experiments | final score | held-out eval | 必须 |
-| Figure B：direct training curves | Introduction / Motivation | DyME direct training signal disappears; OPD recovers reward/GRPO signal | training logs | 必须 |
-| Figure C：routing stacked area | Method / Analysis | 三路路由真实发生 | OPD logs | 必须 |
-| Figure D：route flow diagram | Method | 解释算法 | 手工图 | 必须 |
-| Figure E：teacher probe ablation | Ablation | recoverability gate 必要性 | 500-step ablation | 建议 |
-| Table A：主结果表 | Experiments | 数字结果 | eval | 必须 |
-| Table B：component/control ablation | Ablation | 排除替代解释 | short run/logs | 建议 |
-| Figure G：qualitative examples | Analysis | 输出形态改善 | eval predictions | 可选 |
-
-## 11. 写作可用结论模板
-
-如果结果稳定，可以写成：
-
-> Under the same 4-epoch fast-training budget, clean DyME quickly enters an SFT-dominated regime: accuracy reward and GRPO routing remain near zero after the early stage. In contrast, clean no-gold OPD shows a late-stage recovery in accuracy reward, format reward, and GRPO routing, while SFT fallback decreases. Routing statistics further show that OPD is not a uniform teacher-distillation add-on: unrecoverable failures still fall back to SFT, correct rollouts use GRPO, and only teacher-recoverable wrong completions activate OPD.
-
-中文版本：
-
-> 在相同 4 epoch fast-training budget 下，clean DyME 较早进入 SFT-dominated 训练状态：accuracy reward 和 GRPO route 在早期之后长期接近 0。相比之下，clean no-gold OPD 在后段恢复 accuracy reward、format reward 和 GRPO route，同时 SFT fallback 下降。路由统计进一步说明，OPD 不是简单添加 teacher distillation：不可恢复失败仍回退 SFT，正确 rollout 仍使用 GRPO，只有 teacher 可恢复的错误 completion 才触发 OPD。
+快速迭代可接受 `2496/2500`，但正式主表优先补齐 `2500/2500`。OOM/traceback 行不得作为结果。
+
+Final eval 同时输出 `Template behavior counts`：full/partial CoT template、
+Goal-without-Answer、empty skeleton 与 malformed Answer。`summary.csv` 保留该字段，
+用于区分有内容的 full-CoT 与固定模板污染；这些诊断不改变答案抽取或 accuracy scoring。
+
+## 8. 低于 0.60 的迭代规则
+
+1. 先做训练/评估 failure taxonomy，不同时改变多个机制。
+2. 若 global GRPO 长期为 0，优先研究 generation/LR/reward task signal，而不是继续衰减 teacher。
+3. 若 GRPO 上升但 eval 不升，检查格式模板、answer parse、teacher target 和 train/eval mismatch。
+4. 若 oracle CLRC 超过 baseline 而 gold-hidden-teacher 设置不升，优先提升 evidence/recoverability estimator，而不是宣称 controller 已解决问题。
+5. 每轮先 TDD、4-step smoke、健康窗口，再放行 4epoch。
+
+### 8.1 下一轮只允许由证据选择一个主干预
+
+| Final forensic | Primary intervention | Changes explicitly held fixed |
+|---|---|---|
+| global GRPO coverage 低且 teacher-correct 高 | 改善学生探索/任务梯度，例如 generation entropy、LR 或 advantage construction | recoverability probe、target format、controller mapping |
+| global GRPO coverage 上升但 eval 不升 | 检查 answer extraction、reasoning/answer target mismatch 和错误模板条件概率 | controller state 与 teacher budget |
+| oracle CLRC 有效、gold-hidden teacher precision/coverage 低 | 改进 gold-hidden visual evidence 与 recoverability quality gate | global controller、optimization recipe |
+| teacher precision 高但 OPD route 无收益 | 检查 token-position reliability、teacher/student state mismatch 与 OPD divergence | evidence source、GRPO objective |
+| partial Goal-without-Answer drift 高、但完整模板尚未塌缩 | 比较 token-selective/answer-bearing-position OPD 与统一 token OPD；优先降低结构 token 权重而非整体关闭 OPD | teacher correctness gate、GRPO/fallback、controller state |
+| 低 GRPO 与最大 OPD support 长期共存 | 检查是否为 OPD token reliability 导致的正反馈；保持单一 controller signal，先增加局部 token gate | controller EMA/target、teacher budget、GRPO objective |
+| controller 很少产生动作变化 | 调整 target/calibration 或采用带滞回的可逆控制 | local router 与 teacher target |
+
+每次完整 4epoch run 只选择表中一行作为主因果干预；其余变化仅限修复已验证的实现错误。这样才能把超过 `0.60` 的 recipe 转化为可归因的论文证据。
+
+### 8.2 OPD 主张准入门槛
+
+只有同时满足以下条件，论文才能把 OPD 写成已验证的核心创新：
+
+1. matched 4epoch 的 verifier-routed OPD 明确优于 no-OPD；
+2. unconditional OPD 不优于或弱于 verifier-routed OPD，证明收益不只是额外 teacher compute；
+3. 完整联合训练优于 OPD-only、GRPO-only 与 fallback-only 中的最强者，支持互补性；
+4. 效果至少不低于统一预算 DyME，并以有效 ChartQA `summary.csv` 为准；
+5. 所有比较披露 teacher input gold access、routing verifier reference access 和 teacher tokens。
+
+## 9. 论文硬约束
+
+- gold-hidden-teacher effectiveness 只能由 teacher prompt gold-rate=0 的完整 run 支持；这不等于 routing verifier 不使用 reference；
+- 主表必须分别披露 `Teacher sees gold` 和 `Verifier uses reference`；
+- `>0.60` 只能由有效 eval summary 支持；
+- full-CoT 不按比例直接惩罚；
+- 所有主表行披露 Teacher sees gold、Verifier uses reference、Evidence、Epoch、Processed；
+- 同一消融只改变一个因素。

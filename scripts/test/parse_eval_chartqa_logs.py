@@ -19,6 +19,7 @@ def parse_log(path: Path) -> dict[str, str]:
     acc = re.findall(r"Current Global Mean Accuracy:\s*([0-9.]+)", text)
     processed = re.findall(r"Global samples processed:\s*(\d+)\s*/\s*(\d+)", text)
     output_types = re.findall(r"Output type counts:\s*(\{[^\n]*\})", text)
+    template_behavior = re.findall(r"Template behavior counts:\s*(\{[^\n]*\})", text)
     status = re.findall(r"\[eval-exit\].*status=(\d+)", text)
     errors = []
     for pattern in ("Traceback", "CUDA out of memory", "RuntimeError", "Failed to load dataset"):
@@ -30,6 +31,7 @@ def parse_log(path: Path) -> dict[str, str]:
         "processed": processed[-1][0] if processed else "",
         "total": processed[-1][1] if processed else "",
         "output_types": output_types[-1] if output_types else "",
+        "template_behavior": template_behavior[-1] if template_behavior else "",
         "exit_status": status[-1] if status else "",
         "errors": ";".join(errors),
         "log_path": str(path),
@@ -44,7 +46,17 @@ def main() -> int:
     summary_csv = Path(sys.argv[2])
     rows = [parse_log(path) for path in sorted(log_dir.glob("*.log"), key=lambda p: _checkpoint_step(p.stem))]
     summary_csv.parent.mkdir(parents=True, exist_ok=True)
-    fields = ["label", "accuracy", "processed", "total", "exit_status", "errors", "output_types", "log_path"]
+    fields = [
+        "label",
+        "accuracy",
+        "processed",
+        "total",
+        "exit_status",
+        "errors",
+        "output_types",
+        "template_behavior",
+        "log_path",
+    ]
     with summary_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()

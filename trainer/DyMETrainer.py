@@ -67,18 +67,65 @@ from reward_utils.compute_rewards import (
     refine_context_in_parallel,
     refine_context_sequential,
 )
+from reward_utils.eval_format_reward import score_eval_format_rewards
+from reward_utils.perception_reward import (
+    score_image_teacher_perception_rewards,
+    score_perception_rewards,
+)
 from data_utils.chart.evaluator import eval_one_chart, eval_teacher_probe_chart
 
-from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, DEFAULT_OPSD_CONFIG
+from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, MODE_SKIP, DEFAULT_OPSD_CONFIG
+from opsd_utils.chart_cot_quality_gate import (
+    ChartCoTQualityGateConfig,
+    append_quality_sample_records,
+    evaluate_teacher_trajectory_quality,
+)
+from opsd_utils.adaptive_supervision import (
+    AdaptiveSupervisionConfig,
+    AdaptiveSupervisionController,
+    AdaptiveSupervisionState,
+)
+from opsd_utils.global_training_signal import (
+    GlobalTrainingSignalCounts,
+    GlobalTrainingSignalSnapshot,
+    counts_from_local_batch,
+    snapshot_from_counts,
+)
+from opsd_utils.dynamic_trigger_monitor import DynamicTriggerConfig, DynamicTriggerMonitor
+from opsd_utils.effective_group_filter import (
+    EffectiveGroupFilterConfig,
+    apply_effective_group_filter_to_routes,
+    compute_effective_group_keep_mask,
+)
 from opsd_utils.indexing import source_row_index
 from opsd_utils.leakage import completion_has_leakage_pattern
-from opsd_utils.mode_router import route_prompt_modes, route_completion_modes
+from opsd_utils.mode_router import (
+    route_prompt_modes,
+    route_completion_modes,
+    teacher_probe_route_confirmed,
+)
 from opsd_utils.recoverability import estimate_recoverable_flags
 from opsd_utils.prompt_builder import build_teacher_prompt_batch
 from opsd_utils.privileged.providers import teacher_probe_evidence_status
 from opsd_utils.opsd_loss import compute_vlm_opsd_loss_masked_batch, slice_student_completion_logits
 from opsd_utils.adaptive_weight import effective_opsd_weight
-from opsd_utils.sft_targets import build_online_sft_targets
+from opsd_utils.positive_replay import PositiveReplayBuffer, PositiveReplayConfig
+from opsd_utils.rollout_replay import RolloutReplayBuffer, RolloutReplayConfig, stack_optional_compatible_tensors
+from opsd_utils.signal_aware_routing import (
+    CompletionQuality,
+    apply_opd_route_cap,
+    apply_signal_aware_routing,
+    is_table_spam_completion,
+    local_teacher_traj_indices,
+)
+from opsd_utils.teacher_sft_repair import (
+    apply_teacher_sft_repair_routing,
+    build_teacher_sft_repair_target,
+    sanitize_teacher_sft_text,
+    teacher_sft_repair_advantages,
+)
+from opsd_utils.teacher_traj_schedule import effective_linear_weight, effective_teacher_traj_weight
+from opsd_utils.phase_schedule import boundary_reached, training_progress
 from opsd_utils.teacher_probe_log import append_teacher_probe_record, build_teacher_probe_record
 from opsd_utils.deepspeed_utils import (
     deepspeed_requires_single_student_forward,
@@ -199,6 +246,133 @@ class RepeatSampler(Sampler):
         indexes = [chunk for chunk in indexes if len(chunk) == self.batch_size]
 
         for chunk in indexes:
+            for _ in range(self.repeat_count):
+                for index in chunk:
+                    for _ in range(self.mini_repeat_count):
+                        yield index
+
+    def __len__(self) -> int:
+        return self.num_samples * self.mini_repeat_count * self.repeat_count
+
+
+class DynamicSignalRepeatSampler(Sampler):
+    """Repeat sampler with mutable prompt weights from recent training signal."""
+
+    def __init__(
+        self,
+        data_source: Sized,
+        mini_repeat_count: int,
+        batch_size: int = 1,
+        repeat_count: int = 1,
+        shuffle: bool = True,
+        seed: Optional[int] = None,
+        after_step: int = 0,
+        mixed_weight: float = 4.0,
+        all_wrong_weight: float = 1.0,
+        all_correct_weight: float = 0.7,
+        unknown_weight: float = 1.0,
+        reward_std_bonus: float = 2.0,
+        schedule_mode: str = "step",
+        start_progress: float = 0.5,
+        always_active: bool = False,
+    ):
+        self.data_source = data_source
+        self.mini_repeat_count = mini_repeat_count
+        self.batch_size = batch_size
+        self.repeat_count = repeat_count
+        self.num_samples = len(data_source)
+        self.shuffle = shuffle
+        self.seed = seed
+        self.after_step = max(0, int(after_step))
+        self.mixed_weight = float(mixed_weight)
+        self.all_wrong_weight = float(all_wrong_weight)
+        self.all_correct_weight = float(all_correct_weight)
+        self.unknown_weight = float(unknown_weight)
+        self.reward_std_bonus = float(reward_std_bonus)
+        self.schedule_mode = str(schedule_mode or "step").lower()
+        self.start_progress = float(start_progress)
+        self.always_active = bool(always_active)
+        self.current_step = 0
+        self.max_steps: int | None = None
+        self.prompt_weights = [max(self.unknown_weight, 1e-6)] * self.num_samples
+        self.prompt_states = ["unknown"] * self.num_samples
+        self.generator = torch.Generator()
+        if seed is not None:
+            self.generator.manual_seed(seed)
+
+    @property
+    def enabled_for_step(self) -> bool:
+        if self.always_active:
+            return True
+        from opsd_utils.phase_schedule import boundary_reached
+
+        return boundary_reached(
+            self.current_step,
+            self.max_steps,
+            mode=self.schedule_mode,
+            step_boundary=self.after_step,
+            progress_boundary=self.start_progress,
+        )
+
+    def set_step(self, step: int, max_steps: int | None = None) -> None:
+        self.current_step = int(step)
+        self.max_steps = int(max_steps) if max_steps is not None else None
+
+    def update_prompt_signal(
+        self,
+        *,
+        dataset_index: int,
+        correct_count: int,
+        num_generations: int,
+        reward_std: float,
+    ) -> None:
+        idx = int(dataset_index)
+        if idx < 0 or idx >= self.num_samples:
+            return
+        correct = int(correct_count)
+        total = max(int(num_generations), 1)
+        std_bonus = 1.0 + self.reward_std_bonus * max(0.0, min(float(reward_std), 0.5))
+        if correct <= 0:
+            state = "all_wrong"
+            weight = self.all_wrong_weight
+        elif correct >= total:
+            state = "all_correct"
+            weight = self.all_correct_weight
+        else:
+            state = "mixed"
+            weight = self.mixed_weight * std_bonus
+        self.prompt_states[idx] = state
+        self.prompt_weights[idx] = max(float(weight), 1e-6)
+
+    def _static_chunks(self) -> list[list[int]]:
+        if self.shuffle:
+            indexes = torch.randperm(self.num_samples, generator=self.generator).tolist()
+        else:
+            indexes = list(range(self.num_samples))
+        chunks = [indexes[i : i + self.batch_size] for i in range(0, len(indexes), self.batch_size)]
+        return [chunk for chunk in chunks if len(chunk) == self.batch_size]
+
+    def _sample_dynamic_chunk(self) -> list[int]:
+        weights = torch.tensor(self.prompt_weights, dtype=torch.float)
+        if not torch.isfinite(weights).all() or float(weights.sum().item()) <= 0:
+            weights = torch.ones(self.num_samples, dtype=torch.float)
+        replacement = self.batch_size > self.num_samples
+        sampled = torch.multinomial(
+            weights,
+            num_samples=self.batch_size,
+            replacement=replacement,
+            generator=self.generator,
+        )
+        return sampled.tolist()
+
+    def __iter__(self):
+        num_chunks = self.num_samples // max(self.batch_size, 1)
+        static_chunks = self._static_chunks()
+        for chunk_idx in range(num_chunks):
+            if self.enabled_for_step:
+                chunk = self._sample_dynamic_chunk()
+            else:
+                chunk = static_chunks[chunk_idx]
             for _ in range(self.repeat_count):
                 for index in chunk:
                     for _ in range(self.mini_repeat_count):
@@ -329,6 +503,28 @@ class DyMETrainer(Trainer):
         self._last_visual_batch_stats: dict[str, Any] = {}
         self._teacher_vocab_checked = False
         self._teacher_probe_preview_logged = False
+        self._teacher_sft_repaired_prompt_keys: set[str] = set()
+        self._effective_signal_sampler: DynamicSignalRepeatSampler | None = None
+        self._positive_replay_buffer: PositiveReplayBuffer | None = None
+        self._rollout_replay_buffer: RolloutReplayBuffer | None = None
+        self._init_adaptive_supervision_controller()
+        dynamic_cfg = self.opsd_config.get("dynamic_trigger_monitor") or {}
+        self._dynamic_trigger_monitor = (
+            DynamicTriggerMonitor(
+                DynamicTriggerConfig(
+                    ema_alpha=float(dynamic_cfg.get("ema_alpha", 0.10)),
+                    min_progress=float(dynamic_cfg.get("min_progress", 0.20)),
+                    patience_steps=int(dynamic_cfg.get("patience_steps", 20)),
+                    sampling_mixed_max=float(dynamic_cfg.get("sampling_mixed_max", 0.20)),
+                    sampling_zero_loss_min=float(dynamic_cfg.get("sampling_zero_loss_min", 0.70)),
+                    rl_mixed_min=float(dynamic_cfg.get("rl_mixed_min", 0.30)),
+                    rl_zero_loss_max=float(dynamic_cfg.get("rl_zero_loss_max", 0.30)),
+                )
+            )
+            if bool(dynamic_cfg.get("enabled", False))
+            else None
+        )
+        self._dynamic_trigger_last_step: int | None = None
         self._last_training_phase: Optional[str] = None
         self._perf_timing_enabled = os.environ.get("DYME_PERF_TIMING", "0").strip().lower() not in (
             "",
@@ -480,6 +676,16 @@ class DyMETrainer(Trainer):
         # self.model_accepts_loss_kwargs to False to enable scaling.
         self.model_accepts_loss_kwargs = False
         self.processing_func = processing_func
+        replay_cfg = PositiveReplayConfig.from_mapping(self.opsd_config.get("positive_replay"))
+        self._positive_replay_buffer = PositiveReplayBuffer(
+            replay_cfg,
+            process_index=getattr(self.accelerator, "process_index", 0),
+        )
+        rollout_replay_cfg = RolloutReplayConfig.from_mapping(self.opsd_config.get("rollout_replay"))
+        self._rollout_replay_buffer = RolloutReplayBuffer(
+            rollout_replay_cfg,
+            process_index=getattr(self.accelerator, "process_index", 0),
+        )
 
         debug_cfg = self.opsd_config.get("debug", {})
         health_cfg = debug_cfg.get("health_monitor", {})
@@ -582,6 +788,27 @@ class DyMETrainer(Trainer):
             * self.accelerator.num_processes
             * self.args.gradient_accumulation_steps
         )
+        effective_cfg = self.opsd_config.get("effective_sampling") or {}
+        if bool(effective_cfg.get("enabled", False)):
+            sampler = DynamicSignalRepeatSampler(
+                data_source=self.train_dataset,
+                mini_repeat_count=self.num_generations,
+                batch_size=effective_batch_size // self.num_generations,
+                repeat_count=self.num_iterations * self.args.gradient_accumulation_steps,
+                shuffle=self.shuffle_dataset,
+                seed=self.args.seed,
+                after_step=int(effective_cfg.get("after_step", 294) or 294),
+                schedule_mode=str(effective_cfg.get("schedule_mode", "step") or "step"),
+                start_progress=float(effective_cfg.get("start_progress", 0.5)),
+                mixed_weight=float(effective_cfg.get("mixed_weight", 4.0) or 4.0),
+                all_wrong_weight=float(effective_cfg.get("all_wrong_weight", 1.0) or 1.0),
+                all_correct_weight=float(effective_cfg.get("all_correct_weight", 0.7) or 0.7),
+                unknown_weight=float(effective_cfg.get("unknown_weight", 1.0) or 1.0),
+                reward_std_bonus=float(effective_cfg.get("reward_std_bonus", 2.0) or 2.0),
+                always_active=self._adaptive_supervision_controller is not None,
+            )
+            self._effective_signal_sampler = sampler
+            return sampler
         return RepeatSampler(
             data_source=self.train_dataset,
             mini_repeat_count=self.num_generations,
@@ -746,6 +973,65 @@ class DyMETrainer(Trainer):
                     sft_cold_start_frac=self.opsd_config.get("gate", {}).get("sft_cold_start_frac"),
                 )
         return resolved
+
+    def _record_dynamic_trigger_metrics(
+        self,
+        *,
+        mode: str,
+        global_step: int,
+        health_metrics: dict[str, float],
+    ) -> None:
+        if (
+            mode != "train"
+            or self._dynamic_trigger_monitor is None
+            or self._dynamic_trigger_last_step == int(global_step)
+        ):
+            return
+
+        max_training_steps = self._max_training_steps()
+        current_progress = training_progress(global_step, max_training_steps)
+        trigger_metrics = self._dynamic_trigger_monitor.update(
+            mixed_rate=float(health_metrics.get("signal/group_mixed_rate", 0.0)),
+            zero_loss_rate=float(health_metrics.get("signal/grpo_zero_loss_rate", 1.0)),
+            progress=current_progress,
+        )
+        self._dynamic_trigger_last_step = int(global_step)
+        self._metrics[mode].setdefault("phase/training_progress", []).append(current_progress)
+        self._metrics[mode].setdefault("phase/max_training_steps", []).append(float(max_training_steps or 0))
+        for key, value in trigger_metrics.items():
+            self._metrics[mode].setdefault(f"phase/{key}", []).append(float(value))
+
+        phase_mode = str((self.opsd_config.get("phase_schedule") or {}).get("mode", "step") or "step")
+        effective_cfg = self.opsd_config.get("effective_sampling") or {}
+        loss_cfg = self.opsd_config.get("loss") or {}
+        cap_cfg = loss_cfg.get("route_cap") or {}
+        opsd_decay_cfg = loss_cfg.get("weight_decay") or {}
+        traj_decay_cfg = (self.opsd_config.get("teacher_trajectory") or {}).get("weight_decay") or {}
+        phase_specs = {
+            "effective_sampling_active": (
+                bool(effective_cfg.get("enabled", False)),
+                effective_cfg,
+                294,
+                0.50,
+            ),
+            "opd_route_cap_active": (bool(cap_cfg.get("enabled", False)), cap_cfg, 0, 0.50),
+            "opd_decay_active": (bool(opsd_decay_cfg.get("enabled", False)), opsd_decay_cfg, 294, 0.50),
+            "teacher_traj_decay_active": (
+                bool(traj_decay_cfg.get("enabled", False)),
+                traj_decay_cfg,
+                294,
+                0.25,
+            ),
+        }
+        for metric_name, (enabled, cfg, default_step, default_progress) in phase_specs.items():
+            active = enabled and boundary_reached(
+                global_step,
+                max_training_steps,
+                mode=str(cfg.get("schedule_mode", phase_mode)),
+                step_boundary=int(cfg.get("after_step", cfg.get("start_step", default_step))),
+                progress_boundary=float(cfg.get("start_progress", default_progress)),
+            )
+            self._metrics[mode].setdefault(f"phase/{metric_name}", []).append(float(active))
 
     def _perf_sync(self) -> None:
         if not self._perf_timing_enabled or not torch.cuda.is_available():
@@ -938,12 +1224,357 @@ class DyMETrainer(Trainer):
 
     def _teacher_trajectory_config(self) -> dict[str, Any]:
         cfg = self.opsd_config.get("teacher_trajectory") or {}
+        decay_cfg = cfg.get("weight_decay") or {}
         return {
             "enabled": bool(cfg.get("enabled", True)),
             "max_new_tokens": int(cfg.get("max_new_tokens", 128)),
             "loss_type": (cfg.get("loss_type") or "fkl").lower(),
             "weight": float(cfg.get("weight", self.opsd_config.get("loss", {}).get("teacher_traj_fkl_weight", 0.5))),
+            "weight_decay": {
+                "enabled": bool(decay_cfg.get("enabled", False)),
+                "start_step": int(decay_cfg.get("start_step", 294) or 294),
+                "end_step": int(decay_cfg.get("end_step", 441) or 441),
+                "start_progress": float(decay_cfg.get("start_progress", 0.25)),
+                "end_progress": float(decay_cfg.get("end_progress", 0.50)),
+                "final_weight": float(decay_cfg.get("final_weight", 0.0) or 0.0),
+            },
         }
+
+    def _teacher_correct_repair_config(self) -> dict[str, Any]:
+        cfg = self.opsd_config.get("teacher_correct_repair") or {}
+        return {
+            "mode": (cfg.get("mode") or "opd").lower(),
+            "scope": (cfg.get("scope") or "all_wrong").lower(),
+            "slots_per_prompt": max(0, int(cfg.get("slots_per_prompt", 1) or 0)),
+            "target_max_tokens": max(1, int(cfg.get("target_max_tokens", 256) or 256)),
+            "sanitize_privileged": bool(cfg.get("sanitize_privileged", True)),
+            "target_constraint": (cfg.get("target_constraint") or "chartqa_hint").lower(),
+            "target_style": (cfg.get("target_style") or cfg.get("target_constraint") or "chartqa_hint").lower(),
+        }
+
+    def _chart_cot_quality_gate_config(self) -> ChartCoTQualityGateConfig:
+        return ChartCoTQualityGateConfig.from_mapping(
+            self.opsd_config.get("chart_cot_quality_gate")
+        )
+
+    def _init_adaptive_supervision_controller(self) -> None:
+        cfg = self.opsd_config.get("adaptive_supervision") or {}
+        self._adaptive_supervision_controller: AdaptiveSupervisionController | None = None
+        self._adaptive_supervision_state: AdaptiveSupervisionState | None = None
+        self._adaptive_supervision_readiness_source = str(
+            cfg.get("readiness_source", "mixed_zero") or "mixed_zero"
+        ).lower()
+        if not bool(cfg.get("enabled", False)):
+            return
+        controller_cfg = AdaptiveSupervisionConfig(
+            ema_alpha=float(cfg.get("ema_alpha", 0.10)),
+            target_readiness=float(cfg.get("target_readiness", 0.20)),
+            opsd_initial_weight=float(cfg.get("opsd_initial_weight", 1.50)),
+            opsd_final_weight=float(cfg.get("opsd_final_weight", 0.50)),
+            teacher_initial_weight=float(cfg.get("teacher_initial_weight", 0.50)),
+            teacher_final_weight=float(cfg.get("teacher_final_weight", 0.0)),
+            opd_initial_cap=int(cfg.get("opd_initial_cap", self.num_generations if hasattr(self, "num_generations") else 8)),
+            opd_final_cap=int(cfg.get("opd_final_cap", 2)),
+        )
+        self._adaptive_supervision_controller = AdaptiveSupervisionController(controller_cfg)
+        self._adaptive_supervision_state = self._adaptive_supervision_controller.state
+
+    def _update_adaptive_supervision(
+        self,
+        *,
+        mode: str,
+        global_step: int,
+        prompt_count: int,
+        mixed_count: int,
+        zero_loss_count: int,
+    ) -> AdaptiveSupervisionState | None:
+        controller = self._adaptive_supervision_controller
+        if controller is None:
+            return None
+        if self._adaptive_supervision_readiness_source == "global_grpo_route":
+            return self._adaptive_supervision_state
+        counts = torch.tensor(
+            [prompt_count, mixed_count, zero_loss_count],
+            dtype=torch.float64,
+            device=self.accelerator.device,
+        )
+        counts = self.accelerator.reduce(counts, reduction="sum")
+        total = max(float(counts[0].item()), 1.0)
+        state = controller.update(
+            step=int(global_step),
+            mixed_rate=float(counts[1].item()) / total,
+            zero_loss_rate=float(counts[2].item()) / total,
+        )
+        self._adaptive_supervision_state = state
+        self._log_adaptive_supervision_state(mode=mode, state=state)
+        return state
+
+    def _update_adaptive_supervision_from_signal(
+        self,
+        *,
+        mode: str,
+        global_step: int,
+        signal_rate: float,
+    ) -> AdaptiveSupervisionState | None:
+        controller = self._adaptive_supervision_controller
+        if controller is None:
+            return None
+        if self._adaptive_supervision_readiness_source != "global_grpo_route":
+            return self._adaptive_supervision_state
+        state = controller.update_signal(step=int(global_step), signal_rate=signal_rate)
+        self._adaptive_supervision_state = state
+        self._log_adaptive_supervision_state(
+            mode=mode,
+            state=state,
+            signal_rate=state.mixed_rate,
+            signal_ema=state.mixed_ema,
+        )
+        return state
+
+    def _log_adaptive_supervision_state(
+        self,
+        *,
+        mode: str,
+        state: AdaptiveSupervisionState,
+        signal_rate: float | None = None,
+        signal_ema: float | None = None,
+    ) -> None:
+        values = {
+            "enabled": 1.0,
+            "mixed_rate": state.mixed_rate,
+            "zero_loss_rate": state.zero_loss_rate,
+            "mixed_ema": state.mixed_ema,
+            "zero_loss_ema": state.zero_loss_ema,
+            "readiness": state.readiness,
+            "mastery": state.mastery,
+            "supervision": state.supervision,
+            "opsd_weight": state.opsd_weight,
+            "teacher_traj_weight": state.teacher_traj_weight,
+            "opd_max_per_prompt": float(state.opd_max_per_prompt),
+            "update_count": float(state.update_count),
+        }
+        if signal_rate is not None:
+            values["signal_rate"] = float(signal_rate)
+        if signal_ema is not None:
+            values["signal_ema"] = float(signal_ema)
+        for name, value in values.items():
+            self._metrics[mode].setdefault(f"adaptive/{name}", []).append(float(value))
+
+    def _adaptive_opd_route_cap_config(self) -> dict[str, Any] | None:
+        state = self._adaptive_supervision_state
+        if self._adaptive_supervision_controller is None or state is None:
+            return None
+        legacy = self._opd_route_cap_config()
+        return {
+            **legacy,
+            "enabled": True,
+            "after_step": 0,
+            "schedule_mode": "step",
+            "start_progress": 0.0,
+            "max_per_prompt": int(state.opd_max_per_prompt),
+        }
+
+    def _reduce_global_training_signal(
+        self,
+        *,
+        mode: str,
+        counts: GlobalTrainingSignalCounts,
+        global_step: int | None = None,
+    ) -> GlobalTrainingSignalSnapshot:
+        field_names = tuple(counts.__dataclass_fields__)
+        values = torch.tensor(
+            [float(getattr(counts, name)) for name in field_names],
+            dtype=torch.float64,
+            device=self.accelerator.device,
+        )
+        reduced = self.accelerator.reduce(values, reduction="sum").detach().cpu().tolist()
+        reduced_values = dict(zip(field_names, reduced))
+        reduced_counts = GlobalTrainingSignalCounts(
+            **{
+                name: (
+                    float(value)
+                    if name == "accuracy_reward_sum"
+                    else int(round(float(value)))
+                )
+                for name, value in reduced_values.items()
+            }
+        )
+        snapshot = snapshot_from_counts(reduced_counts)
+        for name, value in snapshot.__dict__.items():
+            self._metrics[mode].setdefault(f"global_signal/{name}", []).append(float(value))
+        if global_step is not None:
+            self._update_adaptive_supervision_from_signal(
+                mode=mode,
+                global_step=int(global_step),
+                signal_rate=snapshot.grpo_route_rate,
+            )
+        return snapshot
+
+    def _global_signal_logging_enabled(self) -> bool:
+        cfg = self.opsd_config.get("global_signal_logging") or {}
+        return bool(cfg.get("enabled", False)) or (
+            self._adaptive_supervision_controller is not None
+            and self._adaptive_supervision_readiness_source == "global_grpo_route"
+        )
+
+    def _adaptive_loss_weights(self) -> tuple[float, float] | None:
+        state = self._adaptive_supervision_state
+        if self._adaptive_supervision_controller is None or state is None:
+            return None
+        return float(state.opsd_weight), float(state.teacher_traj_weight)
+
+    def _opd_route_cap_config(self) -> dict[str, Any]:
+        loss_cfg = self.opsd_config.get("loss") or {}
+        cap_cfg = loss_cfg.get("route_cap") or {}
+        return {
+            "enabled": bool(cap_cfg.get("enabled", False)),
+            "max_per_prompt": max(0, int(cap_cfg.get("max_per_prompt", 0) or 0)),
+            "after_step": max(0, int(cap_cfg.get("after_step", 0) or 0)),
+            "schedule_mode": str(cap_cfg.get("schedule_mode", "step") or "step").lower(),
+            "start_progress": float(cap_cfg.get("start_progress", 0.5)),
+            "overflow_route": (cap_cfg.get("overflow_route") or "sft").lower(),
+        }
+
+    def _effective_group_filter_config(self) -> EffectiveGroupFilterConfig:
+        return EffectiveGroupFilterConfig.from_mapping(self.opsd_config.get("effective_group_filter"))
+
+    def _tokenize_teacher_sft_repair_target(
+        self,
+        text: str,
+        *,
+        sample: dict[str, Any] | None = None,
+        reference_answer: Any = "",
+        device: torch.device,
+        max_tokens: int,
+        sanitize_privileged: bool,
+        target_constraint: str = "chartqa_hint",
+        target_style: str = "chartqa_hint",
+    ) -> tuple[torch.Tensor, torch.Tensor, bool, dict[str, bool]]:
+        if target_style:
+            constrained = build_teacher_sft_repair_target(
+                text,
+                sample=sample,
+                reference_answer=reference_answer,
+                target_style=target_style,
+                sanitize_privileged=sanitize_privileged,
+            )
+            target = constrained.text
+            audit = {
+                "raw_full_hint_format": constrained.raw_full_hint_format,
+                "full_hint_format": constrained.full_hint_format,
+                "exact_reference_answer_line": constrained.exact_reference_answer_line,
+                "used_fallback_hint": constrained.used_fallback_hint,
+                "raw_clipped": constrained.raw_clipped,
+                "student_short_format": constrained.student_short_format,
+                "answer_only_format": constrained.answer_only_format,
+            }
+        elif target_constraint == "chartqa_hint":
+            constrained = build_teacher_sft_repair_target(
+                text,
+                sample=sample,
+                reference_answer=reference_answer,
+                target_style="chartqa_hint",
+                sanitize_privileged=sanitize_privileged,
+            )
+            target = constrained.text
+            audit = {
+                "raw_full_hint_format": constrained.raw_full_hint_format,
+                "full_hint_format": constrained.full_hint_format,
+                "exact_reference_answer_line": constrained.exact_reference_answer_line,
+                "used_fallback_hint": constrained.used_fallback_hint,
+                "raw_clipped": constrained.raw_clipped,
+                "student_short_format": constrained.student_short_format,
+                "answer_only_format": constrained.answer_only_format,
+            }
+        else:
+            target = sanitize_teacher_sft_text(text) if sanitize_privileged else (text or "").strip()
+            audit = {
+                "raw_full_hint_format": False,
+                "full_hint_format": False,
+                "exact_reference_answer_line": False,
+                "used_fallback_hint": False,
+                "raw_clipped": False,
+                "student_short_format": False,
+                "answer_only_format": False,
+            }
+        privileged_tag_present = any(
+            tag in (target or "")
+            for tag in ("[Verified Hint]", "[Reference Answer]", "[DePlot]", "[Visual Facts")
+        )
+        if self.end_flag and not target.endswith(self.end_flag):
+            target = f"{target}{self.end_flag}"
+        encoded = self.processing_class.tokenizer(
+            target,
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_tokens,
+            add_special_tokens=False,
+        )
+        ids = encoded["input_ids"][0].to(device)
+        mask = encoded["attention_mask"][0].to(device)
+        return ids, mask, privileged_tag_present, audit
+
+    def _teacher_sft_repair_prompt_key(self, sample: dict[str, Any]) -> str:
+        question = sample.get("question") or sample.get("query") or sample.get("prompt") or ""
+        image = sample.get("image") or sample.get("image_path") or sample.get("image_id") or ""
+        return f"{str(image)}\n{str(question)}"
+
+    def _teacher_new_ids_with_prefix(
+        self,
+        generated: torch.Tensor,
+        prompt_len: int,
+        prefix_lens: list[int],
+    ) -> tuple[torch.Tensor, list[int]]:
+        rows: list[torch.Tensor] = []
+        lengths: list[int] = []
+        max_len = 0
+        for row in range(int(generated.shape[0])):
+            prefix_len = int(prefix_lens[row]) if row < len(prefix_lens) else 0
+            start = max(0, prompt_len - prefix_len)
+            row_ids = generated[row, start:]
+            rows.append(row_ids)
+            row_len = int(row_ids.numel())
+            lengths.append(row_len)
+            max_len = max(max_len, row_len)
+        if not rows:
+            return generated.new_empty((0, 0)), []
+        pad_id = int(self.processing_class.tokenizer.pad_token_id)
+        padded: list[torch.Tensor] = []
+        for row_ids in rows:
+            if int(row_ids.numel()) < max_len:
+                pad = torch.full(
+                    (max_len - int(row_ids.numel()),),
+                    pad_id,
+                    device=row_ids.device,
+                    dtype=row_ids.dtype,
+                )
+                row_ids = torch.cat([row_ids, pad], dim=0)
+            padded.append(row_ids)
+        return torch.stack(padded, dim=0), lengths
+
+    def _teacher_generated_mask(
+        self,
+        new_ids: torch.Tensor,
+        valid_lengths: list[int],
+    ) -> torch.Tensor:
+        if new_ids.numel() == 0:
+            return torch.zeros_like(new_ids, dtype=torch.int)
+        seq_idx = torch.arange(new_ids.size(1), device=new_ids.device).expand(new_ids.size(0), -1)
+        valid = torch.zeros_like(new_ids, dtype=torch.bool)
+        for row, length in enumerate(valid_lengths):
+            valid[row] = seq_idx[row] < int(length)
+        eos_id = self.processing_class.tokenizer.eos_token_id
+        if eos_id is None:
+            return valid.int()
+        is_eos = (new_ids == eos_id) & valid
+        eos_idx = torch.full(
+            (is_eos.size(0),),
+            is_eos.size(1),
+            dtype=torch.long,
+            device=new_ids.device,
+        )
+        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
+        return ((seq_idx <= eos_idx.unsqueeze(1)) & valid).int()
 
     def _teacher_generate_from_tensors(
         self,
@@ -1002,23 +1633,25 @@ class DyMETrainer(Trainer):
                 batch_num_images=teacher_batch_num_images,
                 **gen_kwargs,
             )
-        new_ids = generated[:, prompt_ids.shape[1] :].to(self.accelerator.device)
+        prefix_len = 0
+        prefix_lens_tensor = teacher_tensors.get("teacher_response_prefix_lens")
+        if isinstance(prefix_lens_tensor, torch.Tensor) and row < int(prefix_lens_tensor.numel()):
+            prefix_len = int(prefix_lens_tensor[row].item())
+        new_ids, valid_lengths = self._teacher_new_ids_with_prefix(
+            generated,
+            int(prompt_ids.shape[1]),
+            [prefix_len],
+        )
+        new_ids = new_ids.to(self.accelerator.device)
+        valid_lengths = [int(v) for v in valid_lengths]
         if new_ids.numel() == 0:
             new_ids = torch.tensor(
                 [[self.processing_class.tokenizer.eos_token_id]],
                 device=self.accelerator.device,
                 dtype=torch.long,
             )
-        is_eos = new_ids == self.processing_class.tokenizer.eos_token_id
-        eos_idx = torch.full(
-            (is_eos.size(0),),
-            is_eos.size(1),
-            dtype=torch.long,
-            device=self.accelerator.device,
-        )
-        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
-        seq_idx = torch.arange(is_eos.size(1), device=self.accelerator.device).expand(is_eos.size(0), -1)
-        mask = (seq_idx <= eos_idx.unsqueeze(1)).int()
+            valid_lengths = [1]
+        mask = self._teacher_generated_mask(new_ids, valid_lengths)
         text = self.processing_class.batch_decode(new_ids, skip_special_tokens=True)[0].strip()
         return new_ids[0], mask[0], text
 
@@ -1117,7 +1750,17 @@ class DyMETrainer(Trainer):
                 torch.cuda.empty_cache()
             return _fallback(f"generate runtime error: {exc}")
 
-        new_ids = generated[:, prompt_ids.shape[1] :].to(self.accelerator.device)
+        prefix_lens_tensor = teacher_tensors.get("teacher_response_prefix_lens")
+        if isinstance(prefix_lens_tensor, torch.Tensor):
+            prefix_lens = [int(prefix_lens_tensor[row].item()) for row in rows]
+        else:
+            prefix_lens = [0 for _ in rows]
+        new_ids, valid_lengths = self._teacher_new_ids_with_prefix(
+            generated,
+            int(prompt_ids.shape[1]),
+            prefix_lens,
+        )
+        new_ids = new_ids.to(self.accelerator.device)
         if new_ids.numel() == 0:
             new_ids = torch.full(
                 (len(rows), 1),
@@ -1125,16 +1768,8 @@ class DyMETrainer(Trainer):
                 device=self.accelerator.device,
                 dtype=torch.long,
             )
-        is_eos = new_ids == self.processing_class.tokenizer.eos_token_id
-        eos_idx = torch.full(
-            (is_eos.size(0),),
-            is_eos.size(1),
-            dtype=torch.long,
-            device=self.accelerator.device,
-        )
-        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
-        seq_idx = torch.arange(is_eos.size(1), device=self.accelerator.device).expand(is_eos.size(0), -1)
-        mask = (seq_idx <= eos_idx.unsqueeze(1)).int()
+            valid_lengths = [1 for _ in rows]
+        mask = self._teacher_generated_mask(new_ids, valid_lengths)
         texts = [
             text.strip()
             for text in self.processing_class.batch_decode(new_ids, skip_special_tokens=True)
@@ -1157,7 +1792,12 @@ class DyMETrainer(Trainer):
         device,
         group_has_correct: list[bool] | None = None,
         group_reward_std: list[float] | None = None,
-    ) -> tuple[list[int], dict[int, tuple[torch.Tensor, torch.Tensor]], dict[str, Any]]:
+    ) -> tuple[
+        list[int],
+        dict[int, tuple[torch.Tensor, torch.Tensor]],
+        dict[int, str],
+        dict[str, Any],
+    ]:
         stats: dict[str, Any] = {
             "teacher_probe_candidates": 0,
             "teacher_probe_correct": 0,
@@ -1184,11 +1824,11 @@ class DyMETrainer(Trainer):
             self.opsd_config.get("mode") != "dyme_teacher_probe_opd"
             or self.teacher_model is None
         ):
-            return completion_modes, {}, stats
+            return completion_modes, {}, {}, stats
 
         probe_cfg = self._teacher_probe_config()
         if not probe_cfg["enabled"]:
-            return completion_modes, {}, stats
+            return completion_modes, {}, {}, stats
 
         candidate_indices = [i for i, mode_i in enumerate(completion_modes) if mode_i == MODE_OPSD]
         stats["teacher_probe_candidates"] = len(candidate_indices)
@@ -1289,7 +1929,7 @@ class DyMETrainer(Trainer):
             stats["teacher_probe_skipped_budget"] = len(skipped)
             candidate_indices = candidate_indices[:max_per_batch]
         if not candidate_indices:
-            return completion_modes, {}, stats
+            return completion_modes, {}, {}, stats
 
         teacher_tensors = build_teacher_prompt_batch(
             self.processing_class,
@@ -1307,6 +1947,7 @@ class DyMETrainer(Trainer):
         gold_rate = float(teacher_stats.get("privileged_suffix_has_gold_rate", 0.0) or 0.0)
         stats["teacher_probe_gold_suffix"] = int(round(gold_rate * len(candidate_indices)))
         teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        teacher_traj_texts: dict[int, str] = {}
         generated_token_counts: list[int] = []
         generated_clipped_count = 0
         probe_batch_size = max(1, int(probe_cfg.get("batch_size", 1) or 1))
@@ -1437,6 +2078,7 @@ class DyMETrainer(Trainer):
                 completion_modes[global_idx] = MODE_OPSD
                 if self._teacher_trajectory_config()["enabled"]:
                     teacher_trajs[global_idx] = (gen_ids.to(device), gen_mask.to(device))
+                    teacher_traj_texts[global_idx] = text
             else:
                 stats["teacher_probe_wrong"] += 1
                 completion_modes[global_idx] = MODE_SFT
@@ -1456,7 +2098,7 @@ class DyMETrainer(Trainer):
             **{k: v for k, v in stats.items() if k != "teacher_probe_text"},
             sample_text=next(iter(stats["teacher_probe_text"].values()), ""),
         )
-        return completion_modes, teacher_trajs, stats
+        return completion_modes, teacher_trajs, teacher_traj_texts, stats
 
     def _log_training_phase(self, phase: str, global_step: int) -> None:
         if self._last_training_phase == phase:
@@ -1958,6 +2600,63 @@ class DyMETrainer(Trainer):
         format_rewards = torch.tensor(format_rewards, dtype=torch.float32).to(self.accelerator.device)
         context_rewards = torch.tensor(context_rewards, dtype=torch.float32).to(self.accelerator.device)
         acc_rewards = torch.tensor(acc_rewards, dtype=torch.float32).to(self.accelerator.device)
+        perception_cfg = self.opsd_config.get("perception_reward", {}) or {}
+        perception_enabled = bool(perception_cfg.get("enabled", False))
+        perception_weight = float(perception_cfg.get("weight", 0.2) or 0.0)
+        perception_stats: dict[str, float] = {
+            "mean": 0.0,
+            "skipped_rate": 1.0 if perception_enabled else 0.0,
+            "judge_parse_fail_rate": 0.0,
+            "diagnostic_deplot_overlap_mean": 0.0,
+        }
+        perception_rewards = torch.zeros_like(all_rewards)
+        if perception_enabled:
+            perception_source = str(perception_cfg.get("source", "image_teacher"))
+            if perception_source == "image_teacher":
+                perception_result = score_image_teacher_perception_rewards(
+                    samples=inputs,
+                    responses=completions,
+                    teacher_model=self.teacher_model,
+                    processor=self.processing_class,
+                    batch_size=int(perception_cfg.get("batch_size", 4) or 4),
+                    max_new_tokens=int(perception_cfg.get("max_new_tokens", 8) or 8),
+                )
+            else:
+                perception_result = score_perception_rewards(
+                    samples=inputs,
+                    responses=completions,
+                    source=perception_source,
+                )
+            perception_stats = perception_result.stats
+            perception_values = list(perception_result.rewards)
+            if len(perception_values) < len(all_rewards):
+                perception_values.extend([0.0] * (len(all_rewards) - len(perception_values)))
+            perception_rewards = torch.tensor(
+                perception_values[: len(all_rewards)],
+                dtype=torch.float32,
+                device=self.accelerator.device,
+            )
+        self._metrics[mode].setdefault("reward/perception_mean", []).append(float(perception_stats.get("mean", 0.0)))
+        self._metrics[mode].setdefault("reward/perception_skipped_rate", []).append(float(perception_stats.get("skipped_rate", 0.0)))
+        self._metrics[mode].setdefault("reward/perception_judge_parse_fail_rate", []).append(float(perception_stats.get("judge_parse_fail_rate", 0.0)))
+        self._metrics[mode].setdefault("reward/diagnostic_deplot_overlap_mean", []).append(float(perception_stats.get("diagnostic_deplot_overlap_mean", 0.0)))
+
+        eval_format_cfg = self.opsd_config.get("eval_format_reward", {}) or {}
+        eval_format_enabled = bool(eval_format_cfg.get("enabled", False))
+        eval_format_weight = float(eval_format_cfg.get("weight", 0.1) or 0.0)
+        eval_format_rewards = torch.zeros_like(all_rewards)
+        if eval_format_enabled:
+            eval_format_rewards = torch.tensor(
+                score_eval_format_rewards(completions),
+                dtype=torch.float32,
+                device=self.accelerator.device,
+            )
+        self._metrics[mode].setdefault("reward/eval_format_mean", []).append(
+            float(eval_format_rewards.detach().float().mean().item())
+        )
+        self._metrics[mode].setdefault("reward/eval_format_weight", []).append(
+            eval_format_weight if eval_format_enabled else 0.0
+        )
 
         rewards_per_func = torch.zeros([len(all_rewards), 3], device=device)
 
@@ -1965,6 +2664,8 @@ class DyMETrainer(Trainer):
         rewards_per_func[:, 1] = context_rewards.clone()
         rewards_per_func[:, -1] = acc_rewards.clone()
         local_weighted_rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        local_weighted_rewards = local_weighted_rewards + perception_weight * perception_rewards
+        local_weighted_rewards = local_weighted_rewards + eval_format_weight * eval_format_rewards
         local_group_reward_std = local_weighted_rewards.view(-1, self.num_generations).std(dim=1)
 
         opsd_debug.log_sync_point(
@@ -1982,7 +2683,11 @@ class DyMETrainer(Trainer):
         )
 
         # Apply weights to each reward function's output and sum
+        perception_rewards_gathered = gather(perception_rewards)
+        eval_format_rewards_gathered = gather(eval_format_rewards)
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        rewards = rewards + perception_weight * perception_rewards_gathered
+        rewards = rewards + eval_format_weight * eval_format_rewards_gathered
 
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
@@ -2010,8 +2715,74 @@ class DyMETrainer(Trainer):
         has_correct = (acc_rewards > threshold).sum(1)
         group_has_correct_list = (has_correct > 0).detach().cpu().tolist()
         group_reward_std_list = local_group_reward_std.detach().float().cpu().tolist()
-
         global_step = getattr(self.state, "global_step", self._step)
+        max_training_steps = self._max_training_steps()
+        mixed_count = int(
+            ((has_correct > 0) & (has_correct < self.num_generations)).sum().item()
+        )
+        advantage_groups = advantages.detach().view(-1, self.num_generations)
+        zero_loss_count = int(
+            (advantage_groups.abs().amax(dim=1) <= 1e-12).sum().item()
+        )
+        self._update_adaptive_supervision(
+            mode=mode,
+            global_step=int(global_step),
+            prompt_count=int(has_correct.numel()),
+            mixed_count=mixed_count,
+            zero_loss_count=zero_loss_count,
+        )
+        sampler_updates = {"mixed": 0, "all_wrong": 0, "all_correct": 0, "missing_index": 0}
+        if self._effective_signal_sampler is not None:
+            self._effective_signal_sampler.set_step(global_step, max_steps=max_training_steps)
+            correct_counts = has_correct.detach().cpu().tolist()
+            for prompt_idx, correct_count in enumerate(correct_counts):
+                source_row = prompt_idx * self.num_generations
+                sample_i = inputs[source_row] if source_row < len(inputs) else {}
+                dataset_index = sample_i.get("_dyme_index") if isinstance(sample_i, dict) else None
+                if dataset_index is None:
+                    sampler_updates["missing_index"] += 1
+                    continue
+                correct_int = int(correct_count)
+                if correct_int <= 0:
+                    sampler_updates["all_wrong"] += 1
+                elif correct_int >= self.num_generations:
+                    sampler_updates["all_correct"] += 1
+                else:
+                    sampler_updates["mixed"] += 1
+                reward_std_i = group_reward_std_list[prompt_idx] if prompt_idx < len(group_reward_std_list) else 0.0
+                self._effective_signal_sampler.update_prompt_signal(
+                    dataset_index=int(dataset_index),
+                    correct_count=correct_int,
+                    num_generations=self.num_generations,
+                    reward_std=float(reward_std_i),
+                )
+            self._metrics[mode].setdefault("sampling/effective_enabled", []).append(1.0)
+            self._metrics[mode].setdefault("sampling/effective_mixed_updates", []).append(
+                float(sampler_updates["mixed"])
+            )
+            self._metrics[mode].setdefault("sampling/effective_all_wrong_updates", []).append(
+                float(sampler_updates["all_wrong"])
+            )
+            self._metrics[mode].setdefault("sampling/effective_all_correct_updates", []).append(
+                float(sampler_updates["all_correct"])
+            )
+            self._metrics[mode].setdefault("sampling/effective_missing_index", []).append(
+                float(sampler_updates["missing_index"])
+            )
+        repaired_prompt_seen = 0
+        repaired_prompt_to_mixed = 0
+        repaired_prompt_still_all_wrong = 0
+        for prompt_idx, has_correct_i in enumerate(group_has_correct_list):
+            source_row = prompt_idx * self.num_generations
+            sample_i = inputs[source_row] if source_row < len(inputs) else {}
+            if self._teacher_sft_repair_prompt_key(sample_i) not in self._teacher_sft_repaired_prompt_keys:
+                continue
+            repaired_prompt_seen += 1
+            if bool(has_correct_i):
+                repaired_prompt_to_mixed += 1
+            else:
+                repaired_prompt_still_all_wrong += 1
+
         opsd_debug.set_detail_step(global_step)
 
         opsd_active = self.opsd_config.get("enabled", False) and self.opsd_config.get("mode", "dyme") != "dyme"
@@ -2019,12 +2790,25 @@ class DyMETrainer(Trainer):
         recoverable_flags = None
         answer_flag = getattr(self.checker, "answer_flag", "Answer:")
         teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        teacher_traj_texts: dict[int, str] = {}
+        teacher_sft_repairs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        teacher_sft_repair_stats = None
+        teacher_sft_privileged_tag_count = 0
+        teacher_sft_target_raw_full_hint_count = 0
+        teacher_sft_target_full_hint_count = 0
+        teacher_sft_target_exact_answer_count = 0
+        teacher_sft_target_fallback_hint_count = 0
+        teacher_sft_target_raw_clipped_count = 0
+        teacher_sft_target_student_short_count = 0
+        teacher_sft_target_answer_only_count = 0
         teacher_probe_stats: dict[str, Any] = {
             "teacher_probe_candidates": 0,
             "teacher_probe_correct": 0,
             "teacher_probe_wrong": 0,
             "teacher_probe_skipped_budget": 0,
         }
+        route_guard_stats = None
+        opd_cap_stats = None
         opsd_debug.log(
             "opsd_router",
             "OPSD activation check",
@@ -2057,7 +2841,7 @@ class DyMETrainer(Trainer):
             ]
             opsd_debug.log_mode_summary("opsd_router", prompt_modes, completion_modes)
             teacher_probe_start = self._perf_start()
-            completion_modes, teacher_trajs, teacher_probe_stats = self._apply_teacher_probe_routing(
+            completion_modes, teacher_trajs, teacher_traj_texts, teacher_probe_stats = self._apply_teacher_probe_routing(
                 inputs=inputs,
                 completion_modes=completion_modes,
                 acc_rewards=acc_rewards,
@@ -2072,12 +2856,181 @@ class DyMETrainer(Trainer):
             self._perf_metric(mode, "teacher_probe_s", self._perf_elapsed(teacher_probe_start))
             self._perf_metric(mode, "teacher_probe_generate_s", teacher_probe_stats.get("teacher_probe_generate_s", 0.0))
             self._perf_metric(mode, "teacher_probe_candidates", teacher_probe_stats.get("teacher_probe_candidates", 0))
+            cot_quality_cfg = self._chart_cot_quality_gate_config()
+            if cot_quality_cfg.enabled:
+                prompt_count = (
+                    len(completion_modes) + max(self.num_generations, 1) - 1
+                ) // max(self.num_generations, 1)
+                quality_samples: list[dict[str, Any]] = []
+                for prompt_idx in range(prompt_count):
+                    completion_idx = prompt_idx * max(self.num_generations, 1)
+                    source_idx = self._source_row_index(
+                        completion_idx,
+                        len(inputs),
+                        len(completion_modes),
+                    )
+                    quality_samples.append(inputs[source_idx] if source_idx < len(inputs) else {})
+                cot_quality = evaluate_teacher_trajectory_quality(
+                    teacher_traj_texts=teacher_traj_texts,
+                    samples=quality_samples,
+                    num_generations=self.num_generations,
+                    config=cot_quality_cfg,
+                )
+                for metric_name, metric_value in cot_quality.gate_result.metrics.items():
+                    self._metrics[mode].setdefault(
+                        f"cot_verify/{metric_name}", []
+                    ).append(float(metric_value))
+                append_quality_sample_records(
+                    output_dir=str(getattr(self.args, "output_dir", "") or ""),
+                    rank=int(self.accelerator.process_index),
+                    global_step=int(global_step),
+                    records=cot_quality.sample_records,
+                )
+                if cot_quality_cfg.gate_active:
+                    eligible = cot_quality.gate_result.eligible_indices
+                    teacher_trajs = {
+                        idx: trajectory
+                        for idx, trajectory in teacher_trajs.items()
+                        if idx in eligible
+                    }
+            repair_cfg = self._teacher_correct_repair_config()
+            (
+                completion_modes,
+                kept_traj_indices,
+                teacher_sft_repair_indices,
+                teacher_sft_repair_stats,
+            ) = apply_teacher_sft_repair_routing(
+                completion_modes=completion_modes,
+                teacher_traj_indices=set(teacher_trajs.keys()),
+                group_has_correct=group_has_correct_list,
+                num_generations=self.num_generations,
+                config=repair_cfg,
+            )
+            if teacher_sft_repair_indices:
+                for repair_idx in teacher_sft_repair_indices:
+                    raw_text = teacher_traj_texts.get(repair_idx, "")
+                    prompt_idx = repair_idx // self.num_generations
+                    sample_i = inputs[prompt_idx] if prompt_idx < len(inputs) else {}
+                    reference_answer = answers[prompt_idx] if prompt_idx < len(answers) else sample_i.get("answer", "")
+                    ids_i, mask_i, privileged_tag_present, target_audit = self._tokenize_teacher_sft_repair_target(
+                        raw_text,
+                        sample=sample_i,
+                        reference_answer=reference_answer,
+                        device=device,
+                        max_tokens=repair_cfg["target_max_tokens"],
+                        sanitize_privileged=repair_cfg["sanitize_privileged"],
+                        target_constraint=repair_cfg["target_constraint"],
+                        target_style=repair_cfg["target_style"],
+                    )
+                    teacher_sft_repairs[repair_idx] = (ids_i, mask_i)
+                    if privileged_tag_present:
+                        teacher_sft_privileged_tag_count += 1
+                    teacher_sft_target_raw_full_hint_count += int(
+                        bool(target_audit.get("raw_full_hint_format", False))
+                    )
+                    teacher_sft_target_full_hint_count += int(
+                        bool(target_audit.get("full_hint_format", False))
+                    )
+                    teacher_sft_target_exact_answer_count += int(
+                        bool(target_audit.get("exact_reference_answer_line", False))
+                    )
+                    teacher_sft_target_fallback_hint_count += int(
+                        bool(target_audit.get("used_fallback_hint", False))
+                    )
+                    teacher_sft_target_raw_clipped_count += int(
+                        bool(target_audit.get("raw_clipped", False))
+                    )
+                    teacher_sft_target_student_short_count += int(
+                        bool(target_audit.get("student_short_format", False))
+                    )
+                    teacher_sft_target_answer_only_count += int(
+                        bool(target_audit.get("answer_only_format", False))
+                    )
+                    self._teacher_sft_repaired_prompt_keys.add(
+                        self._teacher_sft_repair_prompt_key(sample_i)
+                    )
+                teacher_trajs = {
+                    idx: traj
+                    for idx, traj in teacher_trajs.items()
+                    if idx in kept_traj_indices
+                }
+            (
+                completion_modes,
+                kept_traj_indices,
+                opd_cap_stats,
+            ) = apply_opd_route_cap(
+                completion_modes=completion_modes,
+                teacher_traj_indices=set(teacher_trajs.keys()),
+                group_has_correct=group_has_correct_list,
+                num_generations=self.num_generations,
+                global_step=global_step,
+                max_steps=max_training_steps,
+                config=(
+                    self._adaptive_opd_route_cap_config()
+                    or self._opd_route_cap_config()
+                ),
+            )
+            if opd_cap_stats and opd_cap_stats.capped:
+                teacher_trajs = {
+                    idx: traj
+                    for idx, traj in teacher_trajs.items()
+                    if idx in kept_traj_indices
+                }
             self._opsd_distributed_barrier("wait_for_everyone after teacher_probe routing")
             prompt_modes = [
                 completion_modes[i * self.num_generations]
                 for i in range(acc_rewards.shape[0])
             ]
             opsd_debug.log_mode_summary("opsd_router_post_probe", prompt_modes, completion_modes)
+            gate_cfg = self.opsd_config.get("gate", {}) or {}
+            route_guard_enabled = bool(
+                gate_cfg.get("signal_aware_routing", False)
+                or gate_cfg.get("degenerate_hard_override", False)
+                or gate_cfg.get("clipped_hard_override", False)
+            )
+            if route_guard_enabled:
+                qualities: list[CompletionQuality] = []
+                for row in range(batch_size):
+                    eff_len = int(completion_mask[row].sum().item())
+                    ids_eff = completion_ids[row, :eff_len].tolist() if eff_len > 0 else []
+                    text_i = completions[row] if row < len(completions) else ""
+                    no_eos = not bool(is_eos[row].any().item())
+                    clipped = no_eos or (
+                        self.max_completion_length is not None
+                        and eff_len >= int(self.max_completion_length) - 1
+                    )
+                    degenerate = opsd_diagnostics.is_degenerate_completion(
+                        ids_eff,
+                        text_i,
+                        answer_flag=answer_flag,
+                        require_answer_flag=True,
+                    )
+                    qualities.append(
+                        CompletionQuality(
+                            degenerate=degenerate,
+                            clipped=clipped,
+                            force_sft=self._should_force_sft_replace(row, completions, answer_flag),
+                            table_spam=is_table_spam_completion(text_i),
+                        )
+                    )
+                completion_modes, kept_traj_indices, route_guard_stats = apply_signal_aware_routing(
+                    completion_modes=completion_modes,
+                    teacher_traj_indices=set(teacher_trajs.keys()),
+                    qualities=qualities,
+                    group_reward_std=group_reward_std_list,
+                    num_generations=self.num_generations,
+                    config=gate_cfg,
+                )
+                teacher_trajs = {
+                    idx: traj
+                    for idx, traj in teacher_trajs.items()
+                    if idx in kept_traj_indices
+                }
+                prompt_modes = [
+                    completion_modes[i * self.num_generations]
+                    for i in range(acc_rewards.shape[0])
+                ]
+                opsd_debug.log_mode_summary("opsd_router_post_signal_guard", prompt_modes, completion_modes)
 
         format_rewards_flat = format_rewards.reshape(-1)
         acc_rewards_flat = acc_rewards.reshape(-1)
@@ -2142,6 +3095,8 @@ class DyMETrainer(Trainer):
         opsd_skipped_leakage = 0
         opsd_on_correct = 0
         grpo_on_correct = 0
+        teacher_sft_repair_used_count = 0
+        teacher_sft_repair_all_wrong_used_count = 0
         skip_degenerate_opsd = self._resolve_skip_degenerate_opsd()
         opsd_degenerate_require_answer_flag = self.opsd_config.get("gate", {}).get(
             "opsd_degenerate_require_answer_flag", True
@@ -2158,14 +3113,48 @@ class DyMETrainer(Trainer):
             use_sft = (not opsd_active) or cm == MODE_SFT
             joint_opsd = opsd_active and self.opsd_config.get("mode") == "grpo_opsd_joint" and has_correct[batch_id] > 0
             sft_replaced = False
-            teacher_probe_correct = i in teacher_trajs
+            teacher_probe_correct = teacher_probe_route_confirmed(
+                mode_name=str(self.opsd_config.get("mode", "")),
+                completion_mode=cm,
+                has_teacher_trajectory=i in teacher_trajs,
+            )
             force_sft_replace = self._should_force_sft_replace(i, completions, answer_flag)
-            if self.opsd_config.get("mode") == "dyme_teacher_probe_opd" and teacher_probe_correct:
+            gate_cfg = self.opsd_config.get("gate", {}) or {}
+            route_guard_enabled = bool(
+                gate_cfg.get("signal_aware_routing", False)
+                or gate_cfg.get("degenerate_hard_override", False)
+                or gate_cfg.get("clipped_hard_override", False)
+            )
+            if (
+                self.opsd_config.get("mode") == "dyme_teacher_probe_opd"
+                and teacher_probe_correct
+                and not route_guard_enabled
+            ):
                 # User-selected rule: wrong/degenerate samples may still use OPD
                 # when the no-leak teacher probe answers correctly.
                 force_sft_replace = False
 
-            if sft_check[i] or (opsd_active and use_sft) or force_sft_replace:
+            repair_traj = teacher_sft_repairs.get(i)
+            if cm == MODE_SKIP:
+                completion_id_ = completion_ids[i]
+                completion_mask_ = completion_mask[i]
+                advantange_ = torch.zeros(
+                    completion_mask[i].size(0),
+                    device=device,
+                    dtype=torch.float,
+                )
+                opsd_mask_list.append(False)
+            elif repair_traj is not None:
+                repair_ids, repair_mask = repair_traj
+                completion_id_ = torch.cat([repair_ids, completion_ids[i][0:0]])
+                completion_mask_ = torch.cat([repair_mask, completion_mask[i][0:0]])
+                advantange_ = teacher_sft_repair_advantages(completion_mask_)
+                opsd_mask_list.append(False)
+                sft_replaced = True
+                teacher_sft_repair_used_count += 1
+                if has_correct[batch_id] == 0:
+                    teacher_sft_repair_all_wrong_used_count += 1
+            elif sft_check[i] or (opsd_active and use_sft) or force_sft_replace:
                 completion_id_ = torch.cat([sft_padded_ids[i], completion_ids[i][0:0]])
                 completion_mask_ = torch.cat([sft_attn_masks[i], completion_mask[i][0:0]])
                 advantange_ = torch.cat([sft_advantages[i], advantages[i][0:0]])
@@ -2252,6 +3241,99 @@ class DyMETrainer(Trainer):
             has_correct=has_correct.tolist() if hasattr(has_correct, "tolist") else has_correct,
         )
 
+        effective_filter_cfg = self._effective_group_filter_config()
+        effective_keep_mask, effective_filter_stats = compute_effective_group_keep_mask(
+            correct_counts=[int(x) for x in has_correct.detach().cpu().tolist()],
+            num_generations=self.num_generations,
+            global_step=global_step,
+            config=effective_filter_cfg,
+        )
+        effective_filter_teacher_traj_removed = 0
+        if effective_filter_stats.filtered_total > 0:
+            effective_filter_teacher_traj_removed = apply_effective_group_filter_to_routes(
+                keep_mask=effective_keep_mask,
+                completion_masks=final_completion_mask_list,
+                advantages=final_advantange_list,
+                opsd_mask=opsd_mask_list,
+                sft_replaced=sft_replaced_list,
+                teacher_trajs=teacher_trajs,
+            )
+            self._metrics[mode].setdefault("filter/effective_group_filtered_rate", []).append(
+                effective_filter_stats.filtered_total / max(effective_filter_stats.total, 1)
+            )
+            self._metrics[mode].setdefault("filter/all_wrong_overflow_filtered", []).append(
+                float(effective_filter_stats.filtered_all_wrong)
+            )
+            self._metrics[mode].setdefault("filter/all_correct_filtered", []).append(
+                float(effective_filter_stats.filtered_all_correct)
+            )
+            self._metrics[mode].setdefault("filter/teacher_traj_removed", []).append(
+                float(effective_filter_teacher_traj_removed)
+            )
+        else:
+            self._metrics[mode].setdefault("filter/effective_group_filtered_rate", []).append(0.0)
+            self._metrics[mode].setdefault("filter/all_wrong_overflow_filtered", []).append(0.0)
+            self._metrics[mode].setdefault("filter/all_correct_filtered", []).append(0.0)
+            self._metrics[mode].setdefault("filter/teacher_traj_removed", []).append(0.0)
+
+        if self._global_signal_logging_enabled():
+            final_routes: list[str] = []
+            for idx in range(len(sft_replaced_list)):
+                if sft_replaced_list[idx]:
+                    final_routes.append("sft")
+                elif opsd_mask_list[idx]:
+                    final_routes.append("opd")
+                elif completion_modes is not None and completion_modes[idx] == MODE_SKIP:
+                    final_routes.append("skip")
+                else:
+                    final_routes.append("grpo")
+
+            eos_flags = [bool(is_eos[idx].any().item()) for idx in range(batch_size)]
+            clipped_flags: list[bool] = []
+            degenerate_flags: list[bool] = []
+            for idx in range(batch_size):
+                effective_length = int(completion_mask[idx].sum().item())
+                clipped_flags.append(
+                    not eos_flags[idx]
+                    or (
+                        self.max_completion_length is not None
+                        and effective_length >= int(self.max_completion_length) - 1
+                    )
+                )
+                ids_effective = (
+                    completion_ids[idx, :effective_length].tolist()
+                    if effective_length > 0
+                    else []
+                )
+                text = completions[idx] if idx < len(completions) else ""
+                degenerate_flags.append(
+                    opsd_diagnostics.is_degenerate_completion(
+                        ids_effective,
+                        text,
+                        answer_flag=answer_flag,
+                        require_answer_flag=True,
+                    )
+                )
+
+            total_zero_flags = (
+                advantage_groups.abs().amax(dim=1) <= 1e-12
+            ).detach().cpu().tolist()
+            local_global_counts = counts_from_local_batch(
+                correct_counts=[int(value) for value in has_correct.detach().cpu().tolist()],
+                total_reward_zero_flags=[bool(value) for value in total_zero_flags],
+                num_generations=self.num_generations,
+                routes=final_routes,
+                accuracy_rewards=[float(value) for value in acc_rewards.detach().reshape(-1).cpu().tolist()],
+                clipped_flags=clipped_flags,
+                eos_flags=eos_flags,
+                degenerate_flags=degenerate_flags,
+            )
+            self._reduce_global_training_signal(
+                mode=mode,
+                counts=local_global_counts,
+                global_step=int(global_step),
+            )
+
         if self._health_monitor is not None:
             local_routing_n = max(len(sft_replaced_list), 1)
             local_prompt_n = max(int(has_correct.numel()), 1)
@@ -2264,16 +3346,35 @@ class DyMETrainer(Trainer):
             sft_route_count = int(sum(1 for value in sft_replaced_list if value))
             if completion_modes is not None:
                 grpo_route_count = int(sum(1 for cm in completion_modes if cm == MODE_GRPO))
+                skip_route_count = int(sum(1 for cm in completion_modes if cm == MODE_SKIP))
             else:
                 grpo_route_count = int(
                     sum(1 for i in range(len(sft_replaced_list)) if has_correct[i // self.num_generations] > 0)
                 )
+                skip_route_count = 0
             probe_candidates = int(teacher_probe_stats.get("teacher_probe_candidates", 0) or 0)
             probe_correct = int(teacher_probe_stats.get("teacher_probe_correct", 0) or 0)
             probe_wrong = int(teacher_probe_stats.get("teacher_probe_wrong", 0) or 0)
             probe_probed = probe_correct + probe_wrong
             probe_candidate_denom = max(probe_candidates, 1)
             probe_probed_denom = max(probe_probed, 1)
+            guard_degenerate = int(getattr(route_guard_stats, "degenerate_hard_overrides", 0) or 0)
+            guard_clipped = int(getattr(route_guard_stats, "clipped_hard_overrides", 0) or 0)
+            guard_teacher = int(getattr(route_guard_stats, "teacher_correct_overrides", 0) or 0)
+            guard_signal_sft = int(getattr(route_guard_stats, "signal_aware_sft", 0) or 0)
+            opd_cap_capped = int(getattr(opd_cap_stats, "capped", 0) or 0)
+            opd_cap_prompts = int(getattr(opd_cap_stats, "eligible_prompts", 0) or 0)
+            opd_cap_kept = int(getattr(opd_cap_stats, "kept_opd", 0) or 0)
+            opd_cap_traj_removed = int(getattr(opd_cap_stats, "teacher_traj_removed", 0) or 0)
+            opd_cap_grpo = int(getattr(opd_cap_stats, "rerouted_grpo", 0) or 0)
+            opd_cap_skip = int(getattr(opd_cap_stats, "skipped", 0) or 0)
+            repair_slot_eligible = int(getattr(teacher_sft_repair_stats, "repair_slot_eligible", 0) or 0)
+            repair_to_opd = int(getattr(teacher_sft_repair_stats, "teacher_correct_to_opd", 0) or 0)
+            repair_to_sft = int(
+                getattr(teacher_sft_repair_stats, "teacher_correct_to_sft_repair", 0) or 0
+            )
+            repair_teacher_denom = max(repair_to_opd + repair_to_sft, 1)
+            repaired_prompt_denom = max(repaired_prompt_seen, 1)
             self._health_monitor.record_routing(
                 global_step,
                 {
@@ -2286,6 +3387,7 @@ class DyMETrainer(Trainer):
                     "grpo_route_rate": grpo_route_count / local_routing_n,
                     "opd_route_rate": opd_route_count / local_routing_n,
                     "sft_route_rate": sft_route_count / local_routing_n,
+                    "skip_route_rate": skip_route_count / local_routing_n,
                     "total_completion_count": len(sft_replaced_list),
                     "wrong_completion_count": wrong_completion_count,
                     "probe_candidate_count": probe_candidates,
@@ -2293,6 +3395,74 @@ class DyMETrainer(Trainer):
                     "opd_route_count": opd_route_count,
                     "sft_route_count": sft_route_count,
                     "grpo_route_count": grpo_route_count,
+                    "degenerate_hard_override_rate": guard_degenerate / local_routing_n,
+                    "clipped_hard_override_rate": guard_clipped / local_routing_n,
+                    "teacher_correct_overridden_rate": guard_teacher / local_routing_n,
+                    "signal_aware_sft_rate": guard_signal_sft / local_routing_n,
+                    "opd_route_cap_rate": opd_cap_capped / local_routing_n,
+                    "opd_route_cap_prompt_rate": opd_cap_prompts / local_prompt_n,
+                    "opd_route_cap_kept_rate": opd_cap_kept / local_routing_n,
+                    "opd_route_cap_teacher_traj_removed_rate": opd_cap_traj_removed / local_routing_n,
+                    "opd_route_cap_grpo_rate": opd_cap_grpo / local_routing_n,
+                    "opd_route_cap_skip_rate": opd_cap_skip / local_routing_n,
+                    "effective_sampling_enabled": 1.0 if self._effective_signal_sampler is not None else 0.0,
+                    "effective_sampling_mixed_update_rate": sampler_updates["mixed"] / local_prompt_n,
+                    "effective_sampling_all_wrong_update_rate": sampler_updates["all_wrong"] / local_prompt_n,
+                    "effective_sampling_all_correct_update_rate": sampler_updates["all_correct"] / local_prompt_n,
+                    "effective_sampling_missing_index_rate": sampler_updates["missing_index"] / local_prompt_n,
+                    "effective_group_filter_enabled": 1.0 if effective_filter_cfg.enabled else 0.0,
+                    "effective_group_filtered_rate": (
+                        effective_filter_stats.filtered_total / max(effective_filter_stats.total, 1)
+                    ),
+                    "effective_group_all_wrong_filtered_rate": (
+                        effective_filter_stats.filtered_all_wrong / local_routing_n
+                    ),
+                    "effective_group_all_correct_filtered_rate": (
+                        effective_filter_stats.filtered_all_correct / local_routing_n
+                    ),
+                    "effective_group_kept_all_wrong_rate": (
+                        effective_filter_stats.kept_all_wrong / local_routing_n
+                    ),
+                    "effective_group_teacher_traj_removed_rate": (
+                        effective_filter_teacher_traj_removed / local_routing_n
+                    ),
+                    "teacher_sft_repair_rate": teacher_sft_repair_used_count / local_routing_n,
+                    "teacher_sft_repair_all_wrong_rate": (
+                        teacher_sft_repair_all_wrong_used_count / local_routing_n
+                    ),
+                    "teacher_sft_repair_slot_utilization": (
+                        teacher_sft_repair_used_count / max(repair_slot_eligible, 1)
+                    ),
+                    "teacher_correct_to_opd_rate": repair_to_opd / repair_teacher_denom,
+                    "teacher_correct_to_sft_repair_rate": repair_to_sft / repair_teacher_denom,
+                    "repaired_prompt_to_mixed_rate": repaired_prompt_to_mixed / repaired_prompt_denom,
+                    "repaired_prompt_still_all_wrong_rate": (
+                        repaired_prompt_still_all_wrong / repaired_prompt_denom
+                    ),
+                    "teacher_sft_privileged_tag_rate": (
+                        teacher_sft_privileged_tag_count / max(teacher_sft_repair_used_count, 1)
+                    ),
+                    "teacher_sft_target_raw_full_hint_format_rate": (
+                        teacher_sft_target_raw_full_hint_count / max(teacher_sft_repair_used_count, 1)
+                    ),
+                    "teacher_sft_target_full_hint_format_rate": (
+                        teacher_sft_target_full_hint_count / max(teacher_sft_repair_used_count, 1)
+                    ),
+                    "teacher_sft_target_exact_answer_line_rate": (
+                        teacher_sft_target_exact_answer_count / max(teacher_sft_repair_used_count, 1)
+                    ),
+                    "teacher_sft_target_fallback_hint_rate": (
+                        teacher_sft_target_fallback_hint_count / max(teacher_sft_repair_used_count, 1)
+                    ),
+                    "teacher_sft_target_raw_clipped_rate": (
+                        teacher_sft_target_raw_clipped_count / max(teacher_sft_repair_used_count, 1)
+                    ),
+                    "teacher_sft_target_student_short_rate": (
+                        teacher_sft_target_student_short_count / max(teacher_sft_repair_used_count, 1)
+                    ),
+                    "teacher_sft_target_answer_only_rate": (
+                        teacher_sft_target_answer_only_count / max(teacher_sft_repair_used_count, 1)
+                    ),
                     "group_all_wrong_rate": all_wrong_groups / local_prompt_n,
                     "group_mixed_rate": mixed_groups / local_prompt_n,
                     "reward_std_lt_0_01_rate": float((reward_std_local < 0.01).sum().item()) / reward_std_denom,
@@ -2317,6 +3487,10 @@ class DyMETrainer(Trainer):
                     "teacher_probe_clipped_rate": teacher_probe_stats.get("teacher_probe_clipped_rate", 0.0),
                     "format_mean": float(format_rewards.mean().item()),
                     "accuracy_mean": float(acc_rewards.mean().item()),
+                    "perception_reward_mean": float(perception_stats.get("mean", 0.0)),
+                    "perception_reward_skipped_rate": float(perception_stats.get("skipped_rate", 0.0)),
+                    "perception_judge_parse_fail_rate": float(perception_stats.get("judge_parse_fail_rate", 0.0)),
+                    "diagnostic_deplot_overlap_mean": float(perception_stats.get("diagnostic_deplot_overlap_mean", 0.0)),
                 },
             )
 
@@ -2482,6 +3656,9 @@ class DyMETrainer(Trainer):
             "img_sizes": image_sizes,
             "acc_rewards": acc_rewards_flat.to(device),
             "reward_std_mean": reward_std_mean.to(device),
+            "group_mixed_rate": float(
+                ((has_correct > 0) & (has_correct < self.num_generations)).float().mean().item()
+            ),
         }
 
         if opsd_active:
@@ -2623,6 +3800,170 @@ class DyMETrainer(Trainer):
         self._metrics[mode]["clip_ratio"].append(self.accelerator.gather_for_metrics(clip_ratio).mean().item())
         return loss
 
+    def _compute_positive_replay_loss(self, model, *, global_step: int) -> tuple[torch.Tensor, float, int] | None:
+        mode = "train" if self.model.training else "eval"
+        buffer = self._positive_replay_buffer
+        if mode != "train" or buffer is None:
+            return None
+        cfg = buffer.config
+        available = bool(buffer.available)
+        self._metrics[mode].setdefault("replay/positive_available", []).append(1.0 if available else 0.0)
+        self._metrics[mode].setdefault("loss/positive_replay_weight", []).append(float(cfg.weight if available else 0.0))
+        if not available or not buffer.enabled_for_step(global_step) or self.processing_func is None:
+            self._metrics[mode].setdefault("replay/positive_skipped_rate", []).append(1.0)
+            self._metrics[mode].setdefault("replay/positive_batch_size", []).append(0.0)
+            return None
+
+        replay_samples = buffer.sample(global_step=global_step)
+        if not replay_samples:
+            self._metrics[mode].setdefault("replay/positive_skipped_rate", []).append(1.0)
+            self._metrics[mode].setdefault("replay/positive_batch_size", []).append(0.0)
+            return None
+
+        replay_batch = self.processing_func(replay_samples)
+        replay_inputs = super(DyMETrainer, self)._prepare_inputs(replay_batch)
+        labels = replay_inputs.get("labels")
+        if labels is None:
+            self._metrics[mode].setdefault("replay/positive_skipped_rate", []).append(1.0)
+            self._metrics[mode].setdefault("replay/positive_batch_size", []).append(0.0)
+            return None
+
+        outputs = model(**replay_inputs)
+        replay_loss = outputs.loss
+        replay_tokens = int((labels != -100).sum().detach().item())
+        self._metrics[mode].setdefault("loss/positive_replay", []).append(float(replay_loss.detach().item()))
+        self._metrics[mode].setdefault("replay/positive_skipped_rate", []).append(0.0)
+        self._metrics[mode].setdefault("replay/positive_batch_size", []).append(float(len(replay_samples)))
+        self._metrics[mode].setdefault("replay/positive_tokens", []).append(float(replay_tokens))
+        return replay_loss, float(cfg.weight), len(replay_samples)
+
+    def _pad_rollout_replay_rows(self, rows: list[torch.Tensor], *, pad_value: int | float = 0) -> torch.Tensor:
+        return pad_sequence(
+            [row.to(self.accelerator.device) for row in rows],
+            batch_first=True,
+            padding_value=pad_value,
+        )
+
+    def _stack_optional_rollout_tensors(self, rows: list[torch.Tensor | None]) -> torch.Tensor | None:
+        return stack_optional_compatible_tensors(rows, device=self.accelerator.device)
+
+    def _compute_rollout_replay_loss(self, model, *, global_step: int) -> tuple[torch.Tensor, float, int] | None:
+        mode = "train" if self.model.training else "eval"
+        buffer = self._rollout_replay_buffer
+        if mode != "train" or buffer is None:
+            return None
+        cfg = buffer.config
+        available = bool(buffer.available)
+        self._metrics[mode].setdefault("replay/rollout_available", []).append(1.0 if available else 0.0)
+        self._metrics[mode].setdefault("loss/rollout_replay_weight", []).append(float(cfg.weight if available else 0.0))
+        if not available or not buffer.enabled_for_step(global_step):
+            self._metrics[mode].setdefault("replay/rollout_skipped_rate", []).append(1.0)
+            self._metrics[mode].setdefault("replay/rollout_batch_size", []).append(0.0)
+            return None
+
+        entries = buffer.sample(global_step=global_step)
+        if not entries:
+            self._metrics[mode].setdefault("replay/rollout_skipped_rate", []).append(1.0)
+            self._metrics[mode].setdefault("replay/rollout_batch_size", []).append(0.0)
+            return None
+
+        pad_id = int(self.processing_class.tokenizer.pad_token_id)
+        replay_prompt_ids = self._pad_rollout_replay_rows([entry.prompt_ids for entry in entries], pad_value=pad_id).long()
+        replay_prompt_mask = self._pad_rollout_replay_rows([entry.prompt_mask for entry in entries], pad_value=0).long()
+        replay_completion_ids = self._pad_rollout_replay_rows(
+            [entry.completion_ids for entry in entries],
+            pad_value=pad_id,
+        ).long()
+        replay_completion_mask = self._pad_rollout_replay_rows(
+            [entry.completion_mask for entry in entries],
+            pad_value=0,
+        ).long()
+        replay_old_logps = self._pad_rollout_replay_rows(
+            [entry.old_per_token_logps for entry in entries],
+            pad_value=0.0,
+        ).float()
+        replay_advantages = torch.tensor(
+            [float(entry.advantage) for entry in entries],
+            dtype=torch.float32,
+            device=self.accelerator.device,
+        )
+        replay_input_ids = torch.cat([replay_prompt_ids, replay_completion_ids], dim=1)
+        replay_attention_mask = torch.cat([replay_prompt_mask, replay_completion_mask], dim=1)
+        replay_pixel_values = self._stack_optional_rollout_tensors([entry.pixel_values for entry in entries])
+        replay_image_sizes = self._stack_optional_rollout_tensors([entry.image_sizes for entry in entries])
+        has_pixel_values = any(isinstance(entry.pixel_values, torch.Tensor) for entry in entries)
+        has_image_sizes = any(isinstance(entry.image_sizes, torch.Tensor) for entry in entries)
+        if (has_pixel_values and replay_pixel_values is None) or (has_image_sizes and replay_image_sizes is None):
+            self._metrics[mode].setdefault("replay/rollout_skipped_rate", []).append(1.0)
+            self._metrics[mode].setdefault("replay/rollout_batch_size", []).append(0.0)
+            self._metrics[mode].setdefault("replay/rollout_skipped_incompatible_vision", []).append(1.0)
+            return None
+
+        replay_logps = self._get_per_token_logps(
+            model,
+            replay_input_ids,
+            replay_attention_mask,
+            replay_pixel_values,
+            replay_image_sizes,
+            replay_completion_ids.size(1),
+        )
+        coef_1 = torch.exp(replay_logps - replay_old_logps)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
+        per_token_loss = -torch.min(
+            coef_1 * replay_advantages.unsqueeze(1),
+            coef_2 * replay_advantages.unsqueeze(1),
+        )
+        replay_loss = (per_token_loss * replay_completion_mask).sum() / replay_completion_mask.sum().clamp(min=1.0)
+        self._metrics[mode].setdefault("loss/rollout_replay", []).append(float(replay_loss.detach().item()))
+        self._metrics[mode].setdefault("replay/rollout_skipped_rate", []).append(0.0)
+        self._metrics[mode].setdefault("replay/rollout_batch_size", []).append(float(len(entries)))
+        self._metrics[mode].setdefault("replay/rollout_tokens", []).append(
+            float(replay_completion_mask.detach().float().sum().item())
+        )
+        self._metrics[mode].setdefault("replay/rollout_advantage_mean", []).append(
+            float(replay_advantages.detach().float().mean().item())
+        )
+        return replay_loss, float(cfg.weight), len(entries)
+
+    def _update_rollout_replay_buffer(
+        self,
+        *,
+        prompt_ids: torch.Tensor,
+        prompt_mask: torch.Tensor,
+        completion_ids: torch.Tensor,
+        completion_mask: torch.Tensor,
+        old_per_token_logps: torch.Tensor,
+        advantages: torch.Tensor,
+        acc_rewards: torch.Tensor | None,
+        global_step: int,
+        pixel_values: torch.Tensor | None,
+        image_sizes: torch.Tensor | None,
+    ) -> None:
+        mode = "train" if self.model.training else "eval"
+        buffer = self._rollout_replay_buffer
+        if mode != "train" or buffer is None or not buffer.available:
+            return
+        stats = buffer.add_batch(
+            prompt_ids=prompt_ids,
+            prompt_mask=prompt_mask,
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            old_per_token_logps=old_per_token_logps,
+            advantages=advantages,
+            acc_rewards=acc_rewards,
+            global_step=global_step,
+            pixel_values=pixel_values,
+            image_sizes=image_sizes,
+        )
+        self._metrics[mode].setdefault("replay/rollout_buffer_size", []).append(float(len(buffer)))
+        self._metrics[mode].setdefault("replay/rollout_added", []).append(float(stats.added))
+        self._metrics[mode].setdefault("replay/rollout_skipped_not_positive", []).append(
+            float(stats.skipped_not_positive)
+        )
+        self._metrics[mode].setdefault("replay/rollout_skipped_low_advantage", []).append(
+            float(stats.skipped_low_advantage)
+        )
+
     @profiling_decorator
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         if return_outputs:
@@ -2752,12 +4093,32 @@ class DyMETrainer(Trainer):
         self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
 
         global_step = getattr(self.state, "global_step", self._step)
+        max_training_steps = self._max_training_steps()
+        phase_mode = str((self.opsd_config.get("phase_schedule") or {}).get("mode", "step") or "step")
         opsd_debug.set_detail_step(global_step)
         grpo_loss_tensor = loss.detach()
         opsd_loss_tensor = None
         combined_loss_tensor = None
         opsd_loss_cfg = self.opsd_config.get("loss", {})
         base_opsd_weight = opsd_loss_cfg.get("opsd_weight", 1.0)
+        opsd_decay_cfg = opsd_loss_cfg.get("weight_decay") or {}
+        traj_cfg = self._teacher_trajectory_config()
+        traj_decay_cfg = traj_cfg.get("weight_decay", {})
+        scheduled_opsd_weight = effective_linear_weight(
+            base_weight=base_opsd_weight,
+            global_step=global_step,
+            decay_enabled=bool(opsd_decay_cfg.get("enabled", False)),
+            decay_start_step=int(opsd_decay_cfg.get("start_step", 294) or 294),
+            decay_end_step=int(opsd_decay_cfg.get("end_step", 441) or 441),
+            final_weight=float(opsd_decay_cfg.get("final_weight", base_opsd_weight) or base_opsd_weight),
+            max_steps=max_training_steps,
+            schedule_mode=phase_mode,
+            decay_start_progress=float(opsd_decay_cfg.get("start_progress", 0.50)),
+            decay_end_progress=float(opsd_decay_cfg.get("end_progress", 0.75)),
+        )
+        adaptive_weights = self._adaptive_loss_weights()
+        if adaptive_weights is not None:
+            scheduled_opsd_weight = adaptive_weights[0]
         reward_std_mean_value = inputs.get("reward_std_mean")
         if isinstance(reward_std_mean_value, torch.Tensor):
             reward_std_mean_scalar = float(reward_std_mean_value.detach().float().mean().item())
@@ -2766,7 +4127,7 @@ class DyMETrainer(Trainer):
         else:
             reward_std_mean_scalar = float(reward_std_mean_value)
         opsd_effective_weight, opsd_adaptive_multiplier = effective_opsd_weight(
-            base_opsd_weight,
+            scheduled_opsd_weight,
             reward_std_mean_scalar,
             enabled=bool(opsd_loss_cfg.get("variance_adaptive", False)),
             std_target=opsd_loss_cfg.get("adaptive_std_target", 0.25),
@@ -2782,7 +4143,7 @@ class DyMETrainer(Trainer):
                 batch_size=prompt_ids.size(0),
             )
             beta = opsd_loss_cfg.get("beta", 0.5)
-            opsd_weight = base_opsd_weight
+            opsd_weight = scheduled_opsd_weight
             grpo_weight = opsd_loss_cfg.get("grpo_weight", 1.0)
             opsd_loss_type = opsd_loss_cfg.get("loss_type", "jsd")
             srkl_alpha = opsd_loss_cfg.get("srkl_alpha", 0.1)
@@ -2850,7 +4211,8 @@ class DyMETrainer(Trainer):
                     "combined GRPO + OPSD loss",
                     opsd_loss=float(opsd_loss.detach().item()),
                     loss_type=opsd_loss_type,
-                    base_opsd_weight=opsd_weight,
+                    base_opsd_weight=base_opsd_weight,
+                    scheduled_opsd_weight=scheduled_opsd_weight,
                     effective_opsd_weight=opsd_effective_weight,
                     opsd_adaptive_multiplier=opsd_adaptive_multiplier,
                     reward_std_mean=reward_std_mean_scalar,
@@ -2881,18 +4243,34 @@ class DyMETrainer(Trainer):
                 self.accelerator.gather_for_metrics(opsd_metric_value).mean().item()
             )
             self._metrics[mode].setdefault("signal/reward_std_mean", []).append(reward_std_mean_scalar)
+            self._metrics[mode].setdefault("loss/opsd_scheduled_base_weight", []).append(scheduled_opsd_weight)
             self._metrics[mode].setdefault("loss/opsd_effective_weight", []).append(opsd_effective_weight)
             self._metrics[mode].setdefault("loss/opsd_adaptive_multiplier", []).append(
                 opsd_adaptive_multiplier
             )
             opsd_debug.hang_probe("gather_opsd_loss_done")
-            traj_cfg = self._teacher_trajectory_config()
+            teacher_traj_effective_weight = effective_teacher_traj_weight(
+                base_weight=traj_cfg["weight"],
+                global_step=global_step,
+                decay_enabled=bool(traj_decay_cfg.get("enabled", False)),
+                decay_start_step=int(traj_decay_cfg.get("start_step", 294)),
+                decay_end_step=int(traj_decay_cfg.get("end_step", 441)),
+                final_weight=float(traj_decay_cfg.get("final_weight", 0.0)),
+                max_steps=max_training_steps,
+                schedule_mode=phase_mode,
+                decay_start_progress=float(traj_decay_cfg.get("start_progress", 0.25)),
+                decay_end_progress=float(traj_decay_cfg.get("end_progress", 0.50)),
+            )
+            if adaptive_weights is not None:
+                teacher_traj_effective_weight = adaptive_weights[1]
+            self._metrics[mode].setdefault("loss/teacher_traj_effective_weight", []).append(
+                teacher_traj_effective_weight
+            )
             if traj_cfg["enabled"] and inputs.get("teacher_traj_mask") is not None:
                 teacher_traj_mask = inputs["teacher_traj_mask"]
-                teacher_traj_indices = (
-                    teacher_traj_mask.nonzero(as_tuple=True)[0].tolist()
-                    if teacher_traj_mask.any()
-                    else []
+                teacher_traj_indices = local_teacher_traj_indices(
+                    teacher_traj_mask=teacher_traj_mask.detach().bool().cpu().tolist(),
+                    has_teacher_prompt_ids=inputs.get("teacher_prompt_ids") is not None,
                 )
                 local_traj_count = len(teacher_traj_indices)
                 global_traj_count = sync_global_sum_count(
@@ -2932,13 +4310,14 @@ class DyMETrainer(Trainer):
                         "teacher_traj_compute_done",
                         teacher_traj_loss=float(teacher_traj_loss_tensor.detach().item()),
                     )
-                    loss = loss + traj_cfg["weight"] * teacher_traj_loss_tensor
+                    loss = loss + teacher_traj_effective_weight * teacher_traj_loss_tensor
                     combined_loss_tensor = loss
                     opsd_debug.log(
                         "opsd_loss",
                         "added teacher trajectory distillation loss",
                         teacher_traj_loss=float(teacher_traj_loss_tensor.detach().item()),
-                        teacher_traj_weight=traj_cfg["weight"],
+                        teacher_traj_weight=teacher_traj_effective_weight,
+                        teacher_traj_base_weight=traj_cfg["weight"],
                         teacher_traj_loss_type=traj_cfg["loss_type"],
                         combined_loss=float(loss.detach().item()),
                     )
@@ -2963,6 +4342,47 @@ class DyMETrainer(Trainer):
             if opsd_indices and opsd_debug.should_log_detail(global_step):
                 opsd_diagnostics.log_opsd_jsd_diagnostics(global_step=global_step)
             self._opsd_distributed_barrier("wait_for_everyone after OPSD compute_loss")
+
+        positive_replay = self._compute_positive_replay_loss(model, global_step=global_step)
+        if positive_replay is not None:
+            positive_replay_loss, positive_replay_weight, positive_replay_batch = positive_replay
+            loss = loss + positive_replay_weight * positive_replay_loss
+            combined_loss_tensor = loss
+            opsd_debug.log(
+                "positive_replay",
+                "added positive replay auxiliary CE loss",
+                replay_loss=float(positive_replay_loss.detach().item()),
+                replay_weight=positive_replay_weight,
+                replay_batch=positive_replay_batch,
+                combined_loss=float(loss.detach().item()),
+            )
+
+        rollout_replay = self._compute_rollout_replay_loss(model, global_step=global_step)
+        if rollout_replay is not None:
+            rollout_replay_loss, rollout_replay_weight, rollout_replay_batch = rollout_replay
+            loss = loss + rollout_replay_weight * rollout_replay_loss
+            combined_loss_tensor = loss
+            opsd_debug.log(
+                "rollout_replay",
+                "added rollout replay clipped PG loss",
+                replay_loss=float(rollout_replay_loss.detach().item()),
+                replay_weight=rollout_replay_weight,
+                replay_batch=rollout_replay_batch,
+                combined_loss=float(loss.detach().item()),
+            )
+
+        self._update_rollout_replay_buffer(
+            prompt_ids=prompt_ids,
+            prompt_mask=prompt_mask,
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            old_per_token_logps=old_per_token_logps.detach(),
+            advantages=advantages.detach().view(-1, 1),
+            acc_rewards=inputs.get("acc_rewards"),
+            global_step=global_step,
+            pixel_values=pixel_values,
+            image_sizes=image_sizes,
+        )
 
         opsd_diagnostics.log_loss_diagnostics(
             global_step=global_step,
@@ -3022,6 +4442,11 @@ class DyMETrainer(Trainer):
                 logs.get("learning_rate"),
             )
             health_metrics = self._health_monitor.finish_step(step)
+            self._record_dynamic_trigger_metrics(
+                mode=mode,
+                global_step=int(step),
+                health_metrics=health_metrics,
+            )
             for key, value in health_metrics.items():
                 self._metrics[mode].setdefault(key, []).append(value)
         metrics = {key: sum(val) / len(val) for key, val in self._metrics[mode].items()}  # average the metrics

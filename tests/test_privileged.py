@@ -17,6 +17,7 @@ from data_utils.privileged_schema import (
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils.privileged import build_privileged_context, maybe_save_privileged_images
 from opsd_utils.privileged.image_utils import crop_image, load_rgb, resolve_teacher_images
+from opsd_utils.privileged.providers import split_teacher_response_prefix
 from opsd_utils.privileged.profiles import effective_profile
 
 
@@ -186,6 +187,54 @@ def test_deplot_only_provider_skips_hint():
     assert "Reference Reasoning" not in suffix
     assert "Reference Answer" not in suffix
     assert hint_cot not in suffix
+
+
+def test_oracle_hint_provider_exports_response_prefix_and_preserves_evidence_order():
+    """Official oracle-hint keeps DePlot as evidence and pre-fills hint structure."""
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
+    hint_cot = (
+        "Goal: Find the difference in percentage of male voters who voted for Clinton and Trump.\n"
+        "Observation: Hillary Clinton is 41%, and Donald Trump is 53%.\n"
+        "Reasoning: Subtracting Clinton from Trump gives 53 - 41 = 12.\n"
+        "Conclusion: The difference in percentage of male voters who voted for Clinton and Trump is 13%."
+    )
+    sample = {
+        "hint": hint_cot,
+        "answer": "Answer: 13",
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Candidate | Male\nClinton | 41\nTrump | 53"
+        ),
+        "image": Image.new("RGB", (64, 64)),
+    }
+
+    raw_suffix, _ = build_privileged_context(
+        sample,
+        ["format_only", "visual_facts_deplot", "oracle_hint"],
+        privileged_profile="text",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {"prompt_profile": "chartqa_oracle_hint"},
+        },
+    )
+    suffix, response_prefix = split_teacher_response_prefix(raw_suffix)
+
+    assert "[Visual Facts - DePlot]" in suffix
+    assert suffix.index("[Visual Facts - DePlot]") < suffix.index("[Verified Hint]")
+    assert "Candidate | Male" in suffix
+    assert "[Verified Hint]" in suffix
+    assert suffix.index("[Verified Hint]") < suffix.index("[Reference Answer]")
+    assert "[Reference Answer]\n13" in suffix
+    assert "Do not output a short answer only." in suffix
+    assert "Do not transcribe the DePlot table" in suffix
+    assert "[Teacher Response Prefix]" not in suffix
+    assert "The final non-empty line must be exactly:\nAnswer: 13" in suffix
+    assert response_prefix.startswith("Goal: Find the difference in percentage")
+    assert "\nObservation: Hillary Clinton is 41%, and Donald Trump is 53%." in response_prefix
+    assert "\nReasoning: Subtracting Clinton from Trump gives 53 - 41 = 12." in response_prefix
+    assert "\nConclusion: The difference in percentage" in response_prefix
+    assert response_prefix.rstrip().endswith("Answer:")
+    assert "Answer: 13" not in response_prefix
 
 
 def test_parse_visual_fact_b1():

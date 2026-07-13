@@ -23,6 +23,9 @@ ALERT_VISUAL_IC_FAIL_HIGH = "VISUAL_IC_FAIL_HIGH"
 ALERT_VISUAL_CHECKER_ALL_LOW = "VISUAL_CHECKER_ALL_LOW"
 ALERT_VISUAL_REFINER_NOOP = "VISUAL_REFINER_NOOP"
 ALERT_VISUAL_POOL_STALE = "VISUAL_POOL_STALE"
+ALERT_TEMPLATE_SKELETON_COLLAPSE = "TEMPLATE_SKELETON_COLLAPSE"
+ALERT_TEMPLATE_ANSWER_COLLAPSE = "TEMPLATE_ANSWER_COLLAPSE"
+ALERT_TEMPLATE_PARTIAL_DRIFT = "TEMPLATE_PARTIAL_DRIFT"
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -88,6 +91,13 @@ class TrainingHealthMonitor:
         p_greedy = _safe_float(logits.get("p_greedy_first"))
         p_eos = _safe_float(logits.get("p_eos_first"))
         p_answer = _safe_float(logits.get("p_answer_first"))
+        full_cot_template_rate = _safe_float(stats.get("full_cot_template_rate"))
+        partial_cot_template_rate = _safe_float(stats.get("partial_cot_template_rate"))
+        goal_without_answer_rate = _safe_float(stats.get("goal_without_answer_rate"))
+        empty_cot_skeleton_rate = _safe_float(stats.get("empty_cot_skeleton_rate"))
+        malformed_answer_section_rate = _safe_float(
+            stats.get("malformed_answer_section_rate")
+        )
 
         if clipped > 0.8 and degenerate_rate < 0.05:
             self._emit_alert(
@@ -111,6 +121,30 @@ class TrainingHealthMonitor:
                 ALERT_GEN_REPEAT_DEGEN,
                 degenerate_rate=degenerate_rate,
                 repeat_loop_count=repeat_loop,
+            )
+        if full_cot_template_rate > 0.8 and empty_cot_skeleton_rate > 0.2:
+            self._emit_alert(
+                step,
+                ALERT_TEMPLATE_SKELETON_COLLAPSE,
+                full_cot_template_rate=full_cot_template_rate,
+                empty_cot_skeleton_rate=empty_cot_skeleton_rate,
+                hint="structured reasoning has collapsed into mostly empty fixed headings",
+            )
+        if full_cot_template_rate > 0.8 and malformed_answer_section_rate > 0.2:
+            self._emit_alert(
+                step,
+                ALERT_TEMPLATE_ANSWER_COLLAPSE,
+                full_cot_template_rate=full_cot_template_rate,
+                malformed_answer_section_rate=malformed_answer_section_rate,
+                hint="fixed reasoning headings co-occur with malformed Answer sections",
+            )
+        if partial_cot_template_rate > 0.6 and goal_without_answer_rate > 0.6:
+            self._emit_alert(
+                step,
+                ALERT_TEMPLATE_PARTIAL_DRIFT,
+                partial_cot_template_rate=partial_cot_template_rate,
+                goal_without_answer_rate=goal_without_answer_rate,
+                hint="Goal-style headings are spreading before valid Answer sections emerge",
             )
 
         if p_greedy > 0:
@@ -166,6 +200,11 @@ class TrainingHealthMonitor:
                 "degenerate_rate_format": stats.get("degenerate_rate_format"),
                 "degenerate_rate_repeat": stats.get("degenerate_rate_repeat"),
                 "format_without_thinking_rate": stats.get("format_without_thinking_rate"),
+                "full_cot_template_rate": stats.get("full_cot_template_rate"),
+                "partial_cot_template_rate": stats.get("partial_cot_template_rate"),
+                "goal_without_answer_rate": stats.get("goal_without_answer_rate"),
+                "empty_cot_skeleton_rate": stats.get("empty_cot_skeleton_rate"),
+                "malformed_answer_section_rate": stats.get("malformed_answer_section_rate"),
             }
         )
         alerts = self._check_generate_alerts(step, stats, logits_stats)
@@ -428,6 +467,11 @@ class TrainingHealthMonitor:
             "completions/degenerate_rate": "degenerate_rate",
             "completions/eos_rate": "eos_terminated_rate",
             "completions/repeat_loop_count": "repeat_loop_count",
+            "completions/full_cot_template_rate": "full_cot_template_rate",
+            "completions/partial_cot_template_rate": "partial_cot_template_rate",
+            "completions/goal_without_answer_rate": "goal_without_answer_rate",
+            "completions/empty_cot_skeleton_rate": "empty_cot_skeleton_rate",
+            "completions/malformed_answer_section_rate": "malformed_answer_section_rate",
             "routing/sft_replaced_ratio": "sft_replaced_ratio",
             "routing/opsd_skipped_degenerate": "opsd_skipped_degenerate",
             "routing/opsd_skipped_leakage": "opsd_skipped_leakage",
@@ -458,9 +502,64 @@ class TrainingHealthMonitor:
             "routing/teacher_probe_answer_flag_rate": "teacher_probe_answer_flag_rate",
             "routing/teacher_probe_parse_fail_rate": "teacher_probe_parse_fail_rate",
             "routing/teacher_probe_gold_suffix_rate": "teacher_probe_gold_suffix_rate",
+            "routing/degenerate_hard_override_rate": "degenerate_hard_override_rate",
+            "routing/clipped_hard_override_rate": "clipped_hard_override_rate",
+            "routing/teacher_correct_overridden_rate": "teacher_correct_overridden_rate",
+            "routing/signal_aware_sft_rate": "signal_aware_sft_rate",
+            "routing/opd_route_cap_rate": "opd_route_cap_rate",
+            "routing/opd_route_cap_prompt_rate": "opd_route_cap_prompt_rate",
+            "routing/opd_route_cap_kept_rate": "opd_route_cap_kept_rate",
+            "routing/opd_route_cap_teacher_traj_removed_rate": "opd_route_cap_teacher_traj_removed_rate",
+            "routing/opd_route_cap_grpo_rate": "opd_route_cap_grpo_rate",
+            "routing/opd_route_cap_skip_rate": "opd_route_cap_skip_rate",
+            "routing/skip_route_rate": "skip_route_rate",
+            "sampling/effective_enabled": "effective_sampling_enabled",
+            "sampling/effective_mixed_update_rate": "effective_sampling_mixed_update_rate",
+            "sampling/effective_all_wrong_update_rate": "effective_sampling_all_wrong_update_rate",
+            "sampling/effective_all_correct_update_rate": "effective_sampling_all_correct_update_rate",
+            "sampling/effective_missing_index_rate": "effective_sampling_missing_index_rate",
+            "filter/effective_group_enabled": "effective_group_filter_enabled",
+            "filter/effective_group_filtered_rate": "effective_group_filtered_rate",
+            "filter/effective_group_all_wrong_filtered_rate": "effective_group_all_wrong_filtered_rate",
+            "filter/effective_group_all_correct_filtered_rate": "effective_group_all_correct_filtered_rate",
+            "filter/effective_group_kept_all_wrong_rate": "effective_group_kept_all_wrong_rate",
+            "filter/effective_group_teacher_traj_removed_rate": "effective_group_teacher_traj_removed_rate",
+            "loss/positive_replay": "positive_replay_loss",
+            "loss/positive_replay_weight": "positive_replay_weight",
+            "replay/positive_available": "positive_replay_available",
+            "replay/positive_skipped_rate": "positive_replay_skipped_rate",
+            "replay/positive_batch_size": "positive_replay_batch_size",
+            "replay/positive_tokens": "positive_replay_tokens",
+            "loss/rollout_replay": "rollout_replay_loss",
+            "loss/rollout_replay_weight": "rollout_replay_weight",
+            "replay/rollout_available": "rollout_replay_available",
+            "replay/rollout_skipped_rate": "rollout_replay_skipped_rate",
+            "replay/rollout_batch_size": "rollout_replay_batch_size",
+            "replay/rollout_tokens": "rollout_replay_tokens",
+            "replay/rollout_advantage_mean": "rollout_replay_advantage_mean",
+            "replay/rollout_buffer_size": "rollout_replay_buffer_size",
+            "replay/rollout_added": "rollout_replay_added",
+            "replay/rollout_skipped_not_positive": "rollout_replay_skipped_not_positive",
+            "replay/rollout_skipped_low_advantage": "rollout_replay_skipped_low_advantage",
+            "routing/teacher_sft_repair_rate": "teacher_sft_repair_rate",
+            "routing/teacher_sft_repair_all_wrong_rate": "teacher_sft_repair_all_wrong_rate",
+            "routing/teacher_sft_repair_slot_utilization": "teacher_sft_repair_slot_utilization",
+            "routing/teacher_correct_to_opd_rate": "teacher_correct_to_opd_rate",
+            "routing/teacher_correct_to_sft_repair_rate": "teacher_correct_to_sft_repair_rate",
+            "repair/repaired_prompt_to_mixed_rate": "repaired_prompt_to_mixed_rate",
+            "repair/repaired_prompt_still_all_wrong_rate": "repaired_prompt_still_all_wrong_rate",
+            "repair/teacher_sft_target_student_short_rate": "teacher_sft_target_student_short_rate",
+            "repair/teacher_sft_target_answer_only_rate": "teacher_sft_target_answer_only_rate",
+            "repair/teacher_sft_target_full_hint_format_rate": "teacher_sft_target_full_hint_format_rate",
+            "repair/teacher_sft_target_exact_answer_line_rate": "teacher_sft_target_exact_answer_line_rate",
+            "leakage/teacher_sft_privileged_tag_rate": "teacher_sft_privileged_tag_rate",
             "teacher_probe/generated_tokens_mean": "teacher_probe_generated_tokens_mean",
             "teacher_probe/generated_tokens_p95": "teacher_probe_generated_tokens_p95",
             "teacher_probe/clipped_rate": "teacher_probe_clipped_rate",
+            "reward/perception_mean": "perception_reward_mean",
+            "reward/perception_skipped_rate": "perception_reward_skipped_rate",
+            "reward/perception_judge_parse_fail_rate": "perception_judge_parse_fail_rate",
+            "reward/diagnostic_deplot_overlap_mean": "diagnostic_deplot_overlap_mean",
             "teacher/privileged_suffix_has_gold_rate": "privileged_suffix_has_gold_rate",
             "teacher/visual_fact_empty_rate": "visual_fact_empty_rate",
             "teacher/suffix_len_mean": "teacher_suffix_len_mean",
@@ -472,6 +571,7 @@ class TrainingHealthMonitor:
             "signal/reward_std_lt_0_01_rate": "reward_std_lt_0_01_rate",
             "signal/reward_std_lt_0_05_rate": "reward_std_lt_0_05_rate",
             "signal/reward_std_lt_0_10_rate": "reward_std_lt_0_10_rate",
+            "loss/opsd_scheduled_base_weight": "opsd_scheduled_base_weight",
             "loss/opsd_effective_weight": "opsd_effective_weight",
             "loss/opsd_adaptive_multiplier": "opsd_adaptive_multiplier",
             "logits/p_greedy_first": "p_greedy_first",
@@ -481,6 +581,19 @@ class TrainingHealthMonitor:
             "completions/degenerate_rate_repeat": "degenerate_rate_repeat",
             "metrics/format_without_thinking_rate": "format_without_thinking_rate",
             "phase/sft_cold_start": "phase_sft_cold_start",
+            "phase/training_progress": "training_progress",
+            "phase/max_training_steps": "max_training_steps",
+            "phase/teacher_traj_decay_active": "teacher_traj_decay_active",
+            "phase/effective_sampling_active": "effective_sampling_active",
+            "phase/opd_decay_active": "opd_decay_active",
+            "phase/opd_route_cap_active": "opd_route_cap_active",
+            "phase/dynamic_mixed_rate_ema": "dynamic_mixed_rate_ema",
+            "phase/dynamic_zero_loss_rate_ema": "dynamic_zero_loss_rate_ema",
+            "phase/dynamic_mixed_ready": "dynamic_mixed_ready",
+            "phase/dynamic_zero_loss_ready": "dynamic_zero_loss_ready",
+            "phase/dynamic_joint_ready": "dynamic_joint_ready",
+            "phase/dynamic_ready_streak": "dynamic_ready_streak",
+            "phase/dynamic_would_trigger": "dynamic_would_trigger",
             "health/alert_count": "alert_count",
             "visual/ic_ok_rate": "visual/ic_ok_rate",
             "visual/checker_mean": "visual/checker_mean",

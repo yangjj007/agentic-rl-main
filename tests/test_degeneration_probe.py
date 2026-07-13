@@ -12,6 +12,7 @@ from opsd_utils.diagnostics import (
     _max_same_token_run,
     is_degenerate_completion,
     log_generate_probe,
+    summarize_template_behavior,
 )
 
 
@@ -96,3 +97,33 @@ def test_log_generate_probe_does_not_shadow_tokenizer_across_samples():
             sample_count=2,
         )
     assert stats["degenerate_count"] >= 1
+
+
+def test_template_behavior_separates_reasoning_from_empty_skeletons():
+    stats = summarize_template_behavior(
+        [
+            "Goal: Find the maximum.\nObservation: Values are 2 and 5.\nReasoning: 5 is larger.\nConclusion: The maximum is 5.\nAnswer: 5",
+            "Goal:\nObservation.\nReasoning,\nConclusion,\nAnswer:.50 .",
+            "Answer: 7",
+        ]
+    )
+
+    assert stats["full_cot_template_rate"] == 2 / 3
+    assert stats["empty_cot_skeleton_rate"] == 1 / 3
+    assert stats["malformed_answer_section_rate"] == 1 / 3
+    assert stats["partial_cot_template_rate"] == 0.0
+    assert stats["goal_without_answer_rate"] == 0.0
+
+
+def test_template_behavior_detects_partial_goal_without_answer_drift():
+    stats = summarize_template_behavior(
+        [
+            "Goal: Compare the bars.\nObservation: A is higher than B.\nReasoning: compare values",
+            "Goal Statement:\nFind the average.\nObservation - inspect the last three years",
+            "Answer: 7",
+        ]
+    )
+
+    assert stats["full_cot_template_rate"] == 0.0
+    assert stats["partial_cot_template_rate"] == 2 / 3
+    assert stats["goal_without_answer_rate"] == 2 / 3
