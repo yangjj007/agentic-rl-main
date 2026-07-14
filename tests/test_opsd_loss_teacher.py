@@ -143,6 +143,40 @@ def test_token_reliability_mask_upweights_numeric_and_answer_tokens():
     assert weights.tolist() == [[0.75, 1.5, 0.75, 2.0, 2.0, 0.0]]
 
 
+def test_answer_anchor_token_mask_focuses_after_answer_marker():
+    class ToyTokenizer:
+        pieces = {
+            1: " 12",
+            2: " reasoning",
+            3: " answer",
+            4: " is",
+            5: " 34",
+            6: ".",
+            7: "<pad>",
+        }
+
+        def decode(self, ids, skip_special_tokens=False):  # noqa: ARG002
+            return self.pieces[int(ids[0])]
+
+    weights = _build_token_reliability_mask(
+        torch.tensor([[1, 2, 3, 4, 5, 6, 7]]),
+        torch.tensor([[1, 1, 1, 1, 1, 1, 0]]),
+        tokenizer=ToyTokenizer(),
+        token_weighting={
+            "enabled": True,
+            "mode": "answer_anchor",
+            "numeric_weight": 3.0,
+            "answer_weight": 2.0,
+            "min_weight": 0.05,
+        },
+    )
+
+    assert torch.allclose(
+        weights,
+        torch.tensor([[0.05, 0.05, 2.0, 2.0, 3.0, 2.0, 0.0]]),
+    )
+
+
 def test_loss_mixer_applies_grpo_weight_even_without_opsd_samples():
     grpo_loss = torch.tensor(3.0)
 

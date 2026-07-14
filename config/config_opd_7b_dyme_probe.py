@@ -129,6 +129,7 @@ ADAPTIVE_OPSD_FINAL_CAP = 2
 GLOBAL_SIGNAL_LOGGING_ENABLED = False
 MIXED_GROUP_HARD_REPLAY = False
 OPSD_TOKEN_WEIGHTING_ENABLED = False
+OPSD_TOKEN_WEIGHTING_MODE = "reliability"
 OPSD_TOKEN_NUMERIC_WEIGHT = 2.0
 OPSD_TOKEN_ANSWER_WEIGHT = 1.5
 OPSD_TOKEN_MIN_WEIGHT = 0.75
@@ -250,6 +251,7 @@ if "DYME_SSOPD_MIXED_GROUP" in os.environ:
     raise ValueError("DYME_SSOPD_MIXED_GROUP is retired; use DYME_MIXED_GROUP_HARD_REPLAY")
 MIXED_GROUP_HARD_REPLAY = env_bool("DYME_MIXED_GROUP_HARD_REPLAY", MIXED_GROUP_HARD_REPLAY)
 OPSD_TOKEN_WEIGHTING_ENABLED = env_bool("DYME_OPSD_TOKEN_WEIGHTING", OPSD_TOKEN_WEIGHTING_ENABLED)
+OPSD_TOKEN_WEIGHTING_MODE = env_str("DYME_OPSD_TOKEN_WEIGHTING_MODE", OPSD_TOKEN_WEIGHTING_MODE)
 OPSD_TOKEN_NUMERIC_WEIGHT = env_float("DYME_OPSD_TOKEN_NUMERIC_WEIGHT", OPSD_TOKEN_NUMERIC_WEIGHT)
 OPSD_TOKEN_ANSWER_WEIGHT = env_float("DYME_OPSD_TOKEN_ANSWER_WEIGHT", OPSD_TOKEN_ANSWER_WEIGHT)
 OPSD_TOKEN_MIN_WEIGHT = env_float("DYME_OPSD_TOKEN_MIN_WEIGHT", OPSD_TOKEN_MIN_WEIGHT)
@@ -340,6 +342,7 @@ DYME_OPSD_CONFIG = {
         },
         "token_weighting": {
             "enabled": OPSD_TOKEN_WEIGHTING_ENABLED,
+            "mode": OPSD_TOKEN_WEIGHTING_MODE,
             "numeric_weight": OPSD_TOKEN_NUMERIC_WEIGHT,
             "answer_weight": OPSD_TOKEN_ANSWER_WEIGHT,
             "min_weight": OPSD_TOKEN_MIN_WEIGHT,
@@ -359,6 +362,10 @@ DYME_OPSD_CONFIG = {
         "prompt_profile": TEACHER_PROBE_PROMPT_PROFILE,
         "answer_parser": env_str("DYME_TEACHER_PROBE_ANSWER_PARSER", "chartqa_final_answer"),
         "skip_no_evidence": env_bool("DYME_TEACHER_PROBE_SKIP_NO_EVIDENCE", True),
+        "strict_accept": env_bool("DYME_TEACHER_PROBE_STRICT_ACCEPT", False),
+        "require_answer_flag": env_bool("DYME_TEACHER_PROBE_REQUIRE_ANSWER_FLAG", False),
+        "reject_parse_fail": env_bool("DYME_TEACHER_PROBE_REJECT_PARSE_FAIL", False),
+        "reject_clipped": env_bool("DYME_TEACHER_PROBE_REJECT_CLIPPED", False),
         "probe_all_wrong_after_step": env_optional_int("DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP"),
         "candidate_log": {
             "enabled": env_bool("DYME_TEACHER_PROBE_CANDIDATE_LOG", True),

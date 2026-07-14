@@ -74,6 +74,9 @@ def build_teacher_probe_record(
     is_all_wrong_probe_candidate: bool = False,
     is_mixed_wrong_probe_candidate: bool = False,
     route_reason: str = "",
+    strict_rejected: bool = False,
+    strict_reject_reasons: Optional[list[str]] = None,
+    generated_clipped: bool = False,
     max_text_chars: int = 512,
 ) -> dict[str, Any]:
     question = sample.get("question") or sample.get("question_wo_prompt") or sample.get("prompt", "")
@@ -91,6 +94,10 @@ def build_teacher_probe_record(
         "teacher_correct": teacher_correct,
         "student_correct": False,
         "score": float(score),
+        "teacher_accepted": bool(score > 0 and not strict_rejected),
+        "strict_rejected": bool(strict_rejected),
+        "strict_reject_reasons": list(strict_reject_reasons or []),
+        "generated_clipped": bool(generated_clipped),
         "group_has_correct": bool(group_has_correct) if group_has_correct is not None else None,
         "group_all_wrong": (not bool(group_has_correct)) if group_has_correct is not None else None,
         "group_reward_std": float(group_reward_std) if group_reward_std is not None else None,

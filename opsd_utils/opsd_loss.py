@@ -159,9 +159,11 @@ def _build_token_reliability_mask(
     min_weight = float(cfg.get("min_weight", 0.75))
     numeric_weight = float(cfg.get("numeric_weight", 2.0))
     answer_weight = float(cfg.get("answer_weight", 1.5))
+    mode = str(cfg.get("mode", "reliability") or "reliability").strip().lower()
     weights = torch.full_like(valid_mask, min_weight)
 
     for row in range(completion_ids.shape[0]):
+        after_answer_anchor = False
         for col in range(completion_ids.shape[1]):
             if not bool(completion_mask[row, col].item()):
                 weights[row, col] = 0.0
@@ -171,11 +173,19 @@ def _build_token_reliability_mask(
                 skip_special_tokens=False,
             )
             normalized = str(piece).strip().lower()
-            if any(char.isdigit() for char in normalized) or any(
+            is_numeric = any(char.isdigit() for char in normalized) or any(
                 marker in normalized for marker in ("%", "$", "€", "£")
-            ):
+            )
+            is_answer_anchor = "answer" in normalized
+            if mode == "answer_anchor":
+                if is_answer_anchor:
+                    after_answer_anchor = True
+                    weights[row, col] = answer_weight
+                elif after_answer_anchor:
+                    weights[row, col] = numeric_weight if is_numeric else answer_weight
+            elif is_numeric:
                 weights[row, col] = numeric_weight
-            elif "answer" in normalized:
+            elif is_answer_anchor:
                 weights[row, col] = answer_weight
 
     return weights * valid_mask

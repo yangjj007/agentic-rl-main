@@ -1233,6 +1233,10 @@ class DyMETrainer(Trainer):
             "prompt_profile": cfg.get("prompt_profile", "chartqa_short_answer"),
             "answer_parser": cfg.get("answer_parser", "chartqa_final_answer"),
             "skip_no_evidence": bool(cfg.get("skip_no_evidence", True)),
+            "strict_accept": bool(cfg.get("strict_accept", False)),
+            "require_answer_flag": bool(cfg.get("require_answer_flag", False)),
+            "reject_parse_fail": bool(cfg.get("reject_parse_fail", False)),
+            "reject_clipped": bool(cfg.get("reject_clipped", False)),
             "probe_all_wrong_after_step": cfg.get("probe_all_wrong_after_step"),
         }
 
@@ -1816,6 +1820,7 @@ class DyMETrainer(Trainer):
             "teacher_probe_candidates": 0,
             "teacher_probe_correct": 0,
             "teacher_probe_wrong": 0,
+            "teacher_probe_strict_rejected": 0,
             "teacher_probe_skipped_budget": 0,
             "teacher_probe_skipped_no_evidence": 0,
             "teacher_probe_evidence_present": 0,
@@ -2009,7 +2014,8 @@ class DyMETrainer(Trainer):
             generated_token_counts.append(effective_tokens)
             eos_id = self.processing_class.tokenizer.eos_token_id
             has_eos = bool((gen_ids == eos_id).any().item()) if eos_id is not None and hasattr(gen_ids, "numel") else False
-            if not has_eos and int(gen_ids.numel()) >= int(probe_cfg["max_new_tokens"]):
+            generated_clipped = not has_eos and int(gen_ids.numel()) >= int(probe_cfg["max_new_tokens"])
+            if generated_clipped:
                 generated_clipped_count += 1
             prompt_idx = global_idx // self.num_generations
             generation_idx = global_idx % self.num_generations
@@ -2037,6 +2043,12 @@ class DyMETrainer(Trainer):
                     stats["teacher_probe_answer_flag"] += 1
                 if parsed_answer.parse_failed:
                     stats["teacher_probe_parse_failed"] += 1
+            has_answer_flag = (
+                parsed_answer.has_answer_flag
+                if parsed_answer is not None
+                else ("answer:" in text.lower() or "answer is" in text.lower())
+            )
+            parse_failed = parsed_answer.parse_failed if parsed_answer is not None else False
             stats["teacher_probe_text"][global_idx] = text[:160].replace("\n", "\\n")
             sample = sample_for(global_idx)
             student_output = completions[global_idx] if global_idx < len(completions) else ""
@@ -2049,7 +2061,25 @@ class DyMETrainer(Trainer):
                 route_reason,
             ) = group_metadata_for(global_idx)
             fallback_mode = failure_mode_for(global_idx)
-            final_route = "opd" if score > 0 else failure_route_name(fallback_mode, "teacher_wrong")
+            strict_reject_reasons: list[str] = []
+            if bool(probe_cfg.get("strict_accept", False)) and score > 0:
+                if bool(probe_cfg.get("require_answer_flag", False)) and not has_answer_flag:
+                    strict_reject_reasons.append("missing_answer_flag")
+                if bool(probe_cfg.get("reject_parse_fail", False)) and parse_failed:
+                    strict_reject_reasons.append("parse_failed")
+                if bool(probe_cfg.get("reject_clipped", False)) and generated_clipped:
+                    strict_reject_reasons.append("clipped")
+            strict_rejected = bool(strict_reject_reasons)
+            if strict_rejected:
+                stats["teacher_probe_strict_rejected"] += 1
+            final_route = (
+                "opd"
+                if score > 0 and not strict_rejected
+                else failure_route_name(
+                    fallback_mode,
+                    "teacher_strict_reject" if strict_rejected else "teacher_wrong",
+                )
+            )
             append_teacher_probe_record(
                 output_dir=getattr(self.args, "output_dir", None),
                 opsd_config=self.opsd_config,
@@ -2070,8 +2100,11 @@ class DyMETrainer(Trainer):
                     final_route=final_route,
                     answer_flag=answer_flag,
                     parsed_answer=parsed_answer.answer if parsed_answer is not None else "",
-                    parse_failed=parsed_answer.parse_failed if parsed_answer is not None else False,
-                    has_answer_flag=parsed_answer.has_answer_flag if parsed_answer is not None else ("answer:" in text.lower()),
+                    parse_failed=parse_failed,
+                    has_answer_flag=has_answer_flag,
+                    strict_rejected=strict_rejected,
+                    strict_reject_reasons=strict_reject_reasons,
+                    generated_clipped=generated_clipped,
                     evidence_status=evidence_status,
                     group_has_correct=group_has_correct_i,
                     group_reward_std=group_reward_std_i,
@@ -2104,14 +2137,16 @@ class DyMETrainer(Trainer):
                     f"[DyME-TEACHER-PROBE] {json.dumps(preview_payload, ensure_ascii=False, sort_keys=True)}",
                     flush=True,
                 )
-            if score > 0:
+            if score > 0 and not strict_rejected:
                 stats["teacher_probe_correct"] += 1
                 completion_modes[global_idx] = MODE_OPSD
                 if self._teacher_trajectory_config()["enabled"]:
                     teacher_trajs[global_idx] = (gen_ids.to(device), gen_mask.to(device))
                     teacher_traj_texts[global_idx] = text
-            else:
+            elif score <= 0:
                 stats["teacher_probe_wrong"] += 1
+                completion_modes[global_idx] = fallback_mode
+            else:
                 completion_modes[global_idx] = fallback_mode
 
         if generated_token_counts:
@@ -3436,7 +3471,8 @@ class DyMETrainer(Trainer):
             probe_candidates = int(teacher_probe_stats.get("teacher_probe_candidates", 0) or 0)
             probe_correct = int(teacher_probe_stats.get("teacher_probe_correct", 0) or 0)
             probe_wrong = int(teacher_probe_stats.get("teacher_probe_wrong", 0) or 0)
-            probe_probed = probe_correct + probe_wrong
+            probe_strict_rejected = int(teacher_probe_stats.get("teacher_probe_strict_rejected", 0) or 0)
+            probe_probed = probe_correct + probe_wrong + probe_strict_rejected
             probe_candidate_denom = max(probe_candidates, 1)
             probe_probed_denom = max(probe_probed, 1)
             guard_degenerate = int(getattr(route_guard_stats, "degenerate_hard_overrides", 0) or 0)
@@ -3577,6 +3613,7 @@ class DyMETrainer(Trainer):
                     "teacher_probe_candidate_rate": probe_candidates / local_routing_n,
                     "teacher_probe_correct_rate": probe_correct / local_routing_n,
                     "teacher_probe_wrong_rate": probe_wrong / local_routing_n,
+                    "teacher_probe_strict_rejected_rate": probe_strict_rejected / local_routing_n,
                     "teacher_probe_skipped_no_evidence_rate": teacher_probe_stats.get("teacher_probe_skipped_no_evidence", 0) / local_routing_n,
                     "teacher_probe_skipped_budget_rate": teacher_probe_stats.get("teacher_probe_skipped_budget", 0) / local_routing_n,
                     "teacher_probe_candidate_accuracy": probe_correct / probe_candidate_denom,

@@ -301,6 +301,68 @@ def test_gold_hidden_token_reliability_variant_enables_token_weighting(tmp_path:
     assert "DYME_OPSD_TOKEN_MIN_WEIGHT=0.75" in out
 
 
+def test_gold_hidden_answer_anchor_variant_downweights_rationale_tokens(tmp_path: Path) -> None:
+    out = _quality_variant_dry_run(
+        tmp_path,
+        "deplot_no_vs_opd_pcd_gold_hidden_answer_anchor_clrc",
+    )
+
+    assert "DYME_ADAPTIVE_SUPERVISION=1" in out
+    assert "DYME_ADAPTIVE_READINESS_SOURCE=global_grpo_route" in out
+    assert "DYME_ADAPTIVE_TARGET_READINESS=0.20" in out
+    assert "DYME_OPSD_TOKEN_WEIGHTING=1" in out
+    assert "DYME_OPSD_TOKEN_WEIGHTING_MODE=answer_anchor" in out
+    assert "DYME_OPSD_TOKEN_NUMERIC_WEIGHT=3.0" in out
+    assert "DYME_OPSD_TOKEN_ANSWER_WEIGHT=2.0" in out
+    assert "DYME_OPSD_TOKEN_MIN_WEIGHT=0.05" in out
+
+
+def test_gold_hidden_confidence_weighted_variant_uses_strict_teacher_probe(tmp_path: Path) -> None:
+    out = _quality_variant_dry_run(
+        tmp_path,
+        "deplot_no_vs_opd_pcd_gold_hidden_confidence_weighted_clrc",
+    )
+
+    assert "DYME_ADAPTIVE_SUPERVISION=1" in out
+    assert "DYME_TEACHER_PROBE_STRICT_ACCEPT=1" in out
+    assert "DYME_TEACHER_PROBE_REQUIRE_ANSWER_FLAG=1" in out
+    assert "DYME_TEACHER_PROBE_REJECT_PARSE_FAIL=1" in out
+    assert "DYME_TEACHER_PROBE_REJECT_CLIPPED=1" in out
+    assert "DYME_TEACHER_PROBE_RELAXED_TOL=0.0" in out
+    assert "DYME_TEACHER_PROBE_MAX_NEW_TOKENS=64" in out
+
+
+def test_gold_hidden_grpo_recovery_boost_variant_prioritizes_grpo_recovery(tmp_path: Path) -> None:
+    out = _quality_variant_dry_run(
+        tmp_path,
+        "deplot_no_vs_opd_pcd_gold_hidden_grpo_recovery_boost_clrc",
+    )
+
+    assert "DYME_ADAPTIVE_SUPERVISION=1" in out
+    assert "DYME_ADAPTIVE_TARGET_READINESS=0.15" in out
+    assert "DYME_ADAPTIVE_OPSD_INITIAL_WEIGHT=1.0" in out
+    assert "DYME_ADAPTIVE_OPSD_FINAL_WEIGHT=0.25" in out
+    assert "DYME_ADAPTIVE_OPSD_INITIAL_CAP=4" in out
+    assert "DYME_ADAPTIVE_OPSD_FINAL_CAP=1" in out
+    assert "DYME_OPSD_OVERFLOW_ROUTE=mixed_grpo_all_wrong_skip" in out
+    assert "DYME_EFFECTIVE_SAMPLING_MIXED_WEIGHT=6.0" in out
+
+
+def test_gold_hidden_evidence_adaptive_variant_requires_high_quality_evidence(tmp_path: Path) -> None:
+    out = _quality_variant_dry_run(
+        tmp_path,
+        "deplot_no_vs_opd_pcd_gold_hidden_evidence_adaptive_clrc",
+    )
+
+    assert "DYME_ADAPTIVE_SUPERVISION=1" in out
+    assert "DYME_TEACHER_PROBE_PROVIDERS=format_only,visual_facts_deplot" in out
+    assert "DYME_TEACHER_PROBE_SKIP_NO_EVIDENCE=1" in out
+    assert "DYME_CHART_COT_VERIFY=1" in out
+    assert "DYME_CHART_COT_GATE_MODE=gate" in out
+    assert "DYME_OPSD_TOKEN_WEIGHTING=1" in out
+    assert "DYME_OPSD_TOKEN_WEIGHTING_MODE=answer_anchor" in out
+
+
 def test_gold_hidden_mixed_group_hard_replay_variant_is_honestly_isolated(tmp_path: Path) -> None:
     out = _quality_variant_dry_run(
         tmp_path,

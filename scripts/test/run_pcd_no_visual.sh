@@ -108,7 +108,7 @@ if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_oracle_hint_opd_no_full_hint_hard_sf
   VARIANT="deplot_no_vs_opd_pcd_oracle_hint_opd_no_hard_imitation_adaptive_supervision"
 fi
 case "${VARIANT}" in
-  deplot_no_vs_opd_pcd|deplot_no_vs_opd_pcd_oracle_hint|deplot_no_vs_opd_pcd_oracle_hint_eval_format_reward|deplot_no_vs_opd_pcd_oracle_hint_late_traj_decay|deplot_no_vs_opd_pcd_oracle_hint_eval_format_late_traj_decay|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_student_style|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_student_hint_short|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling_eval_format|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling_grpo_overflow|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_replay_mix|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay_effective_filter|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay_effective_filter_rl_transition|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_answer_only|deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_diagnostic|deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_gate|deplot_no_vs_opd_pcd_oracle_hint_full_cot_adaptive_supervision|deplot_no_vs_opd_pcd_oracle_hint_opd_no_hard_imitation_adaptive_supervision|deplot_no_vs_opd_pcd_gold_hidden_no_opd|deplot_no_vs_opd_pcd_gold_hidden_grpo_only|deplot_no_vs_opd_pcd_gold_hidden_uncond_opd_no_full_hint_hard_sft|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_fixed|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_target020|deplot_no_vs_opd_pcd_gold_hidden_opd_only_no_full_hint_hard_sft|deplot_no_vs_opd_pcd_gold_hidden_fallback_only|deplot_no_vs_opd_pcd_gold_hidden_token_reliability_clrc|deplot_no_vs_opd_pcd_gold_hidden_mixed_group_shortest_correct_hard_replay|deplot_no_vs_opd_pcd_route_guard|deplot_no_vs_opd_pcd_oracle_hint_route_guard|deplot_no_vs_opd_pcd_route_guard_perception_teacher|deplot_no_vs_opd_pcd_route_guard_perception_hint)
+  deplot_no_vs_opd_pcd|deplot_no_vs_opd_pcd_oracle_hint|deplot_no_vs_opd_pcd_oracle_hint_eval_format_reward|deplot_no_vs_opd_pcd_oracle_hint_late_traj_decay|deplot_no_vs_opd_pcd_oracle_hint_eval_format_late_traj_decay|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_student_style|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_student_hint_short|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling_eval_format|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling_grpo_overflow|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_replay_mix|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay_effective_filter|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay_effective_filter_rl_transition|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_answer_only|deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_diagnostic|deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_gate|deplot_no_vs_opd_pcd_oracle_hint_full_cot_adaptive_supervision|deplot_no_vs_opd_pcd_oracle_hint_opd_no_hard_imitation_adaptive_supervision|deplot_no_vs_opd_pcd_gold_hidden_no_opd|deplot_no_vs_opd_pcd_gold_hidden_grpo_only|deplot_no_vs_opd_pcd_gold_hidden_uncond_opd_no_full_hint_hard_sft|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_fixed|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_target020|deplot_no_vs_opd_pcd_gold_hidden_opd_only_no_full_hint_hard_sft|deplot_no_vs_opd_pcd_gold_hidden_fallback_only|deplot_no_vs_opd_pcd_gold_hidden_token_reliability_clrc|deplot_no_vs_opd_pcd_gold_hidden_answer_anchor_clrc|deplot_no_vs_opd_pcd_gold_hidden_confidence_weighted_clrc|deplot_no_vs_opd_pcd_gold_hidden_grpo_recovery_boost_clrc|deplot_no_vs_opd_pcd_gold_hidden_evidence_adaptive_clrc|deplot_no_vs_opd_pcd_gold_hidden_mixed_group_shortest_correct_hard_replay|deplot_no_vs_opd_pcd_route_guard|deplot_no_vs_opd_pcd_oracle_hint_route_guard|deplot_no_vs_opd_pcd_route_guard_perception_teacher|deplot_no_vs_opd_pcd_route_guard_perception_hint)
     ;;
   *)
     echo "Unknown PCD variant: ${VARIANT}" >&2
@@ -160,6 +160,7 @@ TEACHER_PROBE_ALL_WRONG_AFTER_STEP="${DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP:-0
 OPSD_WEIGHT="${DYME_OPSD_WEIGHT:-1.5}"
 GRPO_WEIGHT="${DYME_GRPO_WEIGHT:-1.0}"
 OPSD_TOKEN_WEIGHTING="${DYME_OPSD_TOKEN_WEIGHTING:-0}"
+OPSD_TOKEN_WEIGHTING_MODE="${DYME_OPSD_TOKEN_WEIGHTING_MODE:-reliability}"
 OPSD_TOKEN_NUMERIC_WEIGHT="${DYME_OPSD_TOKEN_NUMERIC_WEIGHT:-2.0}"
 OPSD_TOKEN_ANSWER_WEIGHT="${DYME_OPSD_TOKEN_ANSWER_WEIGHT:-1.5}"
 OPSD_TOKEN_MIN_WEIGHT="${DYME_OPSD_TOKEN_MIN_WEIGHT:-0.75}"
@@ -171,6 +172,12 @@ MIXED_GROUP_HARD_REPLAY="${DYME_MIXED_GROUP_HARD_REPLAY:-0}"
 TEACHER_PROVIDERS="format_only,visual_facts_deplot"
 TEACHER_PROBE_PROMPT_PROFILE="${DYME_TEACHER_PROBE_PROMPT_PROFILE:-chartqa_short_answer}"
 TEACHER_PROBE_MAX_NEW_TOKENS="${DYME_TEACHER_PROBE_MAX_NEW_TOKENS:-96}"
+TEACHER_PROBE_RELAXED_TOL="${DYME_TEACHER_PROBE_RELAXED_TOL:-0.05}"
+TEACHER_PROBE_SKIP_NO_EVIDENCE="${DYME_TEACHER_PROBE_SKIP_NO_EVIDENCE:-1}"
+TEACHER_PROBE_STRICT_ACCEPT="${DYME_TEACHER_PROBE_STRICT_ACCEPT:-0}"
+TEACHER_PROBE_REQUIRE_ANSWER_FLAG="${DYME_TEACHER_PROBE_REQUIRE_ANSWER_FLAG:-0}"
+TEACHER_PROBE_REJECT_PARSE_FAIL="${DYME_TEACHER_PROBE_REJECT_PARSE_FAIL:-0}"
+TEACHER_PROBE_REJECT_CLIPPED="${DYME_TEACHER_PROBE_REJECT_CLIPPED:-0}"
 TEACHER_TRAJ_MAX_NEW_TOKENS="${DYME_TEACHER_TRAJ_MAX_NEW_TOKENS:-128}"
 TEACHER_TRAJ_WEIGHT_DECAY="${DYME_TEACHER_TRAJ_WEIGHT_DECAY:-0}"
 TEACHER_TRAJ_DECAY_START_STEP="${DYME_TEACHER_TRAJ_DECAY_START_STEP:-294}"
@@ -579,6 +586,65 @@ if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_token_reliability_clrc" 
   OPSD_TOKEN_ANSWER_WEIGHT="${DYME_OPSD_TOKEN_ANSWER_WEIGHT:-1.5}"
   OPSD_TOKEN_MIN_WEIGHT="${DYME_OPSD_TOKEN_MIN_WEIGHT:-0.75}"
 fi
+if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_answer_anchor_clrc" ]]; then
+  OPSD_MAX_PER_PROMPT=0
+  ADAPTIVE_SUPERVISION=1
+  ADAPTIVE_READINESS_SOURCE=global_grpo_route
+  ADAPTIVE_TARGET_READINESS=0.20
+  ADAPTIVE_TEACHER_INITIAL_WEIGHT=0.0
+  ADAPTIVE_TEACHER_FINAL_WEIGHT=0.0
+  OPSD_TOKEN_WEIGHTING=1
+  OPSD_TOKEN_WEIGHTING_MODE=answer_anchor
+  OPSD_TOKEN_NUMERIC_WEIGHT="${DYME_OPSD_TOKEN_NUMERIC_WEIGHT:-3.0}"
+  OPSD_TOKEN_ANSWER_WEIGHT="${DYME_OPSD_TOKEN_ANSWER_WEIGHT:-2.0}"
+  OPSD_TOKEN_MIN_WEIGHT="${DYME_OPSD_TOKEN_MIN_WEIGHT:-0.05}"
+fi
+if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_confidence_weighted_clrc" ]]; then
+  OPSD_MAX_PER_PROMPT=0
+  ADAPTIVE_SUPERVISION=1
+  ADAPTIVE_READINESS_SOURCE=global_grpo_route
+  ADAPTIVE_TARGET_READINESS=0.20
+  ADAPTIVE_TEACHER_INITIAL_WEIGHT=0.0
+  ADAPTIVE_TEACHER_FINAL_WEIGHT=0.0
+  TEACHER_PROBE_STRICT_ACCEPT=1
+  TEACHER_PROBE_REQUIRE_ANSWER_FLAG=1
+  TEACHER_PROBE_REJECT_PARSE_FAIL=1
+  TEACHER_PROBE_REJECT_CLIPPED=1
+  TEACHER_PROBE_RELAXED_TOL=0.0
+  TEACHER_PROBE_MAX_NEW_TOKENS="${DYME_TEACHER_PROBE_MAX_NEW_TOKENS:-64}"
+fi
+if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_grpo_recovery_boost_clrc" ]]; then
+  OPSD_MAX_PER_PROMPT=0
+  ADAPTIVE_SUPERVISION=1
+  ADAPTIVE_READINESS_SOURCE=global_grpo_route
+  ADAPTIVE_TARGET_READINESS=0.15
+  ADAPTIVE_OPSD_INITIAL_WEIGHT="${DYME_ADAPTIVE_OPSD_INITIAL_WEIGHT:-1.0}"
+  ADAPTIVE_OPSD_FINAL_WEIGHT="${DYME_ADAPTIVE_OPSD_FINAL_WEIGHT:-0.25}"
+  ADAPTIVE_TEACHER_INITIAL_WEIGHT=0.0
+  ADAPTIVE_TEACHER_FINAL_WEIGHT=0.0
+  ADAPTIVE_OPSD_INITIAL_CAP="${DYME_ADAPTIVE_OPSD_INITIAL_CAP:-4}"
+  ADAPTIVE_OPSD_FINAL_CAP="${DYME_ADAPTIVE_OPSD_FINAL_CAP:-1}"
+  EFFECTIVE_SAMPLING_MIXED_WEIGHT="${DYME_EFFECTIVE_SAMPLING_MIXED_WEIGHT:-6.0}"
+  OPSD_OVERFLOW_ROUTE="${DYME_OPSD_OVERFLOW_ROUTE:-mixed_grpo_all_wrong_skip}"
+fi
+if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_evidence_adaptive_clrc" ]]; then
+  OPSD_MAX_PER_PROMPT=0
+  ADAPTIVE_SUPERVISION=1
+  ADAPTIVE_READINESS_SOURCE=global_grpo_route
+  ADAPTIVE_TARGET_READINESS=0.20
+  ADAPTIVE_TEACHER_INITIAL_WEIGHT=0.0
+  ADAPTIVE_TEACHER_FINAL_WEIGHT=0.0
+  TEACHER_PROVIDERS="format_only,visual_facts_deplot"
+  TEACHER_PROBE_SKIP_NO_EVIDENCE=1
+  TEACHER_PROBE_CANDIDATE_LOG=1
+  CHART_COT_VERIFY=1
+  CHART_COT_GATE_MODE=gate
+  OPSD_TOKEN_WEIGHTING=1
+  OPSD_TOKEN_WEIGHTING_MODE=answer_anchor
+  OPSD_TOKEN_NUMERIC_WEIGHT="${DYME_OPSD_TOKEN_NUMERIC_WEIGHT:-2.5}"
+  OPSD_TOKEN_ANSWER_WEIGHT="${DYME_OPSD_TOKEN_ANSWER_WEIGHT:-1.8}"
+  OPSD_TOKEN_MIN_WEIGHT="${DYME_OPSD_TOKEN_MIN_WEIGHT:-0.10}"
+fi
 if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_mixed_group_shortest_correct_hard_replay" ]]; then
   TEACHER_PROBE=0
   TEACHER_PROBE_ALL_WRONG_AFTER_STEP=-1
@@ -651,10 +717,14 @@ echo "candidate logs: ${OUT_DIR}/teacher_probe_candidates/rank*.jsonl (enabled=$
 echo "teacher providers: ${TEACHER_PROVIDERS}"
 echo "teacher prompt profile: ${TEACHER_PROBE_PROMPT_PROFILE}"
 echo "teacher probe max new tokens: ${TEACHER_PROBE_MAX_NEW_TOKENS}"
+echo "teacher probe relaxed tol: ${TEACHER_PROBE_RELAXED_TOL}"
+echo "teacher probe skip no evidence: ${TEACHER_PROBE_SKIP_NO_EVIDENCE}"
+echo "teacher probe strict: accept=${TEACHER_PROBE_STRICT_ACCEPT} require_answer_flag=${TEACHER_PROBE_REQUIRE_ANSWER_FLAG} reject_parse_fail=${TEACHER_PROBE_REJECT_PARSE_FAIL} reject_clipped=${TEACHER_PROBE_REJECT_CLIPPED}"
 echo "teacher trajectory max new tokens: ${TEACHER_TRAJ_MAX_NEW_TOKENS}"
 echo "phase schedule: mode=${PHASE_SCHEDULE_MODE} teacher_traj=${TEACHER_TRAJ_DECAY_START_PROGRESS}->${TEACHER_TRAJ_DECAY_END_PROGRESS} effective_sampling=${EFFECTIVE_SAMPLING_START_PROGRESS} route_cap=${OPSD_ROUTE_CAP_START_PROGRESS} opd_decay=${OPSD_DECAY_START_PROGRESS}->${OPSD_DECAY_END_PROGRESS}"
 echo "teacher trajectory weight decay: enabled=${TEACHER_TRAJ_WEIGHT_DECAY} start=${TEACHER_TRAJ_DECAY_START_STEP} end=${TEACHER_TRAJ_DECAY_END_STEP} final=${TEACHER_TRAJ_FINAL_WEIGHT}"
 echo "OPD weight decay/cap: decay=${OPSD_WEIGHT_DECAY} start=${OPSD_DECAY_START_STEP} end=${OPSD_DECAY_END_STEP} final=${OPSD_FINAL_WEIGHT} cap_after=${OPSD_MAX_PER_PROMPT_AFTER_STEP} max_per_prompt=${OPSD_MAX_PER_PROMPT}"
+echo "OPD token weighting: enabled=${OPSD_TOKEN_WEIGHTING} mode=${OPSD_TOKEN_WEIGHTING_MODE} numeric=${OPSD_TOKEN_NUMERIC_WEIGHT} answer=${OPSD_TOKEN_ANSWER_WEIGHT} min=${OPSD_TOKEN_MIN_WEIGHT}"
 echo "effective sampling: enabled=${EFFECTIVE_SAMPLING} after=${EFFECTIVE_SAMPLING_AFTER_STEP} mixed=${EFFECTIVE_SAMPLING_MIXED_WEIGHT} all_wrong=${EFFECTIVE_SAMPLING_ALL_WRONG_WEIGHT} all_correct=${EFFECTIVE_SAMPLING_ALL_CORRECT_WEIGHT} unknown=${EFFECTIVE_SAMPLING_UNKNOWN_WEIGHT} std_bonus=${EFFECTIVE_SAMPLING_REWARD_STD_BONUS}"
 echo "positive replay: enabled=${POSITIVE_REPLAY} dataset=${POSITIVE_REPLAY_DATASET} weight=${POSITIVE_REPLAY_WEIGHT} batch_size=${POSITIVE_REPLAY_BATCH_SIZE} after=${POSITIVE_REPLAY_AFTER_STEP} until=${POSITIVE_REPLAY_UNTIL_STEP} max_rows=${POSITIVE_REPLAY_MAX_ROWS}"
 echo "rollout replay: enabled=${ROLLOUT_REPLAY} weight=${ROLLOUT_REPLAY_WEIGHT} capacity=${ROLLOUT_REPLAY_CAPACITY} batch_size=${ROLLOUT_REPLAY_BATCH_SIZE} after=${ROLLOUT_REPLAY_AFTER_STEP} until=${ROLLOUT_REPLAY_UNTIL_STEP} max_age=${ROLLOUT_REPLAY_MAX_AGE_STEPS} min_abs_adv=${ROLLOUT_REPLAY_MIN_ABS_ADVANTAGE} priority_alpha=${ROLLOUT_REPLAY_PRIORITY_ALPHA} positive_only=${ROLLOUT_REPLAY_POSITIVE_ONLY}"
@@ -689,6 +759,12 @@ TRAIN_ENV=(
   "DYME_TEACHER_PROBE_MAX_PER_BATCH=${TEACHER_PROBE_MAX_PER_BATCH}"
   "DYME_TEACHER_PROBE_PROMPT_PROFILE=${TEACHER_PROBE_PROMPT_PROFILE}"
   "DYME_TEACHER_PROBE_MAX_NEW_TOKENS=${TEACHER_PROBE_MAX_NEW_TOKENS}"
+  "DYME_TEACHER_PROBE_RELAXED_TOL=${TEACHER_PROBE_RELAXED_TOL}"
+  "DYME_TEACHER_PROBE_SKIP_NO_EVIDENCE=${TEACHER_PROBE_SKIP_NO_EVIDENCE}"
+  "DYME_TEACHER_PROBE_STRICT_ACCEPT=${TEACHER_PROBE_STRICT_ACCEPT}"
+  "DYME_TEACHER_PROBE_REQUIRE_ANSWER_FLAG=${TEACHER_PROBE_REQUIRE_ANSWER_FLAG}"
+  "DYME_TEACHER_PROBE_REJECT_PARSE_FAIL=${TEACHER_PROBE_REJECT_PARSE_FAIL}"
+  "DYME_TEACHER_PROBE_REJECT_CLIPPED=${TEACHER_PROBE_REJECT_CLIPPED}"
   "DYME_TEACHER_PROBE_CANDIDATE_LOG=${TEACHER_PROBE_CANDIDATE_LOG}"
   "DYME_TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS=${TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS}"
   "DYME_TEACHER_TRAJECTORY=${TEACHER_TRAJECTORY}"
@@ -773,6 +849,7 @@ TRAIN_ENV=(
   "DYME_GRPO_WEIGHT=${GRPO_WEIGHT}"
   "DYME_OPSD_SRKL_ALPHA=0.1"
   "DYME_OPSD_TOKEN_WEIGHTING=${OPSD_TOKEN_WEIGHTING}"
+  "DYME_OPSD_TOKEN_WEIGHTING_MODE=${OPSD_TOKEN_WEIGHTING_MODE}"
   "DYME_OPSD_TOKEN_NUMERIC_WEIGHT=${OPSD_TOKEN_NUMERIC_WEIGHT}"
   "DYME_OPSD_TOKEN_ANSWER_WEIGHT=${OPSD_TOKEN_ANSWER_WEIGHT}"
   "DYME_OPSD_TOKEN_MIN_WEIGHT=${OPSD_TOKEN_MIN_WEIGHT}"

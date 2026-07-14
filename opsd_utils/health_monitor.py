@@ -507,6 +507,7 @@ class TrainingHealthMonitor:
             "routing/teacher_probe_candidate_rate": "teacher_probe_candidate_rate",
             "routing/teacher_probe_correct_rate": "teacher_probe_correct_rate",
             "routing/teacher_probe_wrong_rate": "teacher_probe_wrong_rate",
+            "routing/teacher_probe_strict_rejected_rate": "teacher_probe_strict_rejected_rate",
             "routing/teacher_probe_skipped_no_evidence_rate": "teacher_probe_skipped_no_evidence_rate",
             "routing/teacher_probe_skipped_budget_rate": "teacher_probe_skipped_budget_rate",
             "routing/teacher_probe_candidate_accuracy": "teacher_probe_candidate_accuracy",

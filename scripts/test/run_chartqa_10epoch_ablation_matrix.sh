@@ -7,6 +7,7 @@ cd "${ROOT}"
 MODE="dry-run"
 RUN_ID="${DYME_CHARTQA_ABLATION_RUN_ID:-chartqa_10epoch_matrix}"
 EPOCHS="${DYME_CHARTQA_ABLATION_EPOCHS:-10}"
+DIAGNOSTIC_EPOCHS="${DYME_CHARTQA_ABLATION_DIAGNOSTIC_EPOCHS:-1}"
 SMOKE=0
 SMOKE_STEPS="${DYME_CHARTQA_ABLATION_SMOKE_STEPS:-2}"
 SHARD_INDEX=0
@@ -15,6 +16,7 @@ OUTPUT_ROOT="${DYME_CHARTQA_ABLATION_OUTPUT_ROOT:-outputs/test-fast/chartqa-abla
 LOG_ROOT="${DYME_CHARTQA_ABLATION_LOG_ROOT:-outputs/test-fast/logs/chartqa-ablation}"
 RESULTS_ROOT="${DYME_CHARTQA_ABLATION_RESULTS_ROOT:-docs/experiment_results/chartqa-ablation}"
 VARIANT_FILTER="${DYME_CHARTQA_ABLATION_VARIANTS:-}"
+PRESET="${DYME_CHARTQA_ABLATION_PRESET:-main5}"
 STAGES="${DYME_CHARTQA_ABLATION_STAGES:-train,eval}"
 RESUME="${DYME_CHARTQA_ABLATION_RESUME:-none}"
 SPEED_PROFILE="${DYME_CHARTQA_ABLATION_SPEED_PROFILE:-canonical}"
@@ -30,11 +32,14 @@ Usage:
   bash scripts/test/run_chartqa_10epoch_ablation_matrix.sh [--dry-run|--run]
     [--run-id ID] [--epochs N] [--smoke]
     [--shard-index I --shard-count N]
+    [--preset main5|all]
     [--variants comma,separated,labels]
     [--stages train|eval|train,eval]
     [--resume none|auto|/path/to/checkpoint]
 
-Default is a dry-run of the full ChartQA 10epoch matrix plus PCD eval commands.
+Default is the main5 ChartQA 10epoch matrix plus PCD eval commands.
+Use --preset all for the full appendix/control matrix.
+Diagnostic labels use DYME_CHARTQA_ABLATION_DIAGNOSTIC_EPOCHS, default 1.
 USAGE
 }
 
@@ -47,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --smoke) SMOKE=1; shift ;;
     --shard-index) SHARD_INDEX="${2:?missing shard index}"; shift 2 ;;
     --shard-count) SHARD_COUNT="${2:?missing shard count}"; shift 2 ;;
+    --preset) PRESET="${2:?missing preset}"; shift 2 ;;
     --variants) VARIANT_FILTER="${2:?missing variant list}"; shift 2 ;;
     --stages) STAGES="${2:?missing stage list}"; shift 2 ;;
     --resume) RESUME="${2:?missing resume value}"; shift 2 ;;
@@ -56,13 +62,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in EPOCHS SMOKE_STEPS SHARD_INDEX SHARD_COUNT EVAL_NUM_PROCESSES; do
+for value_name in EPOCHS DIAGNOSTIC_EPOCHS SMOKE_STEPS SHARD_INDEX SHARD_COUNT EVAL_NUM_PROCESSES; do
   value="${!value_name}"
   case "${value}" in
     ''|*[!0-9]*) echo "${value_name} must be a non-negative integer, got: ${value}" >&2; exit 2 ;;
   esac
 done
 [[ "${EPOCHS}" -ge 1 ]] || { echo "epochs must be >= 1" >&2; exit 2; }
+[[ "${DIAGNOSTIC_EPOCHS}" -ge 1 ]] || { echo "diagnostic epochs must be >= 1" >&2; exit 2; }
 [[ "${SMOKE_STEPS}" -ge 1 ]] || { echo "smoke steps must be >= 1" >&2; exit 2; }
 [[ "${SHARD_COUNT}" -ge 1 ]] || { echo "shard count must be >= 1" >&2; exit 2; }
 [[ "${SHARD_INDEX}" -lt "${SHARD_COUNT}" ]] || {
@@ -73,6 +80,10 @@ case "${SPEED_PROFILE}" in
   canonical|fast60) ;;
   *) echo "Unknown speed profile: ${SPEED_PROFILE}" >&2; exit 2 ;;
 esac
+case "${PRESET}" in
+  main5|all) ;;
+  *) echo "Unknown preset: ${PRESET} (expected main5 or all)" >&2; exit 2 ;;
+esac
 
 STAGES="${STAGES// /}"
 for stage in ${STAGES//,/ }; do
@@ -82,7 +93,7 @@ for stage in ${STAGES//,/ }; do
   esac
 done
 
-LABELS=(
+ALL_LABELS=(
   dyme_pure_original
   dyme_full_original
   oracle_official_best_4e
@@ -96,8 +107,26 @@ LABELS=(
   fallback_only_matched
   oracle_clean_no_full_hint
   token_reliability_clrc
+  answer_anchor_clrc
+  confidence_weighted_clrc
+  grpo_recovery_boost_clrc
+  evidence_adaptive_clrc
   mixed_group_shortest_correct_hard_replay
 )
+
+MAIN5_LABELS=(
+  dyme_full_original
+  clrc_full
+  answer_anchor_clrc
+  confidence_weighted_clrc
+  evidence_adaptive_clrc
+)
+
+if [[ "${PRESET}" == "all" || -n "${VARIANT_FILTER}" ]]; then
+  LABELS=("${ALL_LABELS[@]}")
+else
+  LABELS=("${MAIN5_LABELS[@]}")
+fi
 
 stage_enabled() {
   local stage="$1"
@@ -107,7 +136,7 @@ stage_enabled() {
 label_known() {
   local needle="$1"
   local label
-  for label in "${LABELS[@]}"; do
+  for label in "${ALL_LABELS[@]}"; do
     [[ "${label}" == "${needle}" ]] && return 0
   done
   return 1
@@ -149,6 +178,10 @@ pcd_variant_for_label() {
     fallback_only_matched) echo "deplot_no_vs_opd_pcd_gold_hidden_fallback_only" ;;
     oracle_clean_no_full_hint) echo "deplot_no_vs_opd_pcd_oracle_hint_opd_no_full_hint_hard_sft_adaptive_supervision" ;;
     token_reliability_clrc) echo "deplot_no_vs_opd_pcd_gold_hidden_token_reliability_clrc" ;;
+    answer_anchor_clrc) echo "deplot_no_vs_opd_pcd_gold_hidden_answer_anchor_clrc" ;;
+    confidence_weighted_clrc) echo "deplot_no_vs_opd_pcd_gold_hidden_confidence_weighted_clrc" ;;
+    grpo_recovery_boost_clrc) echo "deplot_no_vs_opd_pcd_gold_hidden_grpo_recovery_boost_clrc" ;;
+    evidence_adaptive_clrc) echo "deplot_no_vs_opd_pcd_gold_hidden_evidence_adaptive_clrc" ;;
     mixed_group_shortest_correct_hard_replay) echo "deplot_no_vs_opd_pcd_gold_hidden_mixed_group_shortest_correct_hard_replay" ;;
     *) return 1 ;;
   esac
@@ -157,6 +190,8 @@ pcd_variant_for_label() {
 epochs_for_label() {
   if [[ "$1" == "oracle_official_best_4e" ]]; then
     echo "4"
+  elif [[ "$1" == "fallback_only_matched" || "$1" == "mixed_group_shortest_correct_hard_replay" ]]; then
+    echo "${DIAGNOSTIC_EPOCHS}"
   else
     echo "${EPOCHS}"
   fi
@@ -231,9 +266,11 @@ echo "ChartQA matched ablation matrix"
 echo "mode: ${MODE}"
 echo "run id: ${RUN_ID}"
 echo "epochs: ${EPOCHS}"
+echo "diagnostic epochs: ${DIAGNOSTIC_EPOCHS}"
 echo "smoke: ${SMOKE}"
 echo "smoke steps: ${SMOKE_STEPS}"
 echo "shard: ${SHARD_INDEX}/${SHARD_COUNT}"
+echo "preset: ${PRESET}"
 echo "variants: ${VARIANT_FILTER:-<all>}"
 echo "stages: ${STAGES}"
 echo "resume: ${RESUME}"
