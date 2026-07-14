@@ -132,11 +132,11 @@ PY
 }
 
 # Build data/chartqa/train_medium_vf_full.json when missing (gitignored on GitHub).
-# F1: hint → visual_fact_hint; F2: DePlot or placeholder (--no-enabled when DYME_DEPLOT_ENABLED=0).
+# ChartQA hint-derived visual_fact fields are nulled; DePlot is the clean visual evidence.
 ensure_chartqa_vf_full() {
   local chartqa_raw="${DYME_CHARTQA_RAW:-data/chartqa/train_medium.json}"
   local chartqa_vf_full="${DYME_CHARTQA_VF_FULL:-data/chartqa/train_medium_vf_full.json}"
-  local chartqa_vf_hint="${DYME_CHARTQA_VF_HINT:-data/chartqa/train_medium_vf_hint.json}"
+  local chartqa_vf_base="${DYME_CHARTQA_VF_BASE:-${DYME_CHARTQA_VF_HINT:-data/chartqa/train_medium_vf_null.json}}"
   local deplot_enabled="${DYME_DEPLOT_ENABLED:-1}"
   local deplot_batch="${DYME_DEPLOT_BATCH_SIZE:-8}"
   local deplot_tokens="${DYME_DEPLOT_MAX_NEW_TOKENS:-384}"
@@ -156,7 +156,7 @@ ensure_chartqa_vf_full() {
 
   "${PYTHON_BIN}" scripts/build_visual_facts_chartqa.py \
     --input "${chartqa_raw}" \
-    --output "${chartqa_vf_hint}" \
+    --output "${chartqa_vf_base}" \
     --also-set-visual-fact
 
   local deplot_extra=()
@@ -168,7 +168,7 @@ ensure_chartqa_vf_full() {
   esac
 
   "${PYTHON_BIN}" scripts/build_visual_facts_chartqa_deplot.py \
-    --input "${chartqa_vf_hint}" \
+    --input "${chartqa_vf_base}" \
     --output "${chartqa_vf_full}" \
     --batch-size "${deplot_batch}" \
     --max-new-tokens "${deplot_tokens}" \

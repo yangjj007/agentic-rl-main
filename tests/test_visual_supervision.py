@@ -315,8 +315,8 @@ def test_extract_visual_facts_uses_offline_deplot_without_teacher():
     assert meta.get("ic_source") == "offline_deplot"
 
 
-def test_extract_visual_facts_fallback_without_teacher():
-    sample = {"visual_fact_hint": json.dumps({"description": "x", "objects": []})}
+def test_extract_visual_facts_uses_image_visual_fact_without_teacher():
+    sample = {"visual_fact": json.dumps({"description": "x", "objects": []})}
     ic_text, meta = extract_visual_facts_teacher(
         teacher_model=None,
         processor=None,
@@ -325,7 +325,21 @@ def test_extract_visual_facts_fallback_without_teacher():
         image="a.png",
     )
     assert "description" in ic_text
-    assert meta.get("ic_source") == "offline_hint_visual_fact_hint"
+    assert meta.get("ic_source") == "offline_visual_fact"
+
+
+def test_extract_visual_facts_ignores_visual_fact_hint_without_teacher():
+    sample = {"visual_fact_hint": json.dumps({"description": "x", "objects": []})}
+    ic_text, meta = extract_visual_facts_teacher(
+        teacher_model=None,
+        processor=None,
+        sample=sample,
+        question="What?",
+        image="a.png",
+    )
+    assert ic_text == ""
+    assert meta.get("fallback") == "empty"
+    assert meta.get("parse_ok") is False
 
 
 if __name__ == "__main__":

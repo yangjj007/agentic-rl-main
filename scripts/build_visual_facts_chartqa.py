@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""
-F1: add visual_fact_hint field to ChartQA JSON using hint as fallback.
-Run before training with hybrid/visual privileged profiles.
-"""
+"""Set legacy ChartQA visual_fact fields to null before optional DePlot enrichment."""
 import argparse
 import json
+
+try:
+    from scripts.repair_chartqa_visual_facts import repair_payload
+except ModuleNotFoundError:  # pragma: no cover - direct script execution from scripts/
+    from repair_chartqa_visual_facts import repair_payload
 
 
 def main():
@@ -14,24 +16,23 @@ def main():
     parser.add_argument(
         "--also-set-visual-fact",
         action="store_true",
-        help="Also populate visual_fact when missing (backward compatible)",
+        help="Deprecated no-op kept for backward-compatible launch commands",
     )
     args = parser.parse_args()
 
     with open(args.input, encoding="utf-8") as f:
         data = json.load(f)
 
-    for entry in data:
-        hint = entry.get("hint", "")
-        if not entry.get("visual_fact_hint"):
-            entry["visual_fact_hint"] = hint
-        if args.also_set_visual_fact and not entry.get("visual_fact"):
-            entry["visual_fact"] = hint
+    data, stats = repair_payload(data)
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    print(f"Wrote {len(data)} records with visual_fact_hint to {args.output}")
+    print(
+        "Wrote "
+        f"{stats['records']} records with visual_fact/visual_fact_hint=null to {args.output}; "
+        f"overwritten={stats['visual_fact_overwritten'] + stats['visual_fact_hint_overwritten']}"
+    )
 
 
 if __name__ == "__main__":

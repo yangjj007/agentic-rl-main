@@ -91,8 +91,7 @@ def _diagnostic_deplot_overlap(sample: dict[str, Any], response: str) -> float:
 
 def _trusted_hint_reward(sample: dict[str, Any], response: str) -> tuple[float, bool]:
     raw_hint = (
-        sample.get("visual_fact_hint")
-        or sample.get("trusted_hint")
+        sample.get("trusted_hint")
         or sample.get("hint")
         or ""
     )

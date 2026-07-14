@@ -67,15 +67,17 @@ data/images/chartqa/
 ```bash
 python scripts/build_visual_facts_chartqa.py \
   --input data/chartqa/train_medium.json \
-  --output data/chartqa/train_medium_vf_hint.json \
+  --output data/chartqa/train_medium_vf_null.json \
   --also-set-visual-fact
 
 python scripts/build_visual_facts_chartqa_deplot.py \
-  --input data/chartqa/train_medium_vf_hint.json \
+  --input data/chartqa/train_medium_vf_null.json \
   --output data/chartqa/train_medium_vf_full.json \
   --batch-size 8 \
   --cache data/chartqa/deplot_cache.json
 ```
+
+注意：`visual_fact` / `visual_fact_hint` 不能由 `hint` 复制得到；ChartQA 中这两个字段应保持 `null`，真正的 teacher visual evidence 来自 `visual_fact_deplot` 或未来的图像派生 visual facts。
 
 eval 需要 HuggingFaceM4/ChartQA 数据集缓存。联网机器可先运行一次 eval 或 `datasets.load_dataset("HuggingFaceM4/ChartQA")`，再拷贝 HuggingFace cache。
 

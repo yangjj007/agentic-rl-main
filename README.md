@@ -104,7 +104,7 @@ Student `collate_fn` never reads privileged fields. With `privileged_image.mode=
 **Privileged providers** (under `opsd_utils/privileged/`):
 
 * `text` — uses the `hint` / `answer` fields in training samples.
-* `visual_facts` — uses `visual_fact` JSON (B1 raw string), plus ChartQA `visual_fact_hint` (F1) and `visual_fact_deplot` (F2).
+* `visual_facts` — uses image-derived `visual_fact` / `visual_facts` JSON (B1 raw string) and ChartQA `visual_fact_deplot` (F2). It never reads `visual_fact_hint`.
 * `crop` — evidence region as second teacher image (via `image_utils`, not a text suffix).
 * `hybrid` — combines text + visual_facts providers per profile.
 
@@ -116,22 +116,22 @@ Student `collate_fn` never reads privileged fields. With `privileged_image.mode=
 
 **ChartQA visual-facts preprocessing (run on server before TriMode training)**
 
-TriMode with `privileged_providers=text,visual_facts` requires `visual_fact_hint` / `visual_fact_deplot` (and optionally `visual_fact`) on each sample. Raw `train_medium.json` only has `hint` — without this step, logs show `visual_fact_len=0` and the VisualFacts teacher channel is empty.
+ChartQA `hint` contains gold reasoning and often the answer, so it must not be copied into `visual_fact_hint` or `visual_fact`. Those legacy fields should be JSON `null`; clean ChartQA teacher visual evidence comes from `visual_fact_deplot` (or a future image-derived visual-fact extractor).
 
 From the repo root on your GPU server:
 
 ```bash
 cd /path/to/agentic-rl-main   # project root (parent of scripts/, config/, data/)
 
-# F1: copy hint → visual_fact_hint (+ visual_fact for backward compat)
+# Null legacy hint-derived visual-fact fields before DePlot enrichment.
 python scripts/build_visual_facts_chartqa.py \
   --input data/chartqa/train_medium.json \
-  --output data/chartqa/train_medium_vf_hint.json \
+  --output data/chartqa/train_medium_vf_null.json \
   --also-set-visual-fact
 
 # F2: DePlot offline table extraction (google/deplot, batched GPU inference; default ON)
 python scripts/build_visual_facts_chartqa_deplot.py \
-  --input data/chartqa/train_medium_vf_hint.json \
+  --input data/chartqa/train_medium_vf_null.json \
   --output data/chartqa/train_medium_vf_full.json \
   --batch-size 8 \
   --cache data/chartqa/deplot_cache.json
@@ -144,9 +144,10 @@ python -c "
 import json, random
 d = json.load(open('data/chartqa/train_medium_vf_full.json', encoding='utf-8'))
 s = random.choice(d)
-assert s.get('visual_fact_hint'), 'missing visual_fact_hint'
+assert s.get('visual_fact') is None, 'ChartQA visual_fact must be null unless image-derived'
+assert s.get('visual_fact_hint') is None, 'ChartQA visual_fact_hint must be null'
 assert s.get('visual_fact_deplot'), 'missing visual_fact_deplot'
-print('ok', len(d), 'records; sample visual_fact_hint len', len(s['visual_fact_hint']))
+print('ok', len(d), 'records; visual_fact fields are null; visual_fact_deplot present')
 "
 ```
 
@@ -173,14 +174,14 @@ python main.py --config trimode --opsd_privilege_profile hybrid --opsd_detail_ev
 | --- | --- | --- |
 | `prompt`, `image` | Student + teacher | Student always single full image |
 | `hint`, `answer` | Teacher (`text` / `hybrid`) | Never in student collate |
-| `visual_fact` | Teacher | Raw JSON string (A-OKVQA) |
-| `visual_fact_hint` | Teacher (ChartQA F1) | Hint placeholder pipeline |
+| `visual_fact` | Teacher | Raw image-derived JSON string (A-OKVQA); ChartQA legacy hint-derived values must be `null` |
+| `visual_fact_hint` | Not used as teacher evidence | Deprecated ChartQA placeholder field; keep `null` to avoid answer leakage |
 | `visual_fact_deplot` | Teacher (ChartQA F2) | DePlot `parsed_table` text (`google/deplot`; placeholder skipped) |
 | `evidence_bbox` | Teacher crop | Normalized `[x0,y0,x1,y1]` in `[0,1]` |
 
 Adapter helpers for future datasets: `data_utils/privileged_schema.py` (`normalize_evidence_bbox`, `parse_visual_fact`, `resolve_crop_bbox`).
 
-For legacy ChartQA single-field preprocessing, see `scripts/build_visual_facts_chartqa.py`.
+For legacy ChartQA field repair, see `scripts/repair_chartqa_visual_facts.py` and `scripts/build_visual_facts_chartqa.py`.
 
 
 

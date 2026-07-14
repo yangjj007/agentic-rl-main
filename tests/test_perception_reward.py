@@ -68,7 +68,7 @@ def test_trusted_hint_reward_scores_grounded_reasoning_without_answer_copy() -> 
             {
                 "question": "Which bar is lowest?",
                 "answer": "Answer: B",
-                "visual_fact_hint": "Goal: find the lowest bar\nObservation: B is lower than A and C\nReasoning: compare the three bars\nAnswer: B",
+                "trusted_hint": "Goal: find the lowest bar\nObservation: B is lower than A and C\nReasoning: compare the three bars\nAnswer: B",
                 "visual_fact_deplot": "A | 10\nB | 1\nC | 5",
             }
         ],

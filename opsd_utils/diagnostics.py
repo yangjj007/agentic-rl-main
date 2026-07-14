@@ -1350,17 +1350,13 @@ def summarize_batch_data_health(
     pixel_values: Optional[torch.Tensor] = None,
 ) -> dict[str, Any]:
     """Batch-level data I/O sanity for health monitoring."""
+    from opsd_utils.privileged.providers import has_clean_visual_fact_evidence
+
     n = max(len(samples), 1)
     vf_empty = 0
     prompt_lens: list[int] = []
     for sample in samples:
-        vf = (
-            sample.get("visual_fact_hint")
-            or sample.get("visual_fact")
-            or sample.get("visual_facts")
-            or ""
-        )
-        if not str(vf).strip():
+        if not has_clean_visual_fact_evidence(sample):
             vf_empty += 1
         if sample.get("prompt"):
             prompt_lens.append(len(str(sample["prompt"])))

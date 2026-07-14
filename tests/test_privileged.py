@@ -59,9 +59,16 @@ def test_hybrid_default_single_image_for_chartqa():
 
 def test_visual_profile_excludes_answer():
     img = Image.new("RGB", (32, 32))
-    sample = {"hint": "secret", "visual_fact": '{"objects":[]}', "answer": "Answer: 3", "image": img}
+    sample = {
+        "hint": "secret",
+        "visual_fact_hint": "Goal: leak\nReasoning: use the answer.\nAnswer: 3",
+        "visual_fact": '{"objects":[]}',
+        "answer": "Answer: 3",
+        "image": img,
+    }
     suffix, _ = build_privileged_context(sample, privileged_profile="visual")
     assert "Visual Facts" in suffix
+    assert "Goal: leak" not in suffix
     assert "Reference Answer" not in suffix
 
 
@@ -118,14 +125,15 @@ def test_resolve_teacher_images_dual():
 
 
 def test_chartqa_enriched_visual_fact_hint():
-    """Enriched ChartQA records (F1+F2) should activate VisualFactsProvider."""
+    """Enriched ChartQA records must not expose hint-derived visual fields."""
     from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
 
+    hint_cot = "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.\nAnswer: 70"
     sample = {
-        "hint": "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.",
+        "hint": hint_cot,
         "answer": "Answer: 70",
-        "visual_fact_hint": "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.",
-        "visual_fact": "Goal: Find the lowest value.\nObservation: values are 70, 72, 77.",
+        "visual_fact_hint": hint_cot,
+        "visual_fact": None,
         "visual_fact_deplot": build_deplot_visual_fact(
             {"question": "q"}, "Year | Value\n2019 | 70\n2020 | 72"
         ),
@@ -136,29 +144,31 @@ def test_chartqa_enriched_visual_fact_hint():
         ["text", "visual_facts"],
         privileged_profile="hybrid",
     )
-    assert "Visual Facts - Hint" in suffix
+    assert "Visual Facts - Hint" not in suffix
     assert "Visual Facts - DePlot" in suffix
     assert "2019 | 70" in suffix
     assert "Reference Reasoning" in suffix
+    assert "[Visual Facts - Hint]\nGoal" not in suffix
     assert len(images) == 1
     vf_raw = sample.get("visual_fact") or sample.get("visual_facts")
-    assert vf_raw and len(vf_raw.strip()) > 0
+    assert vf_raw is None
 
 
 def test_visual_facts_f1_f2_merge():
     from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
 
     sample = {
-        "visual_fact_hint": "hint table",
+        "visual_fact_hint": "Goal: hint table\nAnswer: 1",
         "visual_fact_deplot": build_deplot_visual_fact(
             {"question": "q"}, "Col | Val\nA | 1"
         ),
         "image": Image.new("RGB", (32, 32)),
     }
     suffix, _ = build_privileged_context(sample, privileged_profile="hybrid")
-    assert "Visual Facts - Hint" in suffix
+    assert "Visual Facts - Hint" not in suffix
     assert "Visual Facts - DePlot" in suffix
     assert "Col | Val" in suffix
+    assert "Goal: hint table" not in suffix
 
 
 def test_deplot_only_provider_skips_hint():

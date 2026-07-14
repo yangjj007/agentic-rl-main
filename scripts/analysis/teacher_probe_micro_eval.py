@@ -252,7 +252,7 @@ def _build_prompt(
 def _fake_teacher_output(control_name: str, sample: dict[str, Any]) -> str:
     if control_name.startswith("oracle_hint"):
         answer = _clean_answer(sample.get("answer"))
-        hint = str(sample.get("hint") or sample.get("visual_fact_hint") or "").strip()
+        hint = str(sample.get("hint") or "").strip()
         observation = hint.splitlines()[1] if len(hint.splitlines()) > 1 else f"Reference answer is {answer}."
         return (
             "Goal: Follow the verified training hint.\n"

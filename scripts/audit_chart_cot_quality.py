@@ -60,7 +60,7 @@ def _sample_rows(rows: list[dict[str, Any]], max_samples: int, seed: int) -> lis
 
 
 def _dataset_response(row: dict[str, Any]) -> tuple[str, bool]:
-    hint = str(row.get("hint") or row.get("visual_fact_hint") or "").strip()
+    hint = str(row.get("hint") or "").strip()
     answer = str(row.get("answer") or "").strip()
     return f"{hint}\nAnswer: {answer}".strip(), True
 

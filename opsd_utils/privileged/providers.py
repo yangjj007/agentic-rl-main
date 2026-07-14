@@ -55,6 +55,10 @@ _HINT_SECTION_RE = re.compile(
     r"(?is)(goal|observation|reasoning|conclusion)\s*:\s*(.*?)(?=(?:\n\s*)?(?:goal|observation|reasoning|conclusion)\s*:|$)"
 )
 
+_HINT_DERIVED_VISUAL_FACT_RE = re.compile(
+    r"(?im)^\s*(goal|observation|reasoning|conclusion|answer)\s*:"
+)
+
 
 def _extract_hint_sections(hint: str) -> dict[str, str]:
     sections: dict[str, str] = {}
@@ -93,6 +97,31 @@ def _deplot_status(sample: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _looks_hint_derived_visual_fact(text: str) -> bool:
+    headings = {m.group(1).lower() for m in _HINT_DERIVED_VISUAL_FACT_RE.finditer(text or "")}
+    return bool({"goal", "reasoning", "conclusion", "answer"} & headings) or len(headings) >= 2
+
+
+def _primary_visual_fact_text(sample: dict[str, Any]) -> str:
+    primary = sample.get("visual_fact") or sample.get("visual_facts")
+    text = parse_visual_fact(primary)
+    if not text or _looks_hint_derived_visual_fact(text):
+        return ""
+    return text
+
+
+def _deplot_visual_fact_text(sample: dict[str, Any]) -> str:
+    deplot_vf = sample.get("visual_fact_deplot")
+    if deplot_vf and not is_deplot_placeholder(deplot_vf):
+        return format_deplot_for_teacher(deplot_vf).strip()
+    return ""
+
+
+def has_clean_visual_fact_evidence(sample: dict[str, Any]) -> bool:
+    """Return true for real image/DePlot visual facts, never for visual_fact_hint."""
+    return bool(_primary_visual_fact_text(sample) or _deplot_visual_fact_text(sample))
+
+
 def teacher_probe_evidence_status(
     sample: dict[str, Any],
     provider_names: list[str],
@@ -101,16 +130,13 @@ def teacher_probe_evidence_status(
     providers = set(provider_names or [])
     deplot_status = _deplot_status(sample)
     uses_deplot = bool({"visual_facts_deplot", "visual_facts"} & providers)
-    visual_fact_used = bool("visual_facts" in providers) and bool(
-        str(sample.get("visual_fact") or sample.get("visual_facts") or "").strip()
-        or str(sample.get("visual_fact_hint") or "").strip()
-    )
+    visual_fact_used = bool("visual_facts" in providers) and bool(_primary_visual_fact_text(sample))
     crop_used = bool("crop" in providers) and bool(sample.get("image"))
 
     clean_evidence_present = bool(
-        (uses_deplot and deplot_status == "real") or crop_used
+        (uses_deplot and deplot_status == "real") or visual_fact_used or crop_used
     )
-    evidence_present = clean_evidence_present or visual_fact_used
+    evidence_present = clean_evidence_present
     return {
         "evidence_present": evidence_present,
         "clean_evidence_present": clean_evidence_present,
@@ -158,7 +184,7 @@ class OracleHintProvider(PrivilegedContextProvider):
         return f"Answer: {text}" if text else ""
 
     def build_teacher_suffix(self, sample: dict[str, Any]) -> str:
-        hint = str(sample.get("hint") or sample.get("visual_fact_hint") or sample.get("visual_fact") or "").strip()
+        hint = str(sample.get("hint") or "").strip()
         answer_text = _clean_answer_text(sample.get("answer"))
         sections = _extract_hint_sections(hint)
         goal = sections.get("goal") or "Answer the chart question using the verified hint."
@@ -219,31 +245,18 @@ class DeplotOnlyProvider(PrivilegedContextProvider):
 
 
 class VisualFactsProvider(PrivilegedContextProvider):
-    """B1: raw JSON visual facts; F1+F2 merge hint and deplot sources."""
+    """B1/F2: image-derived visual facts plus DePlot; never hint-derived text."""
 
     def _collect_visual_fact_parts(self, sample: dict[str, Any]) -> list[str]:
         parts: list[str] = []
-        hint_vf = sample.get("visual_fact_hint")
-        if hint_vf:
-            text = parse_visual_fact(hint_vf)
-            if text:
-                parts.append(f"[Visual Facts - Hint]\n{text}")
+        deplot_text = _deplot_visual_fact_text(sample)
+        if deplot_text:
+            parts.append(f"[Visual Facts - DePlot]\n{deplot_text}")
 
-        deplot_vf = sample.get("visual_fact_deplot")
-        if deplot_vf and not is_deplot_placeholder(deplot_vf):
-            text = format_deplot_for_teacher(deplot_vf)
-            if text:
-                parts.append(f"[Visual Facts - DePlot]\n{text}")
-
-        primary = sample.get("visual_fact") or sample.get("visual_facts")
-        if primary and not (hint_vf or deplot_vf):
-            text = parse_visual_fact(primary)
-            if text:
-                parts.append(f"[Visual Facts]\n{text}")
-        elif primary and (hint_vf or deplot_vf):
-            text = parse_visual_fact(primary)
-            if text:
-                parts.append(f"[Visual Facts - Combined]\n{text}")
+        primary_text = _primary_visual_fact_text(sample)
+        if primary_text:
+            label = "Visual Facts - Image" if deplot_text else "Visual Facts"
+            parts.append(f"[{label}]\n{primary_text}")
 
         return parts
 

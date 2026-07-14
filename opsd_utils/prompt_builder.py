@@ -7,7 +7,10 @@ from PIL import Image
 from opsd_utils import debug_log as opsd_debug
 from opsd_utils.indexing import source_row_index
 from opsd_utils.privileged import build_privileged_context, maybe_save_privileged_images
-from opsd_utils.privileged.providers import split_teacher_response_prefix
+from opsd_utils.privileged.providers import (
+    has_clean_visual_fact_evidence,
+    split_teacher_response_prefix,
+)
 from opsd_utils.teacher_batching import (
     count_image_tokens,
     process_teacher_sample,
@@ -216,13 +219,7 @@ def build_teacher_prompt_batch(
     gold_suffix_count = 0
     for idx in indices:
         sample = sample_for_completion_row(idx)
-        vf = (
-            sample.get("visual_fact_hint")
-            or sample.get("visual_fact")
-            or sample.get("visual_facts")
-            or ""
-        )
-        if not str(vf).strip():
+        if not has_clean_visual_fact_evidence(sample):
             vf_empty += 1
         priv_suffix, _ = build_privileged_context(
             sample,

@@ -277,7 +277,7 @@ class TrainingHealthMonitor:
                 step,
                 ALERT_DATA_EMPTY_VF,
                 visual_fact_empty_rate=vf_empty,
-                hint="rebuild train_medium_vf_full.json with visual_fact hints",
+                hint="rebuild train_medium_vf_full.json with real DePlot/image visual facts",
             )
 
     def record_routing(self, step: int, fields: dict[str, Any]) -> None:

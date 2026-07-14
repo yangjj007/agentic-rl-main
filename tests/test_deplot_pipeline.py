@@ -58,13 +58,15 @@ def test_visual_facts_provider_skips_placeholder_and_missing():
         "visual_fact_hint": "hint text",
     }
     suffix = provider.build_teacher_suffix(sample_ph)
-    assert "Visual Facts - Hint" in suffix
+    assert "Visual Facts - Hint" not in suffix
     assert "Visual Facts - DePlot" not in suffix
+    assert suffix == ""
 
     sample_none = {"visual_fact_hint": "only hint"}
     suffix2 = provider.build_teacher_suffix(sample_none)
     assert "Visual Facts - DePlot" not in suffix2
-    assert "Visual Facts - Hint" in suffix2
+    assert "Visual Facts - Hint" not in suffix2
+    assert suffix2 == ""
 
 
 def test_deplot_placeholder_is_no_clean_teacher_probe_evidence():
@@ -271,3 +273,40 @@ def test_build_script_disabled(tmp_path):
     )
     data = json.loads(out.read_text(encoding="utf-8"))
     assert is_deplot_placeholder(data[0]["visual_fact_deplot"])
+
+
+def test_legacy_chartqa_visual_fact_build_script_writes_null_fields(tmp_path):
+    import subprocess
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    inp = tmp_path / "in.json"
+    out = tmp_path / "out.json"
+    inp.write_text(
+        json.dumps(
+            [
+                {
+                    "question": "q",
+                    "hint": "Goal: answer-derived reasoning.\nAnswer: 70",
+                    "answer": "70",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            os.path.join(root, "scripts", "build_visual_facts_chartqa.py"),
+            "--input",
+            str(inp),
+            "--output",
+            str(out),
+            "--also-set-visual-fact",
+        ],
+        check=True,
+        cwd=root,
+    )
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data[0]["visual_fact"] is None
+    assert data[0]["visual_fact_hint"] is None
+    assert data[0]["hint"].startswith("Goal:")

@@ -115,19 +115,17 @@ def _extract_chartqa_sections(text: str) -> dict[str, str]:
 
 def _sample_hint_text(sample: dict[str, Any] | None) -> str:
     sample = sample or {}
-    for key in ("hint", "visual_fact_hint", "visual_fact"):
-        value = sample.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    value = sample.get("hint")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return ""
 
 
 def _sample_verified_hint_text(sample: dict[str, Any] | None) -> str:
     sample = sample or {}
-    for key in ("hint", "visual_fact_hint"):
-        value = sample.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    value = sample.get("hint")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return ""
 
 

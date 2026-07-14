@@ -30,6 +30,10 @@ For context, the user will be asked this question about the image (do not answer
 "__QUESTION__"
 """
 
+_HINT_DERIVED_VISUAL_FACT_RE = re.compile(
+    r"(?im)^\s*(goal|observation|reasoning|conclusion|answer)\s*:"
+)
+
 
 def build_prompt_s1(question: str) -> str:
     """Insert question without str.format (JSON braces in template are literal)."""
@@ -61,20 +65,25 @@ def _parse_ic_json(text: str) -> tuple[Optional[dict], Optional[str]]:
     return None, "json_decode"
 
 
+def _looks_hint_derived_visual_fact(text: str) -> bool:
+    headings = {m.group(1).lower() for m in _HINT_DERIVED_VISUAL_FACT_RE.finditer(text or "")}
+    return bool({"goal", "reasoning", "conclusion", "answer"} & headings) or len(headings) >= 2
+
+
 def ic_text_from_offline_sample(sample: dict[str, Any]) -> tuple[str, str]:
-    """DyME-aligned offline I_c: DePlot table > hint visual facts > hint."""
+    """DyME-aligned offline I_c: DePlot table > image-derived visual facts."""
     deplot_vf = sample.get("visual_fact_deplot")
     if deplot_vf and not is_deplot_placeholder(deplot_vf):
         text = format_deplot_for_teacher(deplot_vf)
         if text:
             return text, "deplot"
 
-    for key in ("visual_fact_hint", "visual_fact", "visual_facts", "hint"):
+    for key in ("visual_fact", "visual_facts"):
         raw = sample.get(key)
         if raw:
             text = parse_visual_fact(raw)
-            if text:
-                return text, f"hint_{key}"
+            if text and not _looks_hint_derived_visual_fact(text):
+                return text, key
     return "", "empty"
 
 
