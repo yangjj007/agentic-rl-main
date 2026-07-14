@@ -165,8 +165,8 @@ export DYME_MODEL_ROOT="$PWD/models"
 export DYME_STUDENT_MODEL="$PWD/models/llava-0.5b-ov"
 export DYME_TEACHER_MODEL="$PWD/models/llava-7b-ov"
 
-export DYME_CHARTQA_ABLATION_OUTPUT_ROOT=/path/to/big_disk/chartqa-ablation/checkpoints
-export DYME_CHARTQA_ABLATION_LOG_ROOT=/path/to/big_disk/chartqa-ablation/logs
+export DYME_CHARTQA_ABLATION_OUTPUT_ROOT=./outputs/chartqa-ablation/checkpoints
+export DYME_CHARTQA_ABLATION_LOG_ROOT=./outputs/chartqa-ablation/logs
 export DYME_CHARTQA_ABLATION_RESULTS_ROOT="$PWD/docs/experiment_results/chartqa-ablation"
 export DYME_CHARTQA_ABLATION_DIAGNOSTIC_EPOCHS=1
 
