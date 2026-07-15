@@ -114,12 +114,12 @@ evidence_adaptive_clrc: evidence-backed OPD，要求 visual evidence，保留 Co
 ```text
 DYME_TEACHER_PROBE_HARNESS=chartqa_closed_loop_recovery
 DYME_TEACHER_PROBE_HARNESS_VERSION=v12_executable_deplot
-DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_deplot_operation_answer_prefix
+DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_short_answer
 DYME_TEACHER_PROBE_CANDIDATE_LOG=1
 DYME_TEACHER_PROBE_PROMPT_LOG=1
 ```
 
-训练侧仍保持单次 teacher-probe 生成作为 OPD 路由信号，避免把每个 training step 变成昂贵的多步 micro-eval；`chartqa_closed_loop_recovery` 作为 teacher admission/diagnostic harness 被写入运行合同和 prompt/candidate 日志。关键日志：
+训练侧仍保持单次 teacher-probe 生成作为 OPD 路由信号，避免把每个 training step 变成昂贵的多步 micro-eval；`chartqa_closed_loop_recovery` 作为 teacher admission/diagnostic harness 被写入运行合同和 prompt/candidate 日志。训练默认使用稳定的 `chartqa_short_answer` profile；full closed-loop 的 answer-prefix/operator views 仍保留在 micro-eval harness 中，不直接作为训练默认 prompt。关键日志：
 
 ```text
 <run_dir>/teacher_probe_candidates/rank*.jsonl

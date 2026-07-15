@@ -137,7 +137,11 @@ OUT_ROOT="${DYME_PCD_OUTPUT_ROOT:-outputs/test-fast/pcd-no-visual/${RUN_ID}}"
 LOG_ROOT="${DYME_PCD_LOG_ROOT:-outputs/test-fast/logs/pcd_no_visual_${RUN_ID}}"
 OUT_DIR="${OUT_ROOT}/${VARIANT}"
 LOG_DIR="${LOG_ROOT}/${VARIANT}"
-MODEL_ROOT="${DYME_MODEL_ROOT:-${ROOT}/models}"
+DEFAULT_MODEL_ROOT="${ROOT}/models"
+if [[ ! -d "${DEFAULT_MODEL_ROOT}/llava-0.5b-ov" && -d "${ROOT}/../models/llava-0.5b-ov" ]]; then
+  DEFAULT_MODEL_ROOT="$(cd "${ROOT}/../models" && pwd)"
+fi
+MODEL_ROOT="${DYME_MODEL_ROOT:-${DEFAULT_MODEL_ROOT}}"
 STUDENT_MODEL="${DYME_STUDENT_MODEL:-${MODEL_ROOT}/llava-0.5b-ov}"
 TEACHER_MODEL="${DYME_TEACHER_MODEL-${MODEL_ROOT}/llava-7b-ov}"
 if [[ "${SPEED_PROFILE}" == "fast60" ]]; then
@@ -282,7 +286,7 @@ enable_latest_chartqa_teacher_harness() {
   TEACHER_PROBE_HARNESS="${DYME_TEACHER_PROBE_HARNESS:-chartqa_closed_loop_recovery}"
   TEACHER_PROBE_HARNESS_VERSION="${DYME_TEACHER_PROBE_HARNESS_VERSION:-v12_executable_deplot}"
   if [[ -z "${DYME_TEACHER_PROBE_PROMPT_PROFILE+x}" ]]; then
-    TEACHER_PROBE_PROMPT_PROFILE="chartqa_deplot_operation_answer_prefix"
+    TEACHER_PROBE_PROMPT_PROFILE="chartqa_short_answer"
   fi
   TEACHER_PROBE_PROMPT_LOG="${DYME_TEACHER_PROBE_PROMPT_LOG:-1}"
   TEACHER_PROBE_CANDIDATE_LOG="${DYME_TEACHER_PROBE_CANDIDATE_LOG:-1}"

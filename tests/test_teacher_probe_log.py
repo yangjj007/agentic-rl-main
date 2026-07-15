@@ -43,6 +43,10 @@ def test_teacher_probe_record_summarizes_route_and_deplot_placeholder():
         score=1.0,
         final_route="opd",
         answer_flag="Answer:",
+        prompt_profile="chartqa_short_answer",
+        harness="chartqa_closed_loop_recovery",
+        harness_version="v12_executable_deplot",
+        max_new_tokens=96,
         group_has_correct=False,
         group_reward_std=0.0,
         is_all_wrong_probe_candidate=True,
@@ -66,6 +70,10 @@ def test_teacher_probe_record_summarizes_route_and_deplot_placeholder():
     assert record["privileged"]["visual_fact_deplot_status"] == "placeholder"
     assert record["privileged"]["visual_fact_present"] is True
     assert record["provider_names"] == ["format_only", "visual_facts_deplot"]
+    assert record["prompt_profile"] == "chartqa_short_answer"
+    assert record["harness"] == "chartqa_closed_loop_recovery"
+    assert record["harness_version"] == "v12_executable_deplot"
+    assert record["max_new_tokens"] == 96
 
 
 def test_append_teacher_probe_record_is_disabled_by_default():

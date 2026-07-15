@@ -450,8 +450,11 @@ def _log_run_config_summary(
             "max_new_tokens": probe_cfg.get("max_new_tokens"),
             "max_per_batch": probe_cfg.get("max_per_batch"),
             "prompt_profile": probe_cfg.get("prompt_profile"),
+            "harness": probe_cfg.get("harness"),
+            "harness_version": probe_cfg.get("harness_version"),
             "answer_parser": probe_cfg.get("answer_parser"),
             "skip_no_evidence": probe_cfg.get("skip_no_evidence"),
+            "prompt_log": probe_cfg.get("prompt_log", {}),
             "candidate_log": probe_cfg.get("candidate_log", {}),
         },
         "teacher_trajectory": {

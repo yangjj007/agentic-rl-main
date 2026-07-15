@@ -165,7 +165,7 @@ def test_gold_hidden_adaptive_routed_opd_only_adds_controller(tmp_path: Path) ->
     assert "DYME_OPSD_PROVIDERS=format_only,visual_facts_deplot" in out
     assert "DYME_TEACHER_PROBE_HARNESS=chartqa_closed_loop_recovery" in out
     assert "DYME_TEACHER_PROBE_HARNESS_VERSION=v12_executable_deplot" in out
-    assert "DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_deplot_operation_answer_prefix" in out
+    assert "DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_short_answer" in out
     assert "DYME_TEACHER_PROBE_PROMPT_LOG=1" in out
     assert "DYME_TEACHER_PROBE_CANDIDATE_LOG=1" in out
     assert "oracle gold suffix expected: 0" in out
@@ -313,7 +313,7 @@ def test_gold_hidden_answer_anchor_variant_downweights_rationale_tokens(tmp_path
 
     assert "DYME_ADAPTIVE_SUPERVISION=1" in out
     assert "DYME_TEACHER_PROBE_HARNESS=chartqa_closed_loop_recovery" in out
-    assert "DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_deplot_operation_answer_prefix" in out
+    assert "DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_short_answer" in out
     assert "DYME_TEACHER_PROBE_PROMPT_LOG=1" in out
     assert "DYME_ADAPTIVE_READINESS_SOURCE=global_grpo_route" in out
     assert "DYME_ADAPTIVE_TARGET_READINESS=0.20" in out
@@ -332,7 +332,7 @@ def test_gold_hidden_confidence_weighted_variant_uses_strict_teacher_probe(tmp_p
 
     assert "DYME_ADAPTIVE_SUPERVISION=1" in out
     assert "DYME_TEACHER_PROBE_HARNESS=chartqa_closed_loop_recovery" in out
-    assert "DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_deplot_operation_answer_prefix" in out
+    assert "DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_short_answer" in out
     assert "DYME_TEACHER_PROBE_PROMPT_LOG=1" in out
     assert "DYME_TEACHER_PROBE_STRICT_ACCEPT=1" in out
     assert "DYME_TEACHER_PROBE_REQUIRE_ANSWER_FLAG=1" in out
@@ -367,7 +367,7 @@ def test_gold_hidden_evidence_adaptive_variant_requires_high_quality_evidence(tm
     assert "DYME_ADAPTIVE_SUPERVISION=1" in out
     assert "DYME_TEACHER_PROBE_PROVIDERS=format_only,visual_facts_deplot" in out
     assert "DYME_TEACHER_PROBE_HARNESS=chartqa_closed_loop_recovery" in out
-    assert "DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_deplot_operation_answer_prefix" in out
+    assert "DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_short_answer" in out
     assert "DYME_TEACHER_PROBE_PROMPT_LOG=1" in out
     assert "DYME_TEACHER_PROBE_SKIP_NO_EVIDENCE=1" in out
     assert "DYME_CHART_COT_VERIFY=1" in out
@@ -448,8 +448,13 @@ def test_pcd_no_visual_dry_run_defaults_to_local_model_paths(tmp_path: Path) -> 
     )
     out = result.stdout
 
-    assert f"DYME_STUDENT_MODEL={ROOT}/models/llava-0.5b-ov" in out
-    assert f"DYME_TEACHER_MODEL={ROOT}/models/llava-7b-ov" in out
+    expected_root = ROOT / "models"
+    sibling_root = ROOT.parent / "models"
+    if not (expected_root / "llava-0.5b-ov").exists() and (sibling_root / "llava-0.5b-ov").exists():
+        expected_root = sibling_root
+
+    assert f"DYME_STUDENT_MODEL={expected_root}/llava-0.5b-ov" in out
+    assert f"DYME_TEACHER_MODEL={expected_root}/llava-7b-ov" in out
 
 
 def test_pcd_no_visual_dry_run_canonical_speed_profile(tmp_path: Path) -> None:

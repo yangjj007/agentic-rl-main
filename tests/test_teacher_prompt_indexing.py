@@ -88,7 +88,7 @@ def test_build_teacher_prompt_batch_writes_latest_harness_prompt_preview(
             "teacher_probe": {
                 "harness": "chartqa_closed_loop_recovery",
                 "harness_version": "v12_executable_deplot",
-                "prompt_profile": "chartqa_deplot_operation_answer_prefix",
+                "prompt_profile": "chartqa_short_answer",
                 "prompt_log": {"enabled": True, "limit_per_step": 4, "max_text_chars": 2048},
             }
         },
@@ -102,6 +102,6 @@ def test_build_teacher_prompt_batch_writes_latest_harness_prompt_preview(
 
     assert row["harness"] == "chartqa_closed_loop_recovery"
     assert row["harness_version"] == "v12_executable_deplot"
-    assert row["prompt_profile"] == "chartqa_deplot_operation_answer_prefix"
+    assert row["prompt_profile"] == "chartqa_short_answer"
     assert row["response_prefix"] == "Answer:"
     assert row["teacher_text"] == "What is the value?\n\nlatest suffix"
