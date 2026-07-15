@@ -109,6 +109,24 @@ confidence_weighted_clrc: strict teacher-probe acceptance，要求 Answer 标记
 evidence_adaptive_clrc: evidence-backed OPD，要求 visual evidence，保留 CoT quality gate，并结合 answer-anchor token reliability。
 ```
 
+这四个 OPD/CLRC 主 variant 默认接入最新 teacher harness 合同：
+
+```text
+DYME_TEACHER_PROBE_HARNESS=chartqa_closed_loop_recovery
+DYME_TEACHER_PROBE_HARNESS_VERSION=v12_executable_deplot
+DYME_TEACHER_PROBE_PROMPT_PROFILE=chartqa_deplot_operation_answer_prefix
+DYME_TEACHER_PROBE_CANDIDATE_LOG=1
+DYME_TEACHER_PROBE_PROMPT_LOG=1
+```
+
+训练侧仍保持单次 teacher-probe 生成作为 OPD 路由信号，避免把每个 training step 变成昂贵的多步 micro-eval；`chartqa_closed_loop_recovery` 作为 teacher admission/diagnostic harness 被写入运行合同和 prompt/candidate 日志。关键日志：
+
+```text
+<run_dir>/teacher_probe_candidates/rank*.jsonl
+<run_dir>/teacher_probe_prompts/rank*.jsonl
+training health: routing/teacher_probe_*、teacher_probe/generated_tokens_*、teacher_probe/clipped_rate
+```
+
 可选 appendix/control 矩阵用 `--preset all`，包含 18 个标签：
 
 ```text
@@ -154,7 +172,14 @@ fallback_only_matched: 空监督/隐藏 base-loss/泄漏诊断。
 mixed_group_shortest_correct_hard_replay: student in-batch hard replay 近邻 baseline，不是 SSOPD，也不是 CLRC 主线。
 ```
 
-默认 `--preset main5 --stages train,eval`，即每个主全量 variant 训练完成后自动启动对应 ChartQA eval，并解析 `summary.csv`。`--preset all` 时，`fallback_only_matched` 和 `mixed_group_shortest_correct_hard_replay` 默认使用 `DYME_CHARTQA_ABLATION_DIAGNOSTIC_EPOCHS=1` 短跑；需要更长诊断时手动覆盖。
+默认 `--preset main5 --stages train,eval`，即每个主全量 variant 训练完成后自动启动 ChartQA checkpoint sweep。总训练为 10epoch，默认只评估 6epoch 之后的权重：
+
+```text
+DYME_CHARTQA_ABLATION_EVAL_SWEEP_MIN_EPOCH=6
+DYME_CHARTQA_ABLATION_STEPS_PER_EPOCH=147
+```
+
+sweep 会选择 `checkpoint-*` 中 step `>= min_epoch * steps_per_epoch` 的目录，并额外评估 `final_checkpoint`；解析后的 `summary.csv` 和 `sweep_manifest.csv` 会同步写入 `docs/experiment_results/chartqa-ablation/<RUN_ID>/<label>/`。`--preset all` 时，`fallback_only_matched` 和 `mixed_group_shortest_correct_hard_replay` 默认使用 `DYME_CHARTQA_ABLATION_DIAGNOSTIC_EPOCHS=1` 短跑；需要更长诊断时手动覆盖。
 
 ## 5. 4x8x80G 全量运行
 
@@ -171,6 +196,8 @@ export DYME_CHARTQA_ABLATION_OUTPUT_ROOT=./outputs/chartqa-ablation/checkpoints
 export DYME_CHARTQA_ABLATION_LOG_ROOT=./outputs/chartqa-ablation/logs
 export DYME_CHARTQA_ABLATION_RESULTS_ROOT="$PWD/docs/experiment_results/chartqa-ablation"
 export DYME_CHARTQA_ABLATION_DIAGNOSTIC_EPOCHS=1
+export DYME_CHARTQA_ABLATION_EVAL_SWEEP_MIN_EPOCH=6
+export DYME_CHARTQA_ABLATION_STEPS_PER_EPOCH=147
 
 export DYME_DYME_NUM_PROCESSES=8
 export DYME_DYME_EVAL_NUM_PROCESSES=8
@@ -286,10 +313,10 @@ DYME_MAX_STEPS/DYME_PCD_MAX_STEPS 生效。
 DYME_SKIP_FINAL_SAVE=1 生效，smoke 不再写 final checkpoint。
 grpo_only_matched 和 fallback_only_matched 已禁用 7B teacher 加载。
 token_reliability_clrc 日志显示 token_weighting.enabled=true。
-answer_anchor_clrc 会导出 DYME_OPSD_TOKEN_WEIGHTING_MODE=answer_anchor。
-confidence_weighted_clrc 会导出 strict probe flags，并记录 routing/teacher_probe_strict_rejected_rate。
+answer_anchor_clrc 会导出 DYME_OPSD_TOKEN_WEIGHTING_MODE=answer_anchor，并接入 latest teacher harness/prompt log。
+confidence_weighted_clrc 会导出 strict probe flags，并记录 routing/teacher_probe_strict_rejected_rate，同时接入 latest teacher harness/prompt log。
 grpo_recovery_boost_clrc 会降低 OPD weight/cap，同时 mixed sampling weight=6.0。
-evidence_adaptive_clrc 会要求 teacher_probe skip_no_evidence=1，并启用 CoT quality gate + answer-anchor token weighting。
+evidence_adaptive_clrc 会要求 teacher_probe skip_no_evidence=1，并启用 CoT quality gate + answer-anchor token weighting，同时接入 latest teacher harness/prompt log。
 mixed_group_shortest_correct_hard_replay 日志显示 mixed_group_hard_replay 路由指标存在。
 ```
 
@@ -316,12 +343,15 @@ python -m pytest -q -p no:cacheprovider \
   tests/test_pcd_no_visual_runner.py::test_gold_hidden_mixed_group_hard_replay_variant_is_honestly_isolated \
   tests/test_pcd_no_visual_runner.py::test_pcd_runner_rejects_retired_near_neighbor_variants \
   tests/test_pcd_no_visual_runner.py::test_empty_teacher_model_env_disables_teacher_loading \
+  tests/test_teacher_prompt_indexing.py \
+  tests/test_teacher_probe_micro_eval.py \
+  tests/test_evidence_harness.py \
   tests/test_opsd_loss_teacher.py \
   tests/test_mixed_group_hard_replay.py \
   tests/test_health_monitor.py::test_finish_step_returns_mixed_group_hard_replay_metrics
 ```
 
-本机最近验证：聚焦矩阵/runner/loss 测试通过，`bash -n` 和核心 `py_compile` 均通过；main5 新增方向已做 1-step smoke，目标服务器仍建议先按第 7 节 smoke。
+本机最近验证：`tests/test_chartqa_10epoch_ablation_matrix.py tests/test_pcd_no_visual_runner.py tests/test_teacher_prompt_indexing.py tests/test_teacher_probe_micro_eval.py tests/test_evidence_harness.py` 共 `124 passed`，`bash -n` 覆盖 matrix、PCD runner 和 eval sweep 脚本；目标服务器仍建议先按第 7 节 smoke。
 
 ## 9. 论文 claim 边界
 

@@ -6,7 +6,17 @@ from opsd_utils.privileged.image_utils import resolve_teacher_images
 from opsd_utils.privileged.profiles import DEFAULT_PROFILE, effective_profile, resolve_profile_config
 from opsd_utils.privileged.providers import (
     CHARTQA_ORACLE_HINT,
+    CHARTQA_DEPLOT_REASONED_HINT,
     CHARTQA_SHORT_ANSWER_HINT,
+    CHARTQA_VISUAL_REASONED_HINT,
+    CHARTQA_VISUAL_CHAIN_OF_CHARTS_HINT,
+    CHARTQA_VISUAL_SHORT_HINT,
+    CHARTQA_VISUAL_ZOOM_SHORT_HINT,
+    CHARTQA_VISUAL_ANSWER_PREFIX_HINT,
+    CHARTQA_VISUAL_ANSWER_PREFIX_NUMERIC_HINT,
+    CHARTQA_VISUAL_OPERATION_ANSWER_PREFIX_HINT,
+    CHARTQA_DEPLOT_OPERATION_ANSWER_PREFIX_HINT,
+    CHARTQA_DEPLOT_ANSWER_PREFIX_HINT,
     CropProvider,
     DeplotOnlyProvider,
     FormatOnlyProvider,
@@ -33,6 +43,26 @@ def _format_only_hint_from_config(cfg: dict[str, Any]) -> str | None:
         return CHARTQA_ORACLE_HINT
     if probe_cfg.get("prompt_profile") == "chartqa_short_answer":
         return CHARTQA_SHORT_ANSWER_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_visual_short":
+        return CHARTQA_VISUAL_SHORT_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_visual_zoom_short":
+        return CHARTQA_VISUAL_ZOOM_SHORT_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_visual_answer_prefix":
+        return CHARTQA_VISUAL_ANSWER_PREFIX_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_visual_answer_prefix_numeric":
+        return CHARTQA_VISUAL_ANSWER_PREFIX_NUMERIC_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_visual_operation_answer_prefix":
+        return CHARTQA_VISUAL_OPERATION_ANSWER_PREFIX_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_deplot_operation_answer_prefix":
+        return CHARTQA_DEPLOT_OPERATION_ANSWER_PREFIX_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_deplot_answer_prefix":
+        return CHARTQA_DEPLOT_ANSWER_PREFIX_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_visual_reasoned":
+        return CHARTQA_VISUAL_REASONED_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_visual_chain_of_charts":
+        return CHARTQA_VISUAL_CHAIN_OF_CHARTS_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_deplot_reasoned":
+        return CHARTQA_DEPLOT_REASONED_HINT
     hint = cfg.get("format_only_hint")
     if hint:
         return str(hint)

@@ -50,11 +50,14 @@ def test_chartqa_10epoch_matrix_dry_run_lists_main5_default_matrix(tmp_path: Pat
     assert "deplot_no_vs_opd_pcd_gold_hidden_answer_anchor_clrc" in out
     assert "deplot_no_vs_opd_pcd_gold_hidden_confidence_weighted_clrc" in out
     assert "deplot_no_vs_opd_pcd_gold_hidden_evidence_adaptive_clrc" in out
+    assert out.count("scripts/test/eval_chartqa_checkpoint_sweep.sh") == 5
+    assert "--min-epoch 6" in out
+    assert "--total-epochs 10" in out
     assert "deplot_no_vs_opd_pcd_gold_hidden_grpo_only" not in out
     assert "grpo_recovery_boost_clrc" not in out
     assert "vold_cold_start" not in out
     assert "ssopd_mixed_group" not in out
-    assert "python" not in out.lower() or "-m accelerate.commands.launch" in out
+    assert "scripts/test/eval_chartqa_checkpoint_sweep.sh" in out
 
 
 def test_chartqa_10epoch_matrix_all_preset_lists_appendix_matrix(tmp_path: Path) -> None:
@@ -254,3 +257,39 @@ def test_dyme_matched_runner_accepts_10epoch_override() -> None:
     assert "Matched Pure DyME 10epoch run" in out
     assert "DYME_NUM_TRAIN_EPOCHS=10" in out
     assert "-m accelerate.commands.launch" in out
+
+
+def test_chartqa_checkpoint_sweep_dry_run_filters_after_six_epochs(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    for name in ("checkpoint-850", "checkpoint-882", "checkpoint-1000", "final_checkpoint"):
+        (run_dir / name).mkdir(parents=True)
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/test/eval_chartqa_checkpoint_sweep.sh",
+            "--dry-run",
+            "--run-dir",
+            str(run_dir),
+            "--label",
+            "pytest_sweep",
+            "--min-epoch",
+            "6",
+            "--total-epochs",
+            "10",
+            "--steps-per-epoch",
+            "147",
+            "--results-dir",
+            str(tmp_path / "results"),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    out = result.stdout
+
+    assert "checkpoint-850" not in out
+    assert "checkpoint-882" in out
+    assert "checkpoint-1000" in out
+    assert "final_checkpoint" in out
+    assert "sweep_manifest.csv" in out

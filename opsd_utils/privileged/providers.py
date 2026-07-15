@@ -20,6 +20,136 @@ CHARTQA_SHORT_ANSWER_HINT = (
     "Answer: <short answer>"
 )
 
+CHARTQA_VISUAL_REASONED_HINT = (
+    "Solve the chart question from the full chart image. Do not use dataset hints, "
+    "reference answers, or extracted tables. First determine the question type: lookup, "
+    "counting, comparison, arithmetic, ratio/percentage, extremum, or yes/no. Inspect the "
+    "legend, color-to-series mapping, axis labels, units, and the exact category/year named "
+    "in the question. For count questions, count only data entries that satisfy the condition. "
+    "For differences, sums, ratios, averages, or percentages, verify the selected values and "
+    "do the arithmetic before answering. If the question asks for a color series, resolve the "
+    "legend from the image before reading values. Keep the reasoning concise and finish with "
+    "exactly one final line:\n"
+    "Answer: <single short answer>"
+)
+
+CHARTQA_VISUAL_CHAIN_OF_CHARTS_HINT = (
+    "Solve the chart question from the full chart image only. Use a chart reasoning "
+    "procedure before giving the answer:\n"
+    "Task: classify the operation needed by the question: lookup, count, compare, "
+    "extreme, arithmetic, percent/ratio, average, or yes/no.\n"
+    "Visual Evidence: name the exact chart elements needed: chart type, axis labels, "
+    "units, legend/color-series mapping, categories/years, and values read from the image.\n"
+    "Computation: perform the required comparison, counting, or arithmetic. For yes/no, "
+    "state the condition checked.\n"
+    "Answer: <single short answer>\n"
+    "Rules: do not use any hidden table, dataset hint, reference answer, or prior answer. "
+    "Do not invent missing values. If a color is mentioned, resolve it through the legend. "
+    "The final non-empty line must be exactly: Answer: <single short answer>\n\n"
+    "[Teacher Response Prefix]\n"
+    "Task:"
+)
+
+CHARTQA_VISUAL_SHORT_HINT = (
+    "Answer the chart question using the full chart image. Read the requested labels, "
+    "series, units, and values carefully. Finish with exactly one final line:\n"
+    "Answer: <single short answer>"
+)
+
+CHARTQA_VISUAL_ZOOM_SHORT_HINT = (
+    "Answer the chart question using two chart images: first the full chart image, "
+    "then a zoomed central crop for reading small labels and values. Use the full image "
+    "for title, axes, legend, and global context; use the zoomed crop to verify numbers "
+    "and local bar/line positions. Finish with exactly one final line:\n"
+    "Answer: <single short answer>"
+)
+
+CHARTQA_VISUAL_ANSWER_PREFIX_HINT = (
+    "Answer the chart question using the full chart image. Read labels, legend, colors, "
+    "axis units, and requested values carefully. Return only the final answer text after "
+    "the provided Answer: prefix. Do not include units for numeric answers unless the unit "
+    "is part of a category name. Do not include reasoning, explanations, alternatives, or "
+    "markdown.\n\n"
+    "[Teacher Response Prefix]\n"
+    "Answer:"
+)
+
+CHARTQA_VISUAL_ANSWER_PREFIX_NUMERIC_HINT = (
+    "Answer the chart question using the full chart image. Read labels, legend, colors, "
+    "axis units, and requested values carefully. Return only the final answer text after "
+    "the provided Answer: prefix. Use Arabic numerals for counts and numeric answers, not "
+    "number words. If the answer is a percentage, proportion, or percentage-point value, "
+    "include a percent sign. Do not include units after numbers except %. For label answers, "
+    "copy the exact label text from the chart. For multiple labels, separate them with commas. "
+    "Do not include reasoning, explanations, alternatives, or markdown.\n\n"
+    "[Teacher Response Prefix]\n"
+    "Answer:"
+)
+
+CHARTQA_VISUAL_OPERATION_ANSWER_PREFIX_HINT = (
+    "Answer the chart question using the full chart image. Before answering, silently "
+    "classify the required operation as lookup, count, compare, extreme, sum, difference, "
+    "average, percent/ratio, or yes/no. Select only the operands named by the question: "
+    "the exact row/category/year, the correct legend series or color, and the requested "
+    "axis unit. For count questions, count only data entries that satisfy the condition; "
+    "do not count headers, legend names, axes, or decorative colors. For sums, differences, "
+    "averages, percentages, and yes/no questions, perform the requested arithmetic or "
+    "condition check before answering. Return only the final answer text after the provided "
+    "Answer: prefix. Do not include reasoning, explanations, alternatives, or markdown.\n\n"
+    "[Teacher Response Prefix]\n"
+    "Answer:"
+)
+
+CHARTQA_DEPLOT_OPERATION_ANSWER_PREFIX_HINT = (
+    "Answer the chart question using the full chart image and the DePlot table evidence. "
+    "Treat DePlot as fallible OCR: use it to read small labels and values, but verify "
+    "ambiguous labels, units, colors, and series names against the chart image. First "
+    "silently identify the operation requested by the question. Check row/column orientation "
+    "before selecting operands. For count questions, ignore headers, legend names, axes, and "
+    "series names unless the question explicitly asks for them. For sums, differences, "
+    "averages, percentages, ratios, and yes/no questions, perform the requested arithmetic "
+    "or condition check using only the selected operands. Return only the final answer text "
+    "after the provided Answer: prefix. Do not include reasoning, explanations, alternatives, "
+    "or markdown.\n\n"
+    "[Teacher Response Prefix]\n"
+    "Answer:"
+)
+
+CHARTQA_DEPLOT_ANSWER_PREFIX_HINT = (
+    "Answer the chart question using the full chart image and the DePlot table evidence. "
+    "Treat DePlot as fallible OCR: use it to help read small values and labels, but verify "
+    "ambiguous colors, series names, row/column orientation, and units against the chart image. "
+    "Return only the final answer text after the provided Answer: prefix. Do not include units "
+    "for numeric answers unless the unit is part of a category name. Do not include reasoning, "
+    "explanations, alternatives, or markdown.\n\n"
+    "[Teacher Response Prefix]\n"
+    "Answer:"
+)
+
+CHARTQA_DEPLOT_REASONED_HINT = (
+    "Solve the chart question from the chart image and the provided DePlot table evidence. "
+    "Treat DePlot as OCR evidence that can contain transcription errors, so cross-check "
+    "ambiguous labels or values against the chart image.\n"
+    "First identify whether the question requires lookup, counting, comparison, arithmetic, "
+    "or a yes/no judgment. Inspect the table orientation before selecting values. "
+    "Do not count column headers or series names as data categories. Carefully align each row "
+    "label with the correct series column. For counting, count distinct qualifying data entries. "
+    "For differences, sums, ratios, averages, or percentages, show the exact arithmetic and "
+    "preserve the requested unit. Return one unambiguous final answer.\n"
+    "Use exactly these five headings in this order. Each of the first four sections must "
+    "contain exactly one sentence of at most 25 words. Do not add lists, examples, alternatives, "
+    "or extra paragraphs:\n"
+    "Goal: restate the requested chart operation.\n"
+    "Observation: list only the chart labels and values needed to answer.\n"
+    "Reasoning: explain the selection, counting, comparison, or calculation.\n"
+    "Conclusion: state the result in a complete sentence.\n"
+    "Answer: <single short answer>\n"
+    "The final non-empty line must be exactly: Answer: <single short answer>\n\n"
+    "[Teacher Response Prefix]\n"
+    "Goal: Solve the requested chart operation from the available evidence.\n"
+    "Observation:"
+)
+
 CHARTQA_ORACLE_HINT = (
     "You are running an ORACLE-HINT evidence-anchored ChartQA teacher probe.\n"
     "Use the chart image and DePlot table as visual evidence, but they are not "

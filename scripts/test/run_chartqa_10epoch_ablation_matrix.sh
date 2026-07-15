@@ -25,6 +25,8 @@ PYTHON_BIN="${DYME_PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
 EVAL_ACCEL="${DYME_CHARTQA_ABLATION_EVAL_ACCELERATE_CONFIG:-default_config_8gpu.yaml}"
 VISIBLE_DEVICES="${DYME_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}"
 EVAL_NUM_PROCESSES="${DYME_CHARTQA_ABLATION_EVAL_NUM_PROCESSES:-${DYME_DYME_EVAL_NUM_PROCESSES:-8}}"
+EVAL_SWEEP_MIN_EPOCH="${DYME_CHARTQA_ABLATION_EVAL_SWEEP_MIN_EPOCH:-6}"
+STEPS_PER_EPOCH="${DYME_CHARTQA_ABLATION_STEPS_PER_EPOCH:-147}"
 
 usage() {
   cat <<'USAGE'
@@ -62,7 +64,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in EPOCHS DIAGNOSTIC_EPOCHS SMOKE_STEPS SHARD_INDEX SHARD_COUNT EVAL_NUM_PROCESSES; do
+for value_name in EPOCHS DIAGNOSTIC_EPOCHS SMOKE_STEPS SHARD_INDEX SHARD_COUNT EVAL_NUM_PROCESSES EVAL_SWEEP_MIN_EPOCH STEPS_PER_EPOCH; do
   value="${!value_name}"
   case "${value}" in
     ''|*[!0-9]*) echo "${value_name} must be a non-negative integer, got: ${value}" >&2; exit 2 ;;
@@ -210,55 +212,37 @@ print_or_run_pcd_eval() {
   local label="$1"
   local pcd_variant="$2"
   local out_dir="${OUTPUT_ROOT}/${RUN_ID}/${label}/${pcd_variant}"
-  local eval_dir="${out_dir}/eval_chartqa"
-  local eval_log="${eval_dir}/eval_final_checkpoint_bsz1_gpuall.log"
   local result_dir="${RESULTS_ROOT}/${RUN_ID}/${label}"
-  local eval_env=(
-    "CUDA_VISIBLE_DEVICES=${VISIBLE_DEVICES}"
-    "PYTHONUNBUFFERED=1"
-    "HF_DATASETS_OFFLINE=1"
-    "HF_HUB_OFFLINE=1"
-    "TRANSFORMERS_OFFLINE=1"
-    "WANDB_MODE=disabled"
-    "DYME_EVAL_BATCH_SIZE=1"
-    "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
-  )
-  local eval_cmd=(
-    "${PYTHON_BIN}" -m accelerate.commands.launch
-    --config_file "${EVAL_ACCEL}" --num_processes "${EVAL_NUM_PROCESSES}"
-    -m eval.eval_chartqa --model_path "${out_dir}/final_checkpoint"
-  )
-  local parse_cmd=(
-    "${PYTHON_BIN}" scripts/test/parse_eval_chartqa_logs.py
-    "${eval_dir}" "${eval_dir}/summary.csv"
+  print_or_run_checkpoint_sweep "${label}" "${out_dir}" "$(epochs_for_label "${label}")" "${result_dir}"
+}
+
+print_or_run_checkpoint_sweep() {
+  local label="$1"
+  local out_dir="$2"
+  local total_epochs="$3"
+  local result_dir="$4"
+  local sweep_cmd=(
+    bash scripts/test/eval_chartqa_checkpoint_sweep.sh
+    --run-dir "${out_dir}"
+    --label "${label}"
+    --min-epoch "${EVAL_SWEEP_MIN_EPOCH}"
+    --total-epochs "${total_epochs}"
+    --steps-per-epoch "${STEPS_PER_EPOCH}"
+    --results-dir "${result_dir}"
+    --python-bin "${PYTHON_BIN}"
+    --accelerate-config "${EVAL_ACCEL}"
+    --num-processes "${EVAL_NUM_PROCESSES}"
+    --cuda-visible-devices "${VISIBLE_DEVICES}"
   )
 
   if [[ "${MODE}" == "dry-run" ]]; then
-    printf 'EVAL: env'
-    printf ' %q' "${eval_env[@]}"
-    printf ' %q' "${eval_cmd[@]}"
+    printf 'SWEEP:'
+    printf ' %q' "${sweep_cmd[@]}"
     printf '\n'
-    printf 'PARSE:'
-    printf ' %q' "${parse_cmd[@]}"
-    printf '\n'
-    printf 'RESULT: mkdir -p %q && cp %q %q\n' "${result_dir}" "${eval_dir}/summary.csv" "${result_dir}/summary.csv"
     return 0
   fi
 
-  mkdir -p "${eval_dir}"
-  [[ -d "${out_dir}/final_checkpoint" ]] || {
-    echo "missing final checkpoint for ${label}: ${out_dir}/final_checkpoint" >&2
-    exit 2
-  }
-  env "${eval_env[@]}" "${eval_cmd[@]}" 2>&1 | tee "${eval_log}"
-  "${parse_cmd[@]}"
-  mkdir -p "${result_dir}"
-  cp "${eval_dir}/summary.csv" "${result_dir}/summary.csv"
-  {
-    echo "label,pcd_variant,epochs,output_dir,log_dir,eval_summary,eval_log"
-    printf '%s,%s,%s,%s,%s,%s,%s\n' \
-      "${label}" "${pcd_variant}" "$(epochs_for_label "${label}")" "${out_dir}" "${LOG_ROOT}/${RUN_ID}/${label}/${pcd_variant}" "${eval_dir}/summary.csv" "${eval_log}"
-  } > "${result_dir}/manifest.csv"
+  "${sweep_cmd[@]}"
 }
 
 echo "============================================================"
@@ -296,12 +280,14 @@ for index in "${!LABELS[@]}"; do
   if [[ "${label}" == "dyme_pure_original" || "${label}" == "dyme_full_original" ]]; then
     dyme_variant="pure"
     [[ "${label}" == "dyme_full_original" ]] && dyme_variant="full"
+    dyme_stem="${dyme_variant}_dyme_matched"
+    dyme_out_dir="${OUTPUT_ROOT}/${RUN_ID}_${label}/${dyme_stem}"
     if [[ "${MODE}" == "run" ]]; then
       printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "${label}" "${label_epochs}" "${dyme_variant}" "$(stage_enabled train && echo 1 || echo 0)" "$(stage_enabled eval && echo 1 || echo 0)" \
-        "${OUTPUT_ROOT}" "${LOG_ROOT}" "${RESULTS_ROOT}/${RUN_ID}/${label}" >> "${RESULTS_ROOT}/${RUN_ID}/matrix_manifest.csv"
+        "${dyme_out_dir}" "${LOG_ROOT}/${RUN_ID}_${label}/${dyme_stem}" "${RESULTS_ROOT}/${RUN_ID}/${label}" >> "${RESULTS_ROOT}/${RUN_ID}/matrix_manifest.csv"
     fi
-    if stage_enabled train || stage_enabled eval; then
+    if stage_enabled train; then
       command=(
         env
         "DYME_DYME_EPOCHS=${label_epochs}"
@@ -320,9 +306,12 @@ for index in "${!LABELS[@]}"; do
         --variant "${dyme_variant}"
         --epochs "${label_epochs}"
         --resume "${RESUME}"
-        --stages "${STAGES}"
+        --stages "train"
       )
       run_or_print "${command[@]}"
+    fi
+    if stage_enabled eval; then
+      print_or_run_checkpoint_sweep "${label}" "${dyme_out_dir}" "${label_epochs}" "${RESULTS_ROOT}/${RUN_ID}/${label}"
     fi
     continue
   fi

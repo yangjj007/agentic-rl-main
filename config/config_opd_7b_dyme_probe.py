@@ -33,6 +33,12 @@ CHARTQA_SHORT_ANSWER_HINT = (
 TEACHER_PROBE_ENABLED = True
 TEACHER_TRAJECTORY_ENABLED = True
 TEACHER_PROBE_PROMPT_PROFILE = "chartqa_short_answer"
+TEACHER_PROBE_HARNESS = "single_profile_teacher_probe"
+TEACHER_PROBE_HARNESS_VERSION = "legacy"
+TEACHER_PROBE_AGREEMENT_GATE = False
+TEACHER_PROBE_AGREEMENT_PROFILES: list[str] = []
+TEACHER_PROBE_AGREEMENT_MIN_AGREE = 0
+TEACHER_PROBE_AGREEMENT_SELECTED_INDEX = 0
 LOSS_TYPE = "srkl"
 SRKL_ALPHA = 0.1
 OPSD_WEIGHT = 1.0
@@ -151,6 +157,27 @@ OUTPUT_DIR = env_str("DYME_OUTPUT_DIR", OUTPUT_DIR)
 TEACHER_PROBE_ENABLED = env_bool("DYME_TEACHER_PROBE", TEACHER_PROBE_ENABLED)
 TEACHER_TRAJECTORY_ENABLED = env_bool("DYME_TEACHER_TRAJECTORY", TEACHER_TRAJECTORY_ENABLED)
 TEACHER_PROBE_PROMPT_PROFILE = env_str("DYME_TEACHER_PROBE_PROMPT_PROFILE", TEACHER_PROBE_PROMPT_PROFILE)
+TEACHER_PROBE_HARNESS = env_str("DYME_TEACHER_PROBE_HARNESS", TEACHER_PROBE_HARNESS)
+TEACHER_PROBE_HARNESS_VERSION = env_str(
+    "DYME_TEACHER_PROBE_HARNESS_VERSION",
+    TEACHER_PROBE_HARNESS_VERSION,
+)
+TEACHER_PROBE_AGREEMENT_GATE = env_bool(
+    "DYME_TEACHER_PROBE_AGREEMENT_GATE",
+    TEACHER_PROBE_AGREEMENT_GATE,
+)
+TEACHER_PROBE_AGREEMENT_PROFILES = env_list(
+    "DYME_TEACHER_PROBE_AGREEMENT_PROFILES",
+    TEACHER_PROBE_AGREEMENT_PROFILES,
+)
+TEACHER_PROBE_AGREEMENT_MIN_AGREE = env_int(
+    "DYME_TEACHER_PROBE_AGREEMENT_MIN_AGREE",
+    TEACHER_PROBE_AGREEMENT_MIN_AGREE,
+)
+TEACHER_PROBE_AGREEMENT_SELECTED_INDEX = env_int(
+    "DYME_TEACHER_PROBE_AGREEMENT_SELECTED_INDEX",
+    TEACHER_PROBE_AGREEMENT_SELECTED_INDEX,
+)
 LOSS_TYPE = env_str("DYME_OPSD_LOSS_TYPE", LOSS_TYPE)
 SRKL_ALPHA = env_float("DYME_OPSD_SRKL_ALPHA", SRKL_ALPHA)
 OPSD_WEIGHT = env_float("DYME_OPSD_WEIGHT", OPSD_WEIGHT)
@@ -262,6 +289,10 @@ CHART_COT_LOG_SAMPLES = env_bool("DYME_CHART_COT_LOG_SAMPLES", CHART_COT_LOG_SAM
 CHART_COT_MAX_LOG_SAMPLES = env_int("DYME_CHART_COT_MAX_LOG_SAMPLES", CHART_COT_MAX_LOG_SAMPLES)
 
 MODEL_CONFIG = dict(base.MODEL_CONFIG)
+if "DYME_TEACHER_MODEL" in os.environ:
+    # Empty string intentionally disables cross-model teacher loading for
+    # matched controls; do not route this through env_str, which falls back.
+    MODEL_CONFIG["teacher_model_path"] = os.environ.get("DYME_TEACHER_MODEL", "").strip()
 
 _dyme_args = {
     **base.CONFIG["training"]["dyme_args"],
@@ -360,6 +391,8 @@ DYME_OPSD_CONFIG = {
         "repetition_penalty": env_float("DYME_TEACHER_PROBE_REPETITION_PENALTY", 1.2),
         "max_relative_change": env_float("DYME_TEACHER_PROBE_RELAXED_TOL", 0.05),
         "prompt_profile": TEACHER_PROBE_PROMPT_PROFILE,
+        "harness": TEACHER_PROBE_HARNESS,
+        "harness_version": TEACHER_PROBE_HARNESS_VERSION,
         "answer_parser": env_str("DYME_TEACHER_PROBE_ANSWER_PARSER", "chartqa_final_answer"),
         "skip_no_evidence": env_bool("DYME_TEACHER_PROBE_SKIP_NO_EVIDENCE", True),
         "strict_accept": env_bool("DYME_TEACHER_PROBE_STRICT_ACCEPT", False),
@@ -367,8 +400,19 @@ DYME_OPSD_CONFIG = {
         "reject_parse_fail": env_bool("DYME_TEACHER_PROBE_REJECT_PARSE_FAIL", False),
         "reject_clipped": env_bool("DYME_TEACHER_PROBE_REJECT_CLIPPED", False),
         "probe_all_wrong_after_step": env_optional_int("DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP"),
+        "agreement_gate": {
+            "enabled": TEACHER_PROBE_AGREEMENT_GATE,
+            "prompt_profiles": TEACHER_PROBE_AGREEMENT_PROFILES,
+            "min_agree": TEACHER_PROBE_AGREEMENT_MIN_AGREE,
+            "selected_index": TEACHER_PROBE_AGREEMENT_SELECTED_INDEX,
+        },
         "candidate_log": {
             "enabled": env_bool("DYME_TEACHER_PROBE_CANDIDATE_LOG", True),
+        },
+        "prompt_log": {
+            "enabled": env_bool("DYME_TEACHER_PROBE_PROMPT_LOG", False),
+            "max_text_chars": env_int("DYME_TEACHER_PROBE_PROMPT_LOG_MAX_CHARS", 4096),
+            "limit_per_step": env_int("DYME_TEACHER_PROBE_PROMPT_LOG_LIMIT", 16),
         },
     },
     "teacher_trajectory": {

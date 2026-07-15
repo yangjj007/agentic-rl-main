@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Any, Optional
 
@@ -23,6 +24,61 @@ def _build_teacher_text(student_prompt: str, privileged_suffix: str) -> str:
     if privileged_suffix.strip():
         teacher_text = f"{student_prompt}\n\n{privileged_suffix.strip()}"
     return teacher_text
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _truncate_for_log(value: Any, max_chars: int) -> str:
+    text = "" if value is None else str(value)
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 3)] + "..."
+
+
+def _teacher_prompt_log_config(opsd_config: dict[str, Any]) -> dict[str, Any]:
+    probe_cfg = opsd_config.get("teacher_probe") or {}
+    cfg = probe_cfg.get("prompt_log", {})
+    if isinstance(cfg, bool):
+        cfg = {"enabled": cfg}
+    elif not isinstance(cfg, dict):
+        cfg = {}
+    return {
+        **cfg,
+        "enabled": bool(cfg.get("enabled", False)) or _truthy_env("DYME_TEACHER_PROBE_PROMPT_LOG"),
+        "max_text_chars": int(
+            os.environ.get(
+                "DYME_TEACHER_PROBE_PROMPT_LOG_MAX_CHARS",
+                cfg.get("max_text_chars", 4096),
+            )
+        ),
+        "limit_per_step": int(
+            os.environ.get(
+                "DYME_TEACHER_PROBE_PROMPT_LOG_LIMIT",
+                cfg.get("limit_per_step", 16),
+            )
+        ),
+    }
+
+
+def _append_teacher_prompt_record(
+    *,
+    output_dir: Optional[str],
+    opsd_config: dict[str, Any],
+    record: dict[str, Any],
+) -> None:
+    cfg = _teacher_prompt_log_config(opsd_config)
+    if not cfg["enabled"] or not output_dir:
+        return
+    log_dir = cfg.get("dir") or os.environ.get("DYME_TEACHER_PROBE_PROMPT_LOG_DIR")
+    if not log_dir:
+        log_dir = os.path.join(output_dir, "teacher_probe_prompts")
+    os.makedirs(log_dir, exist_ok=True)
+    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")) or 0)
+    path = cfg.get("path") or os.path.join(log_dir, f"rank{rank}.jsonl")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def tokenize_teacher_prompt(
@@ -81,6 +137,9 @@ def build_teacher_prompt_batch(
     privileged_profile = opsd_config.get("privileged_profile", "hybrid")
     crop_cfg = opsd_config.get("privileged_image") or {}
     privileged_debug_cfg = opsd_config.get("privileged_debug") or {}
+    prompt_log_cfg = _teacher_prompt_log_config(opsd_config)
+    prompt_log_limit = int(prompt_log_cfg.get("limit_per_step", 16) or 0)
+    prompt_log_max_chars = int(prompt_log_cfg.get("max_text_chars", 4096) or 4096)
 
     opsd_debug.log(
         "teacher_prompt",
@@ -108,7 +167,7 @@ def build_teacher_prompt_batch(
         return samples[sample_idx]
 
     sample_payloads: list[dict[str, Any]] = []
-    for idx in indices:
+    for pos, idx in enumerate(indices):
         sample = sample_for_completion_row(idx)
         suffix, teacher_images = build_privileged_context(
             sample,
@@ -141,6 +200,36 @@ def build_teacher_prompt_batch(
         )
 
         teacher_text = _build_teacher_text(sample["prompt"], suffix)
+        if prompt_log_cfg["enabled"] and (prompt_log_limit <= 0 or pos < prompt_log_limit):
+            question = sample.get("question") or sample.get("question_wo_prompt") or sample.get("prompt", "")
+            probe_cfg = opsd_config.get("teacher_probe") or {}
+            _append_teacher_prompt_record(
+                output_dir=output_dir,
+                opsd_config=opsd_config,
+                record={
+                    "schema_version": 1,
+                    "global_step": int(global_step) if global_step is not None else None,
+                    "completion_idx": int(idx),
+                    "source_idx": int(source_row_index(
+                        idx,
+                        raw_count=len(samples),
+                        expanded_count=expanded_count or len(samples),
+                        num_generations=num_generations or 1,
+                    )),
+                    "provider_names": list(provider_names),
+                    "privileged_profile": str(privileged_profile),
+                    "prompt_profile": str(probe_cfg.get("prompt_profile", "")),
+                    "harness": str(probe_cfg.get("harness", "single_profile_teacher_probe")),
+                    "harness_version": str(probe_cfg.get("harness_version", "legacy")),
+                    "num_teacher_images": int(len(teacher_images)),
+                    "suffix_len": int(len(suffix.strip())),
+                    "response_prefix_len": int(len(response_prefix.strip())),
+                    "question": _truncate_for_log(question, prompt_log_max_chars),
+                    "teacher_text": _truncate_for_log(teacher_text, prompt_log_max_chars),
+                    "privileged_suffix": _truncate_for_log(suffix, prompt_log_max_chars),
+                    "response_prefix": _truncate_for_log(response_prefix, prompt_log_max_chars),
+                },
+            )
         sample_payloads.append(
             {
                 "teacher_text": teacher_text,

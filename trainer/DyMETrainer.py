@@ -141,6 +141,7 @@ from opsd_utils.teacher_traj_schedule import (
 )
 from opsd_utils.phase_schedule import boundary_reached, training_progress
 from opsd_utils.teacher_probe_log import append_teacher_probe_record, build_teacher_probe_record
+from opsd_utils.teacher_probe_agreement import decide_teacher_probe_agreement
 from opsd_utils.deepspeed_utils import (
     deepspeed_requires_single_student_forward,
     gradient_checkpointing_enable_kwargs,
@@ -1216,6 +1217,12 @@ class DyMETrainer(Trainer):
 
     def _teacher_probe_config(self) -> dict[str, Any]:
         cfg = self.opsd_config.get("teacher_probe") or {}
+        agreement_cfg = cfg.get("agreement_gate") or {}
+        raw_profiles = agreement_cfg.get("prompt_profiles") or cfg.get("agreement_prompt_profiles") or []
+        if isinstance(raw_profiles, str):
+            agreement_profiles = [item.strip() for item in raw_profiles.split(",") if item.strip()]
+        else:
+            agreement_profiles = [str(item).strip() for item in raw_profiles if str(item).strip()]
         return {
             "enabled": bool(cfg.get("enabled", self.opsd_config.get("mode") == "dyme_teacher_probe_opd")),
             "context_providers": cfg.get(
@@ -1231,6 +1238,8 @@ class DyMETrainer(Trainer):
             "repetition_penalty": float(cfg.get("repetition_penalty", 1.2)),
             "max_relative_change": float(cfg.get("max_relative_change", 0.05)),
             "prompt_profile": cfg.get("prompt_profile", "chartqa_short_answer"),
+            "harness": cfg.get("harness", "single_profile_teacher_probe"),
+            "harness_version": cfg.get("harness_version", "legacy"),
             "answer_parser": cfg.get("answer_parser", "chartqa_final_answer"),
             "skip_no_evidence": bool(cfg.get("skip_no_evidence", True)),
             "strict_accept": bool(cfg.get("strict_accept", False)),
@@ -1238,6 +1247,12 @@ class DyMETrainer(Trainer):
             "reject_parse_fail": bool(cfg.get("reject_parse_fail", False)),
             "reject_clipped": bool(cfg.get("reject_clipped", False)),
             "probe_all_wrong_after_step": cfg.get("probe_all_wrong_after_step"),
+            "agreement_gate": {
+                "enabled": bool(agreement_cfg.get("enabled", cfg.get("agreement_gate_enabled", False))),
+                "prompt_profiles": agreement_profiles,
+                "min_agree": int(agreement_cfg.get("min_agree", cfg.get("agreement_min_agree", 0)) or 0),
+                "selected_index": int(agreement_cfg.get("selected_index", 0) or 0),
+            },
         }
 
     def _teacher_trajectory_config(self) -> dict[str, Any]:
@@ -1837,6 +1852,13 @@ class DyMETrainer(Trainer):
             "teacher_probe_generate_s": 0.0,
             "teacher_probe_generate_batches": 0,
             "teacher_probe_fallback_batches": 0,
+            "teacher_probe_agreement_enabled": 0,
+            "teacher_probe_agreement_profile_count": 0,
+            "teacher_probe_agreement_accepted": 0,
+            "teacher_probe_agreement_rejected": 0,
+            "teacher_probe_agreement_verified_wrong": 0,
+            "teacher_probe_agreement_attempts": 0,
+            "teacher_probe_agreement_reject_reasons": {},
             "teacher_probe_text": {},
         }
         if (
@@ -1966,50 +1988,76 @@ class DyMETrainer(Trainer):
         if not candidate_indices:
             return completion_modes, {}, {}, stats
 
-        teacher_tensors = build_teacher_prompt_batch(
-            self.processing_class,
-            inputs,
-            candidate_indices,
-            provider_names,
-            device,
-            opsd_config=self.opsd_config,
-            global_step=global_step,
-            output_dir=self.args.output_dir,
-            expanded_count=expanded_count,
-            num_generations=self.num_generations,
-        )
-        teacher_stats = teacher_tensors.get("teacher_stats", {}) if teacher_tensors else {}
-        gold_rate = float(teacher_stats.get("privileged_suffix_has_gold_rate", 0.0) or 0.0)
-        stats["teacher_probe_gold_suffix"] = int(round(gold_rate * len(candidate_indices)))
+        agreement_cfg = probe_cfg.get("agreement_gate") or {}
+        agreement_profiles = list(agreement_cfg.get("prompt_profiles") or [])
+        if not agreement_profiles:
+            agreement_profiles = [str(probe_cfg["prompt_profile"])]
+        agreement_enabled = bool(agreement_cfg.get("enabled")) and len(agreement_profiles) > 1
+        if not agreement_enabled:
+            agreement_profiles = [str(probe_cfg["prompt_profile"])]
+        agreement_min_agree = int(agreement_cfg.get("min_agree") or 0) or None
+        agreement_selected_index = int(agreement_cfg.get("selected_index") or 0)
+        stats["teacher_probe_agreement_enabled"] = int(agreement_enabled)
+        stats["teacher_probe_agreement_profile_count"] = len(agreement_profiles) if agreement_enabled else 0
+
         teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         teacher_traj_texts: dict[int, str] = {}
         generated_token_counts: list[int] = []
         generated_clipped_count = 0
         probe_batch_size = max(1, int(probe_cfg.get("batch_size", 1) or 1))
         stats["teacher_probe_batch_size"] = probe_batch_size
-        generated_rows: list[tuple[int, int, torch.Tensor, torch.Tensor, str]] = []
-        for start in range(0, len(candidate_indices), probe_batch_size):
-            end = min(start + probe_batch_size, len(candidate_indices))
-            rows = list(range(start, end))
-            gen_start = self._perf_start()
-            batch_outputs, fallback_used = self._teacher_generate_batch_from_tensors(
-                teacher_tensors,
-                rows,
-                max_new_tokens=probe_cfg["max_new_tokens"],
-                do_sample=probe_cfg["do_sample"],
-                temperature=probe_cfg["temperature"],
-                top_p=probe_cfg["top_p"],
-                repetition_penalty=probe_cfg["repetition_penalty"],
+        generated_by_profile: list[dict[int, tuple[int, int, torch.Tensor, torch.Tensor, str]]] = []
+        for profile in agreement_profiles:
+            profile_opsd_config = dict(self.opsd_config)
+            profile_probe_cfg = dict(profile_opsd_config.get("teacher_probe") or {})
+            profile_probe_cfg["prompt_profile"] = profile
+            profile_opsd_config["teacher_probe"] = profile_probe_cfg
+            teacher_tensors = build_teacher_prompt_batch(
+                self.processing_class,
+                inputs,
+                candidate_indices,
+                provider_names,
+                device,
+                opsd_config=profile_opsd_config,
+                global_step=global_step,
+                output_dir=self.args.output_dir,
+                expanded_count=expanded_count,
+                num_generations=self.num_generations,
             )
-            stats["teacher_probe_generate_s"] += self._perf_elapsed(gen_start)
-            stats["teacher_probe_generate_batches"] += 1
-            if fallback_used:
-                stats["teacher_probe_fallback_batches"] += 1
-            for offset, (gen_ids, gen_mask, text) in enumerate(batch_outputs):
-                global_idx = candidate_indices[start + offset]
-                generated_rows.append((start + offset, global_idx, gen_ids, gen_mask, text))
+            teacher_stats = teacher_tensors.get("teacher_stats", {}) if teacher_tensors else {}
+            gold_rate = float(teacher_stats.get("privileged_suffix_has_gold_rate", 0.0) or 0.0)
+            stats["teacher_probe_gold_suffix"] = max(
+                int(stats["teacher_probe_gold_suffix"]),
+                int(round(gold_rate * len(candidate_indices))),
+            )
+            profile_rows: dict[int, tuple[int, int, torch.Tensor, torch.Tensor, str]] = {}
+            for start in range(0, len(candidate_indices), probe_batch_size):
+                end = min(start + probe_batch_size, len(candidate_indices))
+                rows = list(range(start, end))
+                gen_start = self._perf_start()
+                batch_outputs, fallback_used = self._teacher_generate_batch_from_tensors(
+                    teacher_tensors,
+                    rows,
+                    max_new_tokens=probe_cfg["max_new_tokens"],
+                    do_sample=probe_cfg["do_sample"],
+                    temperature=probe_cfg["temperature"],
+                    top_p=probe_cfg["top_p"],
+                    repetition_penalty=probe_cfg["repetition_penalty"],
+                )
+                stats["teacher_probe_generate_s"] += self._perf_elapsed(gen_start)
+                stats["teacher_probe_generate_batches"] += 1
+                if fallback_used:
+                    stats["teacher_probe_fallback_batches"] += 1
+                for offset, (gen_ids, gen_mask, text) in enumerate(batch_outputs):
+                    candidate_row = start + offset
+                    global_idx = candidate_indices[candidate_row]
+                    profile_rows[global_idx] = (candidate_row, global_idx, gen_ids, gen_mask, text)
+            generated_by_profile.append(profile_rows)
 
-        for row, global_idx, gen_ids, gen_mask, text in generated_rows:
+        agreement_reject_reasons: dict[str, int] = defaultdict(int)
+        for global_idx in candidate_indices:
+            selected_profile_idx = max(0, min(agreement_selected_index, len(generated_by_profile) - 1))
+            row, global_idx, gen_ids, gen_mask, text = generated_by_profile[selected_profile_idx][global_idx]
             effective_tokens = int(gen_mask.sum().item()) if hasattr(gen_mask, "sum") else int(len(gen_ids))
             generated_token_counts.append(effective_tokens)
             eos_id = self.processing_class.tokenizer.eos_token_id
@@ -2021,15 +2069,38 @@ class DyMETrainer(Trainer):
             generation_idx = global_idx % self.num_generations
             source_idx = source_idx_for(global_idx)
             reference = reference_for(global_idx)
+            agreement_decision = None
+            if agreement_enabled:
+                profile_outputs = [
+                    generated_by_profile[profile_idx][global_idx][4]
+                    for profile_idx in range(len(generated_by_profile))
+                ]
+                agreement_decision = decide_teacher_probe_agreement(
+                    outputs=profile_outputs,
+                    reference=str(reference),
+                    answer_flag=answer_flag.lower(),
+                    max_relative_change=probe_cfg["max_relative_change"],
+                    selected_index=selected_profile_idx,
+                    min_agree=agreement_min_agree,
+                )
+                stats["teacher_probe_agreement_attempts"] += len(profile_outputs)
+                if agreement_decision.agreement_accepted:
+                    stats["teacher_probe_agreement_accepted"] += 1
+                    if not agreement_decision.verified_correct:
+                        stats["teacher_probe_agreement_verified_wrong"] += 1
+                else:
+                    stats["teacher_probe_agreement_rejected"] += 1
+                    agreement_reject_reasons[agreement_decision.reason_code] += 1
+
             if probe_cfg["answer_parser"] == "chartqa_final_answer":
-                score, parsed_answer = eval_teacher_probe_chart(
+                raw_score, parsed_answer = eval_teacher_probe_chart(
                     text,
                     str(reference),
                     probe_cfg["max_relative_change"],
                     answer_flag=answer_flag.lower(),
                 )
             else:
-                score = float(
+                raw_score = float(
                     eval_one_chart(
                         text,
                         str(reference).lower().replace(answer_flag.lower(), "").strip(),
@@ -2038,6 +2109,11 @@ class DyMETrainer(Trainer):
                     )
                 )
                 parsed_answer = None
+            score = float(raw_score)
+            if agreement_enabled and (
+                agreement_decision is None or not agreement_decision.agreement_accepted
+            ):
+                score = 0.0
             if parsed_answer is not None:
                 if parsed_answer.has_answer_flag:
                     stats["teacher_probe_answer_flag"] += 1
@@ -2072,12 +2148,17 @@ class DyMETrainer(Trainer):
             strict_rejected = bool(strict_reject_reasons)
             if strict_rejected:
                 stats["teacher_probe_strict_rejected"] += 1
+            reject_reason = "teacher_wrong"
+            if agreement_enabled and agreement_decision is not None and not agreement_decision.agreement_accepted:
+                reject_reason = f"teacher_agreement_{agreement_decision.reason_code}"
+            elif strict_rejected:
+                reject_reason = "teacher_strict_reject"
             final_route = (
                 "opd"
                 if score > 0 and not strict_rejected
                 else failure_route_name(
                     fallback_mode,
-                    "teacher_strict_reject" if strict_rejected else "teacher_wrong",
+                    reject_reason,
                 )
             )
             append_teacher_probe_record(
@@ -2157,6 +2238,7 @@ class DyMETrainer(Trainer):
             )
             stats["teacher_probe_generated_tokens_p95"] = float(ordered_counts[p95_idx])
             stats["teacher_probe_clipped_rate"] = float(generated_clipped_count / len(generated_token_counts))
+        stats["teacher_probe_agreement_reject_reasons"] = dict(agreement_reject_reasons)
 
         opsd_debug.log(
             "teacher_probe",
@@ -3475,6 +3557,12 @@ class DyMETrainer(Trainer):
             probe_probed = probe_correct + probe_wrong + probe_strict_rejected
             probe_candidate_denom = max(probe_candidates, 1)
             probe_probed_denom = max(probe_probed, 1)
+            agreement_accepted = int(teacher_probe_stats.get("teacher_probe_agreement_accepted", 0) or 0)
+            agreement_rejected = int(teacher_probe_stats.get("teacher_probe_agreement_rejected", 0) or 0)
+            agreement_verified_wrong = int(
+                teacher_probe_stats.get("teacher_probe_agreement_verified_wrong", 0) or 0
+            )
+            agreement_attempts = int(teacher_probe_stats.get("teacher_probe_agreement_attempts", 0) or 0)
             guard_degenerate = int(getattr(route_guard_stats, "degenerate_hard_overrides", 0) or 0)
             guard_clipped = int(getattr(route_guard_stats, "clipped_hard_overrides", 0) or 0)
             guard_teacher = int(getattr(route_guard_stats, "teacher_correct_overrides", 0) or 0)
@@ -3625,6 +3713,13 @@ class DyMETrainer(Trainer):
                     "teacher_probe_answer_flag_rate": teacher_probe_stats.get("teacher_probe_answer_flag", 0) / probe_probed_denom,
                     "teacher_probe_parse_fail_rate": teacher_probe_stats.get("teacher_probe_parse_failed", 0) / probe_probed_denom,
                     "teacher_probe_gold_suffix_rate": teacher_probe_stats.get("teacher_probe_gold_suffix", 0) / probe_probed_denom,
+                    "teacher_probe_agreement_enabled": float(
+                        teacher_probe_stats.get("teacher_probe_agreement_enabled", 0) or 0
+                    ),
+                    "teacher_probe_agreement_accepted_rate": agreement_accepted / probe_candidate_denom,
+                    "teacher_probe_agreement_rejected_rate": agreement_rejected / probe_candidate_denom,
+                    "teacher_probe_agreement_verified_wrong_rate": agreement_verified_wrong / probe_candidate_denom,
+                    "teacher_probe_agreement_attempts_per_candidate": agreement_attempts / probe_candidate_denom,
                     "teacher_probe_generated_tokens_mean": teacher_probe_stats.get("teacher_probe_generated_tokens_mean", 0.0),
                     "teacher_probe_generated_tokens_p95": teacher_probe_stats.get("teacher_probe_generated_tokens_p95", 0.0),
                     "teacher_probe_clipped_rate": teacher_probe_stats.get("teacher_probe_clipped_rate", 0.0),

@@ -88,6 +88,270 @@ def test_format_only_chartqa_short_answer_profile():
     assert images == []
 
 
+def test_format_only_chartqa_deplot_reasoned_profile_is_structured_and_gold_hidden():
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
+    secret_hint = "Goal: secret dataset hint\nAnswer: 70"
+    sample = {
+        "prompt": "What is the lowest value?",
+        "hint": secret_hint,
+        "answer": "Answer: 70",
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Year | Value\n2019 | 70\n2020 | 72"
+        ),
+        "image": Image.new("RGB", (32, 32)),
+    }
+
+    raw_suffix, _ = build_privileged_context(
+        sample,
+        ["visual_facts_deplot", "format_only"],
+        privileged_profile="text",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {"prompt_profile": "chartqa_deplot_reasoned"},
+        },
+    )
+
+    suffix, response_prefix = split_teacher_response_prefix(raw_suffix)
+    heading_positions = [suffix.index(f"{heading}:") for heading in (
+        "Goal", "Observation", "Reasoning", "Conclusion", "Answer"
+    )]
+    assert heading_positions == sorted(heading_positions)
+    assert "Do not count column headers or series names as data categories" in suffix
+    assert "align each row label with the correct series column" in suffix
+    assert "show the exact arithmetic" in suffix
+    assert "Each of the first four sections must contain exactly one sentence of at most 25 words" in suffix
+    assert "The final non-empty line must be exactly: Answer: <single short answer>" in suffix
+    assert "[Visual Facts - DePlot]" in suffix
+    assert "[Verified Hint]" not in suffix
+    assert "[Reference Answer]" not in suffix
+    assert secret_hint not in suffix
+    assert response_prefix.startswith("Goal:")
+    assert response_prefix.rstrip().endswith("Observation:")
+    assert "70" not in response_prefix
+
+
+def test_chartqa_visual_reasoned_prompt_profile_is_gold_hidden_and_image_native():
+    sample = {
+        "question": "What is the difference between A and B?",
+        "hint": "SECRET_HINT",
+        "answer": "SECRET_ANSWER",
+        "visual_fact_deplot": "Year | A | B\n2020 | 70 | 50",
+        "image": Image.new("RGB", (64, 64)),
+    }
+
+    suffix, images = build_privileged_context(
+        sample,
+        ["format_only"],
+        privileged_profile="text",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {"prompt_profile": "chartqa_visual_reasoned"},
+        },
+    )
+
+    assert len(images) == 1
+    assert "full chart image" in suffix.lower()
+    assert "question type" in suffix.lower()
+    assert "Answer: <single short answer>" in suffix
+    assert "SECRET_HINT" not in suffix
+    assert "SECRET_ANSWER" not in suffix
+    assert "Visual Facts - DePlot" not in suffix
+    assert "70 | 50" not in suffix
+
+
+def test_chartqa_visual_chain_prompt_exports_response_prefix_without_gold_or_deplot():
+    sample = {
+        "question": "What is the difference between A and B?",
+        "hint": "SECRET_HINT",
+        "answer": "SECRET_ANSWER",
+        "visual_fact_deplot": "Year | A | B\n2020 | 70 | 50",
+        "image": Image.new("RGB", (64, 64)),
+    }
+
+    raw_suffix, images = build_privileged_context(
+        sample,
+        ["format_only"],
+        privileged_profile="text",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {"prompt_profile": "chartqa_visual_chain_of_charts"},
+        },
+    )
+    suffix, response_prefix = split_teacher_response_prefix(raw_suffix)
+
+    assert len(images) == 1
+    assert "full chart image" in suffix.lower()
+    assert "Visual Evidence:" in suffix
+    assert "Computation:" in suffix
+    assert response_prefix == "Task:"
+    assert "SECRET_HINT" not in suffix
+    assert "SECRET_ANSWER" not in suffix
+    assert "Visual Facts - DePlot" not in suffix
+    assert "70 | 50" not in suffix
+
+
+def test_chartqa_visual_answer_prefix_profile_forces_short_answer_continuation():
+    sample = {
+        "question": "What is the difference between A and B?",
+        "hint": "SECRET_HINT",
+        "answer": "SECRET_ANSWER",
+        "visual_fact_deplot": "Year | A | B\n2020 | 70 | 50",
+        "image": Image.new("RGB", (64, 64)),
+    }
+
+    raw_suffix, images = build_privileged_context(
+        sample,
+        ["format_only"],
+        privileged_profile="text",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {"prompt_profile": "chartqa_visual_answer_prefix"},
+        },
+    )
+    suffix, response_prefix = split_teacher_response_prefix(raw_suffix)
+
+    assert len(images) == 1
+    assert "Return only the final answer text" in suffix
+    assert "Do not include units for numeric answers" in suffix
+    assert response_prefix == "Answer:"
+    assert "SECRET_HINT" not in suffix
+    assert "SECRET_ANSWER" not in suffix
+    assert "Visual Facts - DePlot" not in suffix
+
+
+def test_chartqa_visual_answer_prefix_numeric_profile_adds_numeric_surface_rules():
+    sample = {
+        "question": "How many years are above 30 percent?",
+        "hint": "SECRET_HINT",
+        "answer": "SECRET_ANSWER",
+        "visual_fact_deplot": "Year | A\n2020 | 70",
+        "image": Image.new("RGB", (64, 64)),
+    }
+
+    raw_suffix, images = build_privileged_context(
+        sample,
+        ["format_only"],
+        privileged_profile="text",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {"prompt_profile": "chartqa_visual_answer_prefix_numeric"},
+        },
+    )
+    suffix, response_prefix = split_teacher_response_prefix(raw_suffix)
+
+    assert len(images) == 1
+    assert "Use Arabic numerals for counts and numeric answers" in suffix
+    assert "include a percent sign" in suffix
+    assert "Do not include units after numbers except %" in suffix
+    assert response_prefix == "Answer:"
+    assert "SECRET_HINT" not in suffix
+    assert "SECRET_ANSWER" not in suffix
+    assert "Visual Facts - DePlot" not in suffix
+
+
+def test_chartqa_deplot_answer_prefix_profile_keeps_deplot_auxiliary_and_gold_hidden():
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
+    sample = {
+        "question": "What is the difference between A and B?",
+        "hint": "SECRET_HINT",
+        "answer": "SECRET_ANSWER",
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Year | A | B\n2020 | 70 | 50"
+        ),
+        "image": Image.new("RGB", (64, 64)),
+    }
+
+    raw_suffix, images = build_privileged_context(
+        sample,
+        ["visual_facts_deplot", "format_only"],
+        privileged_profile="text",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {"prompt_profile": "chartqa_deplot_answer_prefix"},
+        },
+    )
+    suffix, response_prefix = split_teacher_response_prefix(raw_suffix)
+
+    assert len(images) == 1
+    assert "Visual Facts - DePlot" in suffix
+    assert "70 | 50" in suffix
+    assert "fallible OCR" in suffix
+    assert "Return only the final answer text" in suffix
+    assert response_prefix == "Answer:"
+    assert "SECRET_HINT" not in suffix
+    assert "SECRET_ANSWER" not in suffix
+
+
+def test_chartqa_visual_operation_answer_prefix_profile_is_gold_hidden():
+    sample = {
+        "question": "What is the sum of the bars above 200?",
+        "hint": "SECRET_HINT",
+        "answer": "SECRET_ANSWER",
+        "visual_fact_deplot": "Category | Value\nA | 707\nB | 216",
+        "image": Image.new("RGB", (64, 64)),
+    }
+
+    raw_suffix, images = build_privileged_context(
+        sample,
+        ["format_only"],
+        privileged_profile="text",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {"prompt_profile": "chartqa_visual_operation_answer_prefix"},
+        },
+    )
+    suffix, response_prefix = split_teacher_response_prefix(raw_suffix)
+
+    assert len(images) == 1
+    assert "operation" in suffix.lower()
+    assert "operand" in suffix.lower()
+    assert "count only" in suffix.lower()
+    assert "Return only the final answer text" in suffix
+    assert response_prefix == "Answer:"
+    assert "SECRET_HINT" not in suffix
+    assert "SECRET_ANSWER" not in suffix
+    assert "Visual Facts - DePlot" not in suffix
+    assert "707" not in suffix
+
+
+def test_chartqa_deplot_operation_answer_prefix_profile_uses_table_as_fallible_evidence():
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
+    sample = {
+        "question": "What is the sum of the bars above 200?",
+        "hint": "SECRET_HINT",
+        "answer": "SECRET_ANSWER",
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Category | Value\nA | 707\nB | 216\nC | 104"
+        ),
+        "image": Image.new("RGB", (64, 64)),
+    }
+
+    raw_suffix, images = build_privileged_context(
+        sample,
+        ["visual_facts_deplot", "format_only"],
+        privileged_profile="text",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {"prompt_profile": "chartqa_deplot_operation_answer_prefix"},
+        },
+    )
+    suffix, response_prefix = split_teacher_response_prefix(raw_suffix)
+
+    assert len(images) == 1
+    assert "Visual Facts - DePlot" in suffix
+    assert "707" in suffix
+    assert "fallible OCR" in suffix
+    assert "row/column orientation" in suffix
+    assert "ignore headers" in suffix.lower()
+    assert "perform the requested arithmetic" in suffix
+    assert response_prefix == "Answer:"
+    assert "SECRET_HINT" not in suffix
+    assert "SECRET_ANSWER" not in suffix
+
+
 def test_math_lm_downgrade():
     sample = {"hint": "step", "answer": "Answer: 1"}
     profile = effective_profile(sample, "hybrid")

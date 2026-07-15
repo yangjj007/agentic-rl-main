@@ -171,6 +171,11 @@ fi
 MIXED_GROUP_HARD_REPLAY="${DYME_MIXED_GROUP_HARD_REPLAY:-0}"
 TEACHER_PROVIDERS="format_only,visual_facts_deplot"
 TEACHER_PROBE_PROMPT_PROFILE="${DYME_TEACHER_PROBE_PROMPT_PROFILE:-chartqa_short_answer}"
+TEACHER_PROBE_HARNESS="${DYME_TEACHER_PROBE_HARNESS:-single_profile_teacher_probe}"
+TEACHER_PROBE_HARNESS_VERSION="${DYME_TEACHER_PROBE_HARNESS_VERSION:-legacy}"
+TEACHER_PROBE_PROMPT_LOG="${DYME_TEACHER_PROBE_PROMPT_LOG:-0}"
+TEACHER_PROBE_PROMPT_LOG_MAX_CHARS="${DYME_TEACHER_PROBE_PROMPT_LOG_MAX_CHARS:-4096}"
+TEACHER_PROBE_PROMPT_LOG_LIMIT="${DYME_TEACHER_PROBE_PROMPT_LOG_LIMIT:-16}"
 TEACHER_PROBE_MAX_NEW_TOKENS="${DYME_TEACHER_PROBE_MAX_NEW_TOKENS:-96}"
 TEACHER_PROBE_RELAXED_TOL="${DYME_TEACHER_PROBE_RELAXED_TOL:-0.05}"
 TEACHER_PROBE_SKIP_NO_EVIDENCE="${DYME_TEACHER_PROBE_SKIP_NO_EVIDENCE:-1}"
@@ -272,6 +277,18 @@ ADAPTIVE_TEACHER_FINAL_WEIGHT="${DYME_ADAPTIVE_TEACHER_FINAL_WEIGHT:-0.0}"
 ADAPTIVE_OPSD_INITIAL_CAP="${DYME_ADAPTIVE_OPSD_INITIAL_CAP:-8}"
 ADAPTIVE_OPSD_FINAL_CAP="${DYME_ADAPTIVE_OPSD_FINAL_CAP:-2}"
 GLOBAL_SIGNAL_LOGGING="${DYME_GLOBAL_SIGNAL_LOGGING:-0}"
+
+enable_latest_chartqa_teacher_harness() {
+  TEACHER_PROBE_HARNESS="${DYME_TEACHER_PROBE_HARNESS:-chartqa_closed_loop_recovery}"
+  TEACHER_PROBE_HARNESS_VERSION="${DYME_TEACHER_PROBE_HARNESS_VERSION:-v12_executable_deplot}"
+  if [[ -z "${DYME_TEACHER_PROBE_PROMPT_PROFILE+x}" ]]; then
+    TEACHER_PROBE_PROMPT_PROFILE="chartqa_deplot_operation_answer_prefix"
+  fi
+  TEACHER_PROBE_PROMPT_LOG="${DYME_TEACHER_PROBE_PROMPT_LOG:-1}"
+  TEACHER_PROBE_CANDIDATE_LOG="${DYME_TEACHER_PROBE_CANDIDATE_LOG:-1}"
+  TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS="${DYME_TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS:-1024}"
+}
+
 case "${VARIANT}" in
   deplot_no_vs_opd_pcd_route_guard|deplot_no_vs_opd_pcd_oracle_hint_route_guard|deplot_no_vs_opd_pcd_route_guard_perception_teacher|deplot_no_vs_opd_pcd_route_guard_perception_hint)
     ROUTE_GUARD_ENABLED=1
@@ -564,6 +581,7 @@ if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_opd_only_no_full_hint_ha
 fi
 if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision" ||
       "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_target020" ]]; then
+  enable_latest_chartqa_teacher_harness
   OPSD_MAX_PER_PROMPT=0
   ADAPTIVE_SUPERVISION=1
   ADAPTIVE_READINESS_SOURCE=global_grpo_route
@@ -587,6 +605,7 @@ if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_token_reliability_clrc" 
   OPSD_TOKEN_MIN_WEIGHT="${DYME_OPSD_TOKEN_MIN_WEIGHT:-0.75}"
 fi
 if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_answer_anchor_clrc" ]]; then
+  enable_latest_chartqa_teacher_harness
   OPSD_MAX_PER_PROMPT=0
   ADAPTIVE_SUPERVISION=1
   ADAPTIVE_READINESS_SOURCE=global_grpo_route
@@ -600,6 +619,7 @@ if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_answer_anchor_clrc" ]]; 
   OPSD_TOKEN_MIN_WEIGHT="${DYME_OPSD_TOKEN_MIN_WEIGHT:-0.05}"
 fi
 if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_confidence_weighted_clrc" ]]; then
+  enable_latest_chartqa_teacher_harness
   OPSD_MAX_PER_PROMPT=0
   ADAPTIVE_SUPERVISION=1
   ADAPTIVE_READINESS_SOURCE=global_grpo_route
@@ -628,6 +648,7 @@ if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_grpo_recovery_boost_clrc
   OPSD_OVERFLOW_ROUTE="${DYME_OPSD_OVERFLOW_ROUTE:-mixed_grpo_all_wrong_skip}"
 fi
 if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_gold_hidden_evidence_adaptive_clrc" ]]; then
+  enable_latest_chartqa_teacher_harness
   OPSD_MAX_PER_PROMPT=0
   ADAPTIVE_SUPERVISION=1
   ADAPTIVE_READINESS_SOURCE=global_grpo_route
@@ -714,7 +735,9 @@ else
 fi
 echo "save policy: save_strategy=${SAVE_STRATEGY}, save_steps=${SAVE_STEPS:-<unset>}, save_total_limit=${SAVE_TOTAL_LIMIT:-<unset>}"
 echo "candidate logs: ${OUT_DIR}/teacher_probe_candidates/rank*.jsonl (enabled=${TEACHER_PROBE_CANDIDATE_LOG})"
+echo "prompt logs: ${OUT_DIR}/teacher_probe_prompts/rank*.jsonl (enabled=${TEACHER_PROBE_PROMPT_LOG}, limit=${TEACHER_PROBE_PROMPT_LOG_LIMIT}, max_chars=${TEACHER_PROBE_PROMPT_LOG_MAX_CHARS})"
 echo "teacher providers: ${TEACHER_PROVIDERS}"
+echo "teacher harness: ${TEACHER_PROBE_HARNESS} (${TEACHER_PROBE_HARNESS_VERSION})"
 echo "teacher prompt profile: ${TEACHER_PROBE_PROMPT_PROFILE}"
 echo "teacher probe max new tokens: ${TEACHER_PROBE_MAX_NEW_TOKENS}"
 echo "teacher probe relaxed tol: ${TEACHER_PROBE_RELAXED_TOL}"
@@ -754,6 +777,8 @@ TRAIN_ENV=(
   "DYME_OPSD_PROVIDERS=${TEACHER_PROVIDERS}"
   "DYME_TEACHER_PROBE_PROVIDERS=${TEACHER_PROVIDERS}"
   "DYME_TEACHER_PROBE=${TEACHER_PROBE}"
+  "DYME_TEACHER_PROBE_HARNESS=${TEACHER_PROBE_HARNESS}"
+  "DYME_TEACHER_PROBE_HARNESS_VERSION=${TEACHER_PROBE_HARNESS_VERSION}"
   "DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=${TEACHER_PROBE_ALL_WRONG_AFTER_STEP}"
   "DYME_TEACHER_PROBE_BATCH_SIZE=${TEACHER_PROBE_BATCH_SIZE}"
   "DYME_TEACHER_PROBE_MAX_PER_BATCH=${TEACHER_PROBE_MAX_PER_BATCH}"
@@ -767,6 +792,9 @@ TRAIN_ENV=(
   "DYME_TEACHER_PROBE_REJECT_CLIPPED=${TEACHER_PROBE_REJECT_CLIPPED}"
   "DYME_TEACHER_PROBE_CANDIDATE_LOG=${TEACHER_PROBE_CANDIDATE_LOG}"
   "DYME_TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS=${TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS}"
+  "DYME_TEACHER_PROBE_PROMPT_LOG=${TEACHER_PROBE_PROMPT_LOG}"
+  "DYME_TEACHER_PROBE_PROMPT_LOG_MAX_CHARS=${TEACHER_PROBE_PROMPT_LOG_MAX_CHARS}"
+  "DYME_TEACHER_PROBE_PROMPT_LOG_LIMIT=${TEACHER_PROBE_PROMPT_LOG_LIMIT}"
   "DYME_TEACHER_TRAJECTORY=${TEACHER_TRAJECTORY}"
   "DYME_TEACHER_TRAJ_MAX_NEW_TOKENS=${TEACHER_TRAJ_MAX_NEW_TOKENS}"
   "DYME_TEACHER_TRAJ_WEIGHT_DECAY=${TEACHER_TRAJ_WEIGHT_DECAY}"

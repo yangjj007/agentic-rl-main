@@ -16,6 +16,36 @@ def test_teacher_probe_batch_size_env_reaches_config(monkeypatch) -> None:
         importlib.reload(module)
 
 
+def test_teacher_probe_agreement_gate_env_reaches_config(monkeypatch) -> None:
+    monkeypatch.setenv("DYME_TEACHER_PROBE_AGREEMENT_GATE", "1")
+    monkeypatch.setenv(
+        "DYME_TEACHER_PROBE_AGREEMENT_PROFILES",
+        "chartqa_visual_answer_prefix,chartqa_visual_short,chartqa_visual_answer_prefix_numeric",
+    )
+    monkeypatch.setenv("DYME_TEACHER_PROBE_AGREEMENT_MIN_AGREE", "3")
+    module = importlib.import_module("config.config_opd_7b_dyme_probe")
+    module = importlib.reload(module)
+
+    try:
+        agreement = module.CONFIG["opsd"]["teacher_probe"]["agreement_gate"]
+        assert agreement["enabled"] is True
+        assert agreement["prompt_profiles"] == [
+            "chartqa_visual_answer_prefix",
+            "chartqa_visual_short",
+            "chartqa_visual_answer_prefix_numeric",
+        ]
+        assert agreement["min_agree"] == 3
+        assert agreement["selected_index"] == 0
+    finally:
+        for name in (
+            "DYME_TEACHER_PROBE_AGREEMENT_GATE",
+            "DYME_TEACHER_PROBE_AGREEMENT_PROFILES",
+            "DYME_TEACHER_PROBE_AGREEMENT_MIN_AGREE",
+        ):
+            os.environ.pop(name, None)
+        importlib.reload(module)
+
+
 def test_oracle_hint_teacher_probe_env_reaches_config(monkeypatch) -> None:
     monkeypatch.setenv("DYME_TEACHER_PROBE_PROVIDERS", "format_only,oracle_hint,visual_facts_deplot")
     monkeypatch.setenv("DYME_TEACHER_PROBE_PROMPT_PROFILE", "chartqa_oracle_hint")

@@ -151,6 +151,11 @@ def test_finish_step_returns_teacher_probe_diagnostic_metrics():
             "teacher_probe_generated_tokens_mean": 42.0,
             "teacher_probe_generated_tokens_p95": 91.0,
             "teacher_probe_clipped_rate": 0.125,
+            "teacher_probe_agreement_enabled": 1.0,
+            "teacher_probe_agreement_accepted_rate": 0.625,
+            "teacher_probe_agreement_rejected_rate": 0.375,
+            "teacher_probe_agreement_verified_wrong_rate": 0.125,
+            "teacher_probe_agreement_attempts_per_candidate": 3.0,
         },
     )
 
@@ -162,6 +167,11 @@ def test_finish_step_returns_teacher_probe_diagnostic_metrics():
     assert metrics["teacher_probe/generated_tokens_mean"] == 42.0
     assert metrics["teacher_probe/generated_tokens_p95"] == 91.0
     assert metrics["teacher_probe/clipped_rate"] == 0.125
+    assert metrics["teacher_probe/agreement_enabled"] == 1.0
+    assert metrics["teacher_probe/agreement_accepted_rate"] == 0.625
+    assert metrics["teacher_probe/agreement_rejected_rate"] == 0.375
+    assert metrics["teacher_probe/agreement_verified_wrong_rate"] == 0.125
+    assert metrics["teacher_probe/agreement_attempts_per_candidate"] == 3.0
 
 
 def test_finish_step_returns_online_sft_source_metrics() -> None:

@@ -252,6 +252,118 @@ def _clean_probe_answer(text: str) -> str:
     return _remove_end_punctuation(text).strip()
 
 
+def _strip_probe_answer_flag(text: str, answer_flag: str) -> str:
+    text = str(text or "").strip()
+    flag = (answer_flag or "answer:").strip().lower()
+    if flag and text.lower().startswith(flag):
+        return text[len(flag) :].strip()
+    return text
+
+
+def _normalize_teacher_probe_score_text(text: str) -> str:
+    return re.sub(r"\s+", " ", _clean_probe_answer(text)).strip()
+
+
+_TREND_CANONICAL = {
+    "decrease": "decreasing",
+    "decreased": "decreasing",
+    "decreases": "decreasing",
+    "decline": "decreasing",
+    "declined": "decreasing",
+    "declines": "decreasing",
+    "fall": "decreasing",
+    "falls": "decreasing",
+    "fell": "decreasing",
+    "increase": "increasing",
+    "increased": "increasing",
+    "increases": "increasing",
+    "rise": "increasing",
+    "rises": "increasing",
+    "rising": "increasing",
+    "grew": "increasing",
+    "growth": "increasing",
+}
+
+
+def _teacher_probe_score_variants(text: str) -> list[str]:
+    normalized = _normalize_teacher_probe_score_text(text)
+    variants = [normalized] if normalized else []
+    if not normalized:
+        return variants
+
+    lower = normalized.lower()
+    trend = _TREND_CANONICAL.get(lower)
+    if trend and trend not in [item.lower() for item in variants]:
+        variants.append(trend)
+
+    numeric_prefix = re.match(r"^\s*([-+]?\d[\d,]*(?:\.\d+)?%?)\b", normalized)
+    if numeric_prefix and re.search(r"[A-Za-z]", normalized[numeric_prefix.end() :]):
+        value = numeric_prefix.group(1).replace(",", "")
+        if value and value not in variants:
+            variants.append(value)
+    return variants
+
+
+def _reference_list_items(
+    reference_answer: str | list[str],
+    *,
+    answer_flag: str,
+) -> list[str] | None:
+    if isinstance(reference_answer, list):
+        items = [
+            _normalize_teacher_probe_score_text(
+                _strip_probe_answer_flag(str(ref), answer_flag)
+            )
+            for ref in reference_answer
+        ]
+        items = [item for item in items if item]
+        return items if len(items) > 1 else None
+
+    raw = _strip_probe_answer_flag(str(reference_answer), answer_flag).strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        items = [
+            _normalize_teacher_probe_score_text(part)
+            for part in raw[1:-1].split(",")
+            if part.strip()
+        ]
+        return items if len(items) > 1 else None
+    return None
+
+
+def _prediction_list_items(prediction: str) -> list[str]:
+    normalized = _normalize_teacher_probe_score_text(prediction)
+    comma_form = re.sub(r"(?i)\s+\band\b\s+", ",", normalized)
+    items = [
+        _normalize_teacher_probe_score_text(part)
+        for part in comma_form.split(",")
+        if part.strip()
+    ]
+    return items if len(items) > 1 else [normalized] if normalized else []
+
+
+def _score_teacher_probe_list_answer(
+    prediction: str,
+    targets: list[str],
+    max_relative_change: float,
+) -> float:
+    predictions = _prediction_list_items(prediction)
+    if len(predictions) != len(targets):
+        return 0.0
+
+    evaluator = RelaxedCorrectness()
+    unused_prediction_indices = set(range(len(predictions)))
+    for target in targets:
+        matched_idx = None
+        for idx in sorted(unused_prediction_indices):
+            if evaluator.score(predictions[idx], target, max_relative_change) == 1.0:
+                matched_idx = idx
+                break
+        if matched_idx is None:
+            return 0.0
+        unused_prediction_indices.remove(matched_idx)
+    return 1.0
+
+
 def parse_teacher_probe_answer(
     model_answer: str,
     *,
@@ -312,18 +424,46 @@ def eval_teacher_probe_chart(
     if parsed.parse_failed:
         return 0.0, parsed
 
+    list_targets = _reference_list_items(reference_answer, answer_flag=answer_flag)
+    if list_targets is not None:
+        return (
+            _score_teacher_probe_list_answer(
+                parsed.answer,
+                list_targets,
+                max_relative_change,
+            ),
+            parsed,
+        )
+
     if isinstance(reference_answer, list):
         references = [
-            str(ref).lower().replace((answer_flag or "answer:").lower(), "").strip()
+            _normalize_teacher_probe_score_text(
+                _strip_probe_answer_flag(str(ref), answer_flag)
+            )
             for ref in reference_answer
         ]
     else:
-        references = str(reference_answer).lower().replace(
-            (answer_flag or "answer:").lower(), ""
-        ).strip()
+        references = _normalize_teacher_probe_score_text(
+            _strip_probe_answer_flag(str(reference_answer), answer_flag)
+        )
 
     evaluator = RelaxedCorrectness()
-    return float(evaluator.score(parsed.answer, references, max_relative_change)), parsed
+    prediction_variants = _teacher_probe_score_variants(parsed.answer)
+    if isinstance(references, list):
+        reference_variants: list[str] = []
+        for ref in references:
+            reference_variants.extend(_teacher_probe_score_variants(ref))
+        references_for_score = reference_variants or references
+    else:
+        references_for_score = _teacher_probe_score_variants(references) or references
+    score = max(
+        (
+            evaluator.score(prediction, references_for_score, max_relative_change)
+            for prediction in prediction_variants
+        ),
+        default=0.0,
+    )
+    return float(score), parsed
 
 if __name__ == "__main__":
     # Example usage
