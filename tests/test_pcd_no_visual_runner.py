@@ -99,6 +99,61 @@ def test_opd_no_hard_imitation_variant_disables_trajectory_and_sft_repair(tmp_pa
     assert "DYME_EVAL_FORMAT_REWARD=0" in out
 
 
+def test_gold_hidden_clrc_restores_grpo_recovery_defaults(tmp_path: Path) -> None:
+    out = _quality_variant_dry_run(
+        tmp_path,
+        "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision",
+    )
+
+    assert "DYME_OPSD_PROVIDERS=format_only,visual_facts_deplot" in out
+    assert "DYME_TEACHER_PROBE_PROVIDERS=format_only,visual_facts_deplot" in out
+    assert "DYME_TEACHER_TRAJECTORY=0" in out
+    assert "teacher correct repair: mode=opd" in out
+    assert "DYME_TEACHER_CORRECT_REPAIR_MODE=traj_sft" not in out
+    assert "DYME_ADAPTIVE_SUPERVISION=1" in out
+    assert "DYME_ADAPTIVE_READINESS_SOURCE=global_grpo_route" in out
+    assert "DYME_ADAPTIVE_TARGET_READINESS=0.15" in out
+    assert "DYME_ADAPTIVE_OPSD_INITIAL_CAP=4" in out
+    assert "DYME_ADAPTIVE_OPSD_FINAL_CAP=1" in out
+    assert "DYME_ADAPTIVE_OPSD_INITIAL_WEIGHT=1.0" in out
+    assert "DYME_ADAPTIVE_OPSD_FINAL_WEIGHT=0.25" in out
+    assert "DYME_ADAPTIVE_TEACHER_INITIAL_WEIGHT=0.0" in out
+    assert "DYME_ADAPTIVE_TEACHER_FINAL_WEIGHT=0.0" in out
+    assert "DYME_EFFECTIVE_SAMPLING=1" in out
+    assert "DYME_EFFECTIVE_SAMPLING_MIXED_WEIGHT=6.0" in out
+    assert "DYME_OPSD_OVERFLOW_ROUTE=mixed_grpo_all_wrong_skip" in out
+    assert "DYME_GLOBAL_SIGNAL_LOGGING=1" in out
+    assert "DYME_VISUAL_REFINER=0" in out
+    assert "oracle gold suffix expected: 0" in out
+    assert "oracle_hint" not in out
+
+
+def test_gold_hidden_clrc_sft_repair_uses_short_repair_without_oracle(tmp_path: Path) -> None:
+    out = _quality_variant_dry_run(
+        tmp_path,
+        "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision_sft_repair",
+    )
+
+    assert "DYME_OPSD_PROVIDERS=format_only,visual_facts_deplot" in out
+    assert "DYME_TEACHER_PROBE_PROVIDERS=format_only,visual_facts_deplot" in out
+    assert "DYME_TEACHER_CORRECT_REPAIR_MODE=traj_sft" in out
+    assert "DYME_TEACHER_SFT_REPAIR_SCOPE=all_wrong" in out
+    assert "DYME_TEACHER_SFT_REPAIR_SLOTS=1" in out
+    assert "DYME_TEACHER_SFT_TARGET_STYLE=student_hint_short" in out
+    assert "DYME_TEACHER_SFT_TARGET_CONSTRAINT=chartqa_hint" in out
+    assert "DYME_TEACHER_SFT_TARGET_STYLE=answer_only" not in out
+    assert "DYME_TEACHER_TRAJECTORY=0" in out
+    assert "DYME_ADAPTIVE_TARGET_READINESS=0.15" in out
+    assert "DYME_ADAPTIVE_OPSD_INITIAL_CAP=4" in out
+    assert "DYME_ADAPTIVE_OPSD_FINAL_CAP=1" in out
+    assert "DYME_EFFECTIVE_SAMPLING=1" in out
+    assert "DYME_EFFECTIVE_SAMPLING_MIXED_WEIGHT=6.0" in out
+    assert "DYME_OPSD_OVERFLOW_ROUTE=mixed_grpo_all_wrong_skip" in out
+    assert "DYME_VISUAL_REFINER=0" in out
+    assert "oracle gold suffix expected: 0" in out
+    assert "oracle_hint" not in out
+
+
 def test_pcd_no_visual_dry_run_defaults_to_local_model_paths(tmp_path: Path) -> None:
     env = {
         **os.environ,
