@@ -49,3 +49,15 @@ def test_main5_campaign_download_uses_single_worker_resume() -> None:
     text = script.read_text(encoding="utf-8")
 
     assert "max_workers=1" in text
+
+
+def test_main5_campaign_prioritizes_refiner_sft_repair_variant() -> None:
+    script = ROOT / "scripts" / "test" / "run_main5_10epoch_campaign.sh"
+    text = script.read_text(encoding="utf-8")
+
+    repair_variant = (
+        '  "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision_sft_repair"'
+    )
+    base_variant = '  "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision"'
+
+    assert text.index(repair_variant) < text.index(base_variant)

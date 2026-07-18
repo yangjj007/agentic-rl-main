@@ -206,7 +206,11 @@ Add tests that require `model_ready` to inspect `model.safetensors.index.json` /
 
 When `model.safetensors.index.json` exists, parse it with Python and require every unique `weight_map` shard file to exist before training starts.
 
-- [x] **Step 3: Verify green**
+- [x] **Step 3: Prioritize the stronger SFT route**
+
+Keep the campaign variant list ordered with `deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision_sft_repair` before `deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision`, so the long run tests the refiner-backed route first.
+
+- [x] **Step 4: Verify green**
 
 Run:
 

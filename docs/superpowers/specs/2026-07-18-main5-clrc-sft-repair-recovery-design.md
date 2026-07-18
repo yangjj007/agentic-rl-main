@@ -66,6 +66,8 @@ The variant remains gold-hidden because teacher providers stay `format_only,visu
 
 The 10-epoch campaign must not start training until indexed model shards are complete. `model_ready` checks `model.safetensors.index.json` and verifies every file in `weight_map`; otherwise it reports `missing model shard` and retries the HuggingFace download. Downloads use `max_workers=1` to avoid repeated multi-shard partial transfer failures.
 
+The campaign runs the refiner-backed SFT repair variant before the restored base variant, because the active goal is to test the stronger SFT route first.
+
 ## Testing
 
 Use dry-run tests as the contract:
