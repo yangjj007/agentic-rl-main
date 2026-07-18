@@ -56,15 +56,16 @@ download_model_if_missing() {
     return 0
   fi
   log "model missing; downloading ${repo} -> ${dir}"
-"${PYTHON_BIN}" - "${repo}" "${dir}" <<'PY'
+  HF_HUB_DISABLE_XET=1 \
+  "${PYTHON_BIN}" - "${repo}" "${dir}" <<'PY'
 import os
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 import sys
 from pathlib import Path
 from huggingface_hub import snapshot_download
 
 repo, out = sys.argv[1], Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 snapshot_download(
     repo_id=repo,
     local_dir=str(out),
