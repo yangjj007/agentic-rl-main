@@ -20,7 +20,7 @@ class TeacherSftRepairConfig:
 
     @property
     def enabled(self) -> bool:
-        return self.repair_mode == "traj_sft" and self.slots_per_prompt > 0
+        return self.repair_mode in {"traj_sft", "refiner_sft"} and self.slots_per_prompt > 0
 
 
 @dataclass
@@ -389,26 +389,33 @@ def apply_teacher_sft_repair_routing(
     *,
     completion_modes: Sequence[int],
     teacher_traj_indices: Iterable[int],
+    teacher_correct_indices: Iterable[int] | None = None,
     group_has_correct: Sequence[bool],
     num_generations: int,
     config: TeacherSftRepairConfig | dict | None,
 ) -> tuple[list[int], set[int], set[int], TeacherSftRepairStats]:
-    """Promote selected all-wrong teacher-correct trajectories to SFT repair.
+    """Promote selected all-wrong teacher-correct slots to SFT repair.
 
-    Mixed wrong completions intentionally remain OPD. This preserves DyME's
-    memorize/explore split while replacing all-wrong noisy student trajectories
-    with verified teacher trajectories for a small number of repair slots.
+    Mixed wrong completions intentionally remain OPD. ``traj_sft`` uses
+    teacher trajectories as SFT targets, while ``refiner_sft`` only changes
+    the route and lets the trainer use its refiner-built SFT target.
     """
     cfg = _as_config(config)
     modes = list(completion_modes)
     kept_trajs = set(int(i) for i in teacher_traj_indices)
+    teacher_correct = (
+        set(int(i) for i in teacher_correct_indices)
+        if teacher_correct_indices is not None
+        else set(kept_trajs)
+    )
+    repair_candidates = teacher_correct if cfg.repair_mode == "refiner_sft" else set(kept_trajs)
     repair_indices: set[int] = set()
     stats = TeacherSftRepairStats()
     per_prompt_used: dict[int, int] = {}
 
     if cfg.enabled and cfg.scope == "all_wrong":
         eligible_counts: dict[int, int] = {}
-        for idx in sorted(kept_trajs):
+        for idx in sorted(repair_candidates):
             prompt_idx = idx // max(int(num_generations), 1)
             is_all_wrong = (
                 not bool(group_has_correct[prompt_idx])
@@ -422,10 +429,10 @@ def apply_teacher_sft_repair_routing(
             for count in eligible_counts.values()
         )
 
-    for idx in sorted(kept_trajs):
+    for idx in sorted(teacher_correct):
         prompt_idx = idx // max(int(num_generations), 1)
         is_all_wrong = not bool(group_has_correct[prompt_idx]) if prompt_idx < len(group_has_correct) else False
-        eligible_scope = cfg.scope == "all_wrong" and is_all_wrong
+        eligible_scope = cfg.scope == "all_wrong" and is_all_wrong and idx in repair_candidates
         if cfg.enabled and eligible_scope:
             used = per_prompt_used.get(prompt_idx, 0)
             if used < cfg.slots_per_prompt:

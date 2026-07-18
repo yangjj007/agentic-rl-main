@@ -2792,6 +2792,7 @@ class DyMETrainer(Trainer):
         teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         teacher_traj_texts: dict[int, str] = {}
         teacher_sft_repairs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        teacher_sft_repair_indices: set[int] = set()
         teacher_sft_repair_stats = None
         teacher_sft_privileged_tag_count = 0
         teacher_sft_target_raw_full_hint_count = 0
@@ -2894,6 +2895,11 @@ class DyMETrainer(Trainer):
                         if idx in eligible
                     }
             repair_cfg = self._teacher_correct_repair_config()
+            teacher_correct_indices = {
+                idx
+                for idx, mode_i in enumerate(completion_modes)
+                if mode_i == MODE_OPSD
+            }
             (
                 completion_modes,
                 kept_traj_indices,
@@ -2902,11 +2908,12 @@ class DyMETrainer(Trainer):
             ) = apply_teacher_sft_repair_routing(
                 completion_modes=completion_modes,
                 teacher_traj_indices=set(teacher_trajs.keys()),
+                teacher_correct_indices=teacher_correct_indices,
                 group_has_correct=group_has_correct_list,
                 num_generations=self.num_generations,
                 config=repair_cfg,
             )
-            if teacher_sft_repair_indices:
+            if repair_cfg["mode"] == "traj_sft" and teacher_sft_repair_indices:
                 for repair_idx in teacher_sft_repair_indices:
                     raw_text = teacher_traj_texts.get(repair_idx, "")
                     prompt_idx = repair_idx // self.num_generations
@@ -3135,6 +3142,7 @@ class DyMETrainer(Trainer):
                 force_sft_replace = False
 
             repair_traj = teacher_sft_repairs.get(i)
+            repair_requested = i in teacher_sft_repair_indices
             if cm == MODE_SKIP:
                 completion_id_ = completion_ids[i]
                 completion_mask_ = completion_mask[i]
@@ -3161,6 +3169,10 @@ class DyMETrainer(Trainer):
                 advantange_[:] = 1
                 opsd_mask_list.append(False)
                 sft_replaced = True
+                if repair_requested:
+                    teacher_sft_repair_used_count += 1
+                    if has_correct[batch_id] == 0:
+                        teacher_sft_repair_all_wrong_used_count += 1
             elif use_opsd:
                 completion_id_ = completion_ids[i]
                 completion_mask_ = completion_mask[i]

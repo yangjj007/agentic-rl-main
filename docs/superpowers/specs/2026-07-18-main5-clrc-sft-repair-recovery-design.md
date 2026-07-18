@@ -47,25 +47,34 @@ Variant:
 
 `deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision_sft_repair`
 
-This inherits the restored CLRC main variant and changes teacher-correct recoverable all-wrong rows from OPD repair to short SFT repair:
+This inherits the restored CLRC main variant and changes teacher-correct recoverable all-wrong rows from OPD repair to refiner-backed short SFT repair:
 
-- `DYME_TEACHER_CORRECT_REPAIR_MODE=traj_sft`
+- `DYME_TEACHER_CORRECT_REPAIR_MODE=refiner_sft`
 - `DYME_TEACHER_SFT_REPAIR_SCOPE=all_wrong`
 - `DYME_TEACHER_SFT_REPAIR_SLOTS=1`
 - `DYME_TEACHER_SFT_TARGET_STYLE=student_hint_short`
 - `DYME_TEACHER_SFT_TARGET_CONSTRAINT=chartqa_hint`
 - `DYME_TEACHER_SFT_SANITIZE_PRIVILEGED=1`
+- `DYME_VISUAL_CHECKER=0`
+- `DYME_VISUAL_REFINER=1`
+- `DYME_VISUAL_PREFETCH_IC=1`
+- `DYME_VISUAL_LOG=1`
 
-The variant remains gold-hidden because teacher providers stay `format_only,visual_facts_deplot`. It does not use `oracle_hint`, answer-only targets, or visual supervision/refiner envs.
+The variant remains gold-hidden because teacher providers stay `format_only,visual_facts_deplot`. It does not use `oracle_hint`, answer-only targets, or teacher-trajectory hard imitation. The refiner supplies the low-variance SFT target, so a teacher-correct all-wrong slot can become SFT even when `DYME_TEACHER_TRAJECTORY=0`.
+
+### Campaign Guard
+
+The 10-epoch campaign must not start training until indexed model shards are complete. `model_ready` checks `model.safetensors.index.json` and verifies every file in `weight_map`; otherwise it reports `missing model shard` and retries the HuggingFace download. Downloads use `max_workers=1` to avoid repeated multi-shard partial transfer failures.
 
 ## Testing
 
 Use dry-run tests as the contract:
 
 - restored CLRC main exports the GRPO-recovery adaptive defaults and does not export teacher-SFT repair envs;
-- strong SFT repair variant exports the same adaptive defaults plus `traj_sft` and `student_hint_short`;
+- strong SFT repair variant exports the same adaptive defaults plus `refiner_sft`, `student_hint_short`, and Visual Refiner enabled;
 - both variants keep `DYME_OPSD_PROVIDERS=format_only,visual_facts_deplot`;
-- both variants keep `DYME_VISUAL_REFINER=0` and `DYME_DEPLOT_ENABLED=0`;
+- the base variant keeps `DYME_VISUAL_REFINER=0`; the strong SFT variant uses `DYME_VISUAL_REFINER=1`;
+- the campaign refuses incomplete indexed safetensors downloads;
 - no smoke command starts real GPU training.
 
 Smoke:

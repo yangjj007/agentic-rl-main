@@ -24,6 +24,7 @@ def test_all_wrong_teacher_correct_becomes_sft_repair_and_removes_traj() -> None
     modes, kept_trajs, repairs, stats = apply_teacher_sft_repair_routing(
         completion_modes=[MODE_OPSD, MODE_OPSD],
         teacher_traj_indices={0, 1},
+        teacher_correct_indices={0, 1},
         group_has_correct=[False],
         num_generations=2,
         config=TeacherSftRepairConfig(repair_mode="traj_sft", scope="all_wrong", slots_per_prompt=1),
@@ -43,6 +44,7 @@ def test_mixed_teacher_correct_stays_opd_under_all_wrong_scope() -> None:
     modes, kept_trajs, repairs, stats = apply_teacher_sft_repair_routing(
         completion_modes=[MODE_GRPO, MODE_OPSD],
         teacher_traj_indices={1},
+        teacher_correct_indices={1},
         group_has_correct=[True],
         num_generations=2,
         config=TeacherSftRepairConfig(repair_mode="traj_sft", scope="all_wrong", slots_per_prompt=1),
@@ -58,6 +60,7 @@ def test_default_opd_mode_preserves_existing_teacher_traj_routing() -> None:
     modes, kept_trajs, repairs, stats = apply_teacher_sft_repair_routing(
         completion_modes=[MODE_OPSD],
         teacher_traj_indices={0},
+        teacher_correct_indices={0},
         group_has_correct=[False],
         num_generations=1,
         config=TeacherSftRepairConfig(),
@@ -68,6 +71,30 @@ def test_default_opd_mode_preserves_existing_teacher_traj_routing() -> None:
     assert repairs == set()
     assert stats.teacher_sft_repairs == 0
     assert stats.teacher_correct_to_opd == 1
+
+
+def test_refiner_sft_repair_promotes_all_wrong_teacher_correct_without_traj() -> None:
+    modes, kept_trajs, repairs, stats = apply_teacher_sft_repair_routing(
+        completion_modes=[MODE_OPSD, MODE_OPSD, MODE_GRPO, MODE_OPSD],
+        teacher_traj_indices=set(),
+        teacher_correct_indices={0, 1, 3},
+        group_has_correct=[False, True],
+        num_generations=2,
+        config=TeacherSftRepairConfig(
+            repair_mode="refiner_sft",
+            scope="all_wrong",
+            slots_per_prompt=1,
+        ),
+    )
+
+    assert modes == [MODE_SFT, MODE_OPSD, MODE_GRPO, MODE_OPSD]
+    assert repairs == {0}
+    assert kept_trajs == set()
+    assert stats.teacher_sft_repairs == 1
+    assert stats.teacher_sft_repair_all_wrong == 1
+    assert stats.repair_slot_eligible == 1
+    assert stats.teacher_correct_to_sft_repair == 1
+    assert stats.teacher_correct_to_opd == 2
 
 
 def test_sanitize_teacher_sft_text_removes_privileged_tags_but_keeps_answer() -> None:

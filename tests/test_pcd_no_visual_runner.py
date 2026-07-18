@@ -136,7 +136,7 @@ def test_gold_hidden_clrc_sft_repair_uses_short_repair_without_oracle(tmp_path: 
 
     assert "DYME_OPSD_PROVIDERS=format_only,visual_facts_deplot" in out
     assert "DYME_TEACHER_PROBE_PROVIDERS=format_only,visual_facts_deplot" in out
-    assert "DYME_TEACHER_CORRECT_REPAIR_MODE=traj_sft" in out
+    assert "DYME_TEACHER_CORRECT_REPAIR_MODE=refiner_sft" in out
     assert "DYME_TEACHER_SFT_REPAIR_SCOPE=all_wrong" in out
     assert "DYME_TEACHER_SFT_REPAIR_SLOTS=1" in out
     assert "DYME_TEACHER_SFT_TARGET_STYLE=student_hint_short" in out
@@ -149,7 +149,10 @@ def test_gold_hidden_clrc_sft_repair_uses_short_repair_without_oracle(tmp_path: 
     assert "DYME_EFFECTIVE_SAMPLING=1" in out
     assert "DYME_EFFECTIVE_SAMPLING_MIXED_WEIGHT=6.0" in out
     assert "DYME_OPSD_OVERFLOW_ROUTE=mixed_grpo_all_wrong_skip" in out
-    assert "DYME_VISUAL_REFINER=0" in out
+    assert "DYME_VISUAL_CHECKER=0" in out
+    assert "DYME_VISUAL_REFINER=1" in out
+    assert "DYME_VISUAL_PREFETCH_IC=1" in out
+    assert "DYME_VISUAL_LOG=1" in out
     assert "oracle gold suffix expected: 0" in out
     assert "oracle_hint" not in out
 

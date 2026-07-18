@@ -45,6 +45,31 @@ log() {
 model_ready() {
   local dir="$1"
   [[ -f "${dir}/config.json" ]] || return 1
+  local safetensors_index="${dir}/model.safetensors.index.json"
+  if [[ -f "${safetensors_index}" ]]; then
+    "${PYTHON_BIN}" - "${dir}" "${safetensors_index}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+model_dir = Path(sys.argv[1])
+index_path = Path(sys.argv[2])
+try:
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+except Exception as exc:
+    print(f"invalid model.safetensors.index.json: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+weight_map = index.get("weight_map") or {}
+expected = sorted(set(str(name) for name in weight_map.values()))
+missing = [name for name in expected if not (model_dir / name).is_file()]
+if missing:
+    print("missing model shard: " + ", ".join(missing[:8]), file=sys.stderr)
+    raise SystemExit(1)
+raise SystemExit(0 if expected else 1)
+PY
+    return $?
+  fi
   compgen -G "${dir}/model*.safetensors" >/dev/null || compgen -G "${dir}/pytorch_model*.bin" >/dev/null
 }
 
@@ -73,7 +98,7 @@ snapshot_download(
     resume_download=True,
     allow_patterns=["*.safetensors", "*.json", "*.txt", "video_processor/*.json"],
     ignore_patterns=["onnx/*", "*.onnx"],
-    max_workers=4,
+    max_workers=1,
 )
 PY
 }
