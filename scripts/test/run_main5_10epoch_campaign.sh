@@ -125,8 +125,8 @@ free_gpu_count() {
 }
 
 training_active() {
-  pgrep -af "main.py --config opd_7b_dyme_probe" >/dev/null 2>&1 && return 0
-  pgrep -af "train_opd_7b_dyme_probe.sh" >/dev/null 2>&1 && return 0
+  pgrep -af "[m]ain.py --config opd_7b_dyme_probe" >/dev/null 2>&1 && return 0
+  pgrep -af "[t]rain_opd_7b_dyme_probe.sh" >/dev/null 2>&1 && return 0
   return 1
 }
 

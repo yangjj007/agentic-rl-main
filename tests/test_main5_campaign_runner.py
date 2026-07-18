@@ -61,3 +61,13 @@ def test_main5_campaign_prioritizes_refiner_sft_repair_variant() -> None:
     base_variant = '  "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision"'
 
     assert text.index(repair_variant) < text.index(base_variant)
+
+
+def test_main5_campaign_training_active_uses_self_excluding_pgrep_patterns() -> None:
+    script = ROOT / "scripts" / "test" / "run_main5_10epoch_campaign.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'pgrep -af "[m]ain.py --config opd_7b_dyme_probe"' in text
+    assert 'pgrep -af "[t]rain_opd_7b_dyme_probe.sh"' in text
+    assert 'pgrep -af "main.py --config opd_7b_dyme_probe"' not in text
+    assert 'pgrep -af "train_opd_7b_dyme_probe.sh"' not in text
