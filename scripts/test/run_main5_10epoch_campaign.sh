@@ -68,6 +68,7 @@ snapshot_download(
     local_dir=str(out),
     local_dir_use_symlinks=False,
     resume_download=True,
+    ignore_patterns=["onnx/*", "*.onnx"],
 )
 PY
 }
