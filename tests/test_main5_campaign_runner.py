@@ -125,3 +125,12 @@ def test_main5_campaign_preserves_status_on_restart() -> None:
 
     assert 'if [[ ! -s "${STATUS_TSV}" ]]; then' in text
     assert 'printf "timestamp\\tevent\\tvariant\\tdetail\\n" > "${STATUS_TSV}"' in text
+
+
+def test_main5_monitor_allows_expected_sft_repair_route() -> None:
+    script = ROOT / "scripts" / "test" / "monitor_main5_10epoch_campaign.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'health_args=(' in text
+    assert 'if [[ "${variant}" == *"sft_repair"* ]]; then' in text
+    assert "health_args+=(--allow-teacher-sft-repair)" in text

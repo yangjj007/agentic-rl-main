@@ -80,6 +80,11 @@ def main() -> int:
     parser.add_argument("--window", type=int, default=20)
     parser.add_argument("--candidate-dir", type=Path)
     parser.add_argument("--candidate-window-steps", type=int, default=5)
+    parser.add_argument(
+        "--allow-teacher-sft-repair",
+        action="store_true",
+        help="Treat teacher SFT repair routing as an expected mechanism.",
+    )
     args = parser.parse_args()
 
     rows = load_rows(args.log)
@@ -120,7 +125,10 @@ def main() -> int:
         "candidate_partial_cot_template_rate": candidate_partial_rate,
         "candidate_goal_without_answer_rate": candidate_goal_without_answer_rate,
     }
-    if payload["teacher_traj_weight_max"] > 1e-12 or payload["teacher_sft_repair_rate_max"] > 1e-12:
+    if payload["teacher_traj_weight_max"] > 1e-12 or (
+        payload["teacher_sft_repair_rate_max"] > 1e-12
+        and not args.allow_teacher_sft_repair
+    ):
         payload["status"] = "mechanism_violation"
         code = 2
     elif payload["full_cot_template_rate_mean"] > 0.8 and (

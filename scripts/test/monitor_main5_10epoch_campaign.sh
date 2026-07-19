@@ -78,10 +78,16 @@ check_once() {
         | tee -a "${CAMPAIGN_DIR}/health_snapshots.jsonl"
       continue
     fi
+    health_args=(
+      "${train_log}"
+      --window 20
+      --candidate-dir "${variant_dir}/teacher_probe_candidates"
+    )
+    if [[ "${variant}" == *"sft_repair"* ]]; then
+      health_args+=(--allow-teacher-sft-repair)
+    fi
     health_json="$("${PYTHON_BIN}" scripts/analysis/check_opd_template_health.py \
-      "${train_log}" \
-      --window 20 \
-      --candidate-dir "${variant_dir}/teacher_probe_candidates" 2>/dev/null || true)"
+      "${health_args[@]}" 2>/dev/null || true)"
     epoch_json="$(log_epoch_state "${train_log}")"
     echo "{\"timestamp\":\"$(timestamp)\",\"variant\":\"${variant}\",\"checkpoints\":${ckpts},\"epoch\":${epoch_json},\"health\":${health_json:-null}}" \
       | tee -a "${CAMPAIGN_DIR}/health_snapshots.jsonl"

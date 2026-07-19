@@ -15,12 +15,15 @@ def _run(
     tmp_path: Path,
     rows: list[dict],
     candidate_rows: list[dict] | None = None,
+    extra_args: list[str] | None = None,
 ) -> tuple[int, dict]:
     for row in rows:
         row.setdefault("loss", 0.0)
     log = tmp_path / "train.log"
     log.write_text("\n".join(repr(row) for row in rows), encoding="utf-8")
     command = [str(SCRIPT), str(log), "--window", "2"]
+    if extra_args:
+        command.extend(extra_args)
     if candidate_rows is not None:
         candidate_dir = tmp_path / "candidates"
         candidate_dir.mkdir()
@@ -48,6 +51,35 @@ def test_health_check_rejects_hard_imitation_signal(tmp_path: Path) -> None:
     )
     assert code == 2
     assert payload["status"] == "mechanism_violation"
+
+
+def test_health_check_rejects_teacher_sft_repair_by_default(tmp_path: Path) -> None:
+    code, payload = _run(
+        tmp_path,
+        [
+            {"loss/teacher_traj_effective_weight": 0.0, "routing/teacher_sft_repair_rate": 0.0},
+            {"loss/teacher_traj_effective_weight": 0.0, "routing/teacher_sft_repair_rate": 0.25},
+        ],
+    )
+    assert code == 2
+    assert payload["status"] == "mechanism_violation"
+
+
+def test_health_check_allows_expected_teacher_sft_repair(tmp_path: Path) -> None:
+    code, payload = _run(
+        tmp_path,
+        [
+            {"loss/teacher_traj_effective_weight": 0.0, "routing/teacher_sft_repair_rate": 0.0},
+            {
+                "loss/teacher_traj_effective_weight": 0.0,
+                "routing/teacher_sft_repair_rate": 0.25,
+                "completions/full_cot_template_rate": 0.0,
+            },
+        ],
+        extra_args=["--allow-teacher-sft-repair"],
+    )
+    assert code == 0
+    assert payload["status"] == "ok"
 
 
 def test_health_check_detects_persistent_empty_template_collapse(tmp_path: Path) -> None:
