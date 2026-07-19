@@ -34,6 +34,7 @@ mkdir -p "${OUT_ROOT}" "${LOG_ROOT}" "${CAMPAIGN_DIR}" "$(dirname "${STUDENT_MOD
 STATUS_TSV="${CAMPAIGN_DIR}/campaign_status.tsv"
 SUCCESS_FILE="${CAMPAIGN_DIR}/SUCCESS_67_PLUS"
 ATTENTION_FILE="${CAMPAIGN_DIR}/NEEDS_RESEARCH_OR_CODE_CHANGE"
+SELECTED_CUDA_VISIBLE_DEVICES=""
 
 timestamp() {
   date "+%F %T"
@@ -120,18 +121,26 @@ wait_for_models() {
   done
 }
 
-free_gpu_count() {
-  nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null \
+ready_gpu_indices() {
+  nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null \
     | awk -F, -v max_used="${GPU_MAX_USED_MB}" -v max_util="${GPU_MAX_UTIL_PCT}" '
       {
         gsub(/ /, "", $1)
         gsub(/ /, "", $2)
-        if ($1 <= max_used && $2 <= max_util) {
-          count++
+        gsub(/ /, "", $3)
+        if ($2 <= max_used && $3 <= max_util) {
+          print $1
         }
       }
-      END {print count + 0}
     '
+}
+
+free_gpu_count() {
+  ready_gpu_indices | wc -l | tr -d ' '
+}
+
+select_ready_gpus() {
+  ready_gpu_indices | head -n "${REQUIRED_GPUS}" | paste -sd, -
 }
 
 training_active() {
@@ -145,7 +154,8 @@ wait_for_gpus() {
     local free_count
     free_count="$(free_gpu_count)"
     if [[ "${free_count}" -ge "${REQUIRED_GPUS}" ]] && ! training_active; then
-      log "GPU gate passed: free=${free_count}/${REQUIRED_GPUS}, max_used_mb=${GPU_MAX_USED_MB}, max_util_pct=${GPU_MAX_UTIL_PCT}"
+      SELECTED_CUDA_VISIBLE_DEVICES="$(select_ready_gpus)"
+      log "GPU gate passed: free=${free_count}/${REQUIRED_GPUS}, max_used_mb=${GPU_MAX_USED_MB}, max_util_pct=${GPU_MAX_UTIL_PCT}, devices=${SELECTED_CUDA_VISIBLE_DEVICES}"
       return 0
     fi
     log "waiting for GPUs: free=${free_count}/${REQUIRED_GPUS}, max_used_mb=${GPU_MAX_USED_MB}, max_util_pct=${GPU_MAX_UTIL_PCT}, active_training=$(training_active && echo 1 || echo 0)"
@@ -174,10 +184,12 @@ run_variant() {
     fi
     wait_for_models
     wait_for_gpus
-    log "${variant}: start 10epoch training (${resume_args[*]}, attempt=${attempt}/${TRAIN_MAX_ATTEMPTS})"
-    echo -e "$(timestamp)\ttrain_start\t${variant}\t${resume_args[*]} attempt=${attempt}" >> "${STATUS_TSV}"
+    local cuda_devices="${SELECTED_CUDA_VISIBLE_DEVICES}"
+    log "${variant}: start 10epoch training (${resume_args[*]}, attempt=${attempt}/${TRAIN_MAX_ATTEMPTS}, devices=${cuda_devices})"
+    echo -e "$(timestamp)\ttrain_start\t${variant}\t${resume_args[*]} attempt=${attempt} devices=${cuda_devices}" >> "${STATUS_TSV}"
     set +e
-    CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}" \
+    CUDA_VISIBLE_DEVICES="${cuda_devices}" \
+    NUM_GPUS="${REQUIRED_GPUS}" \
     DYME_STUDENT_MODEL="${STUDENT_MODEL}" \
     DYME_TEACHER_MODEL="${TEACHER_MODEL}" \
     DYME_PCD_RUN_ID="${RUN_ID}" \
@@ -209,10 +221,12 @@ run_variant() {
 
 evaluate_all() {
   wait_for_gpus
-  log "start eval for ${RUN_ID}"
-  echo -e "$(timestamp)\teval_start\tall\t${OUT_ROOT}" >> "${STATUS_TSV}"
+  local cuda_devices="${SELECTED_CUDA_VISIBLE_DEVICES}"
+  log "start eval for ${RUN_ID} (devices=${cuda_devices})"
+  echo -e "$(timestamp)\teval_start\tall\t${OUT_ROOT} devices=${cuda_devices}" >> "${STATUS_TSV}"
+  CUDA_VISIBLE_DEVICES="${cuda_devices}" \
   DYME_DEPLOT_ABLATION_OUTPUT_ROOT="${OUT_ROOT}" \
-  DYME_EVAL_NUM_PROCESSES="${DYME_EVAL_NUM_PROCESSES:-8}" \
+  DYME_EVAL_NUM_PROCESSES="${DYME_EVAL_NUM_PROCESSES:-${REQUIRED_GPUS}}" \
   DYME_EVAL_WAIT_FOR_TRAIN=1 \
   bash scripts/test/eval_deplot_ablation_checkpoints.sh "${RUN_ID}"
   echo -e "$(timestamp)\teval_done\tall\t0" >> "${STATUS_TSV}"
