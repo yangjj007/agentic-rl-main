@@ -2076,9 +2076,9 @@ class DyMETrainer(Trainer):
             if score > 0:
                 stats["teacher_probe_correct"] += 1
                 completion_modes[global_idx] = MODE_OPSD
+                teacher_traj_texts[global_idx] = text
                 if self._teacher_trajectory_config()["enabled"]:
                     teacher_trajs[global_idx] = (gen_ids.to(device), gen_mask.to(device))
-                    teacher_traj_texts[global_idx] = text
             else:
                 stats["teacher_probe_wrong"] += 1
                 completion_modes[global_idx] = MODE_SFT
@@ -2913,7 +2913,7 @@ class DyMETrainer(Trainer):
                 num_generations=self.num_generations,
                 config=repair_cfg,
             )
-            if repair_cfg["mode"] == "traj_sft" and teacher_sft_repair_indices:
+            if repair_cfg["mode"] in ("traj_sft", "refiner_sft") and teacher_sft_repair_indices:
                 for repair_idx in teacher_sft_repair_indices:
                     raw_text = teacher_traj_texts.get(repair_idx, "")
                     prompt_idx = repair_idx // self.num_generations

@@ -71,3 +71,11 @@ def test_main5_campaign_training_active_uses_self_excluding_pgrep_patterns() -> 
     assert 'pgrep -af "[t]rain_opd_7b_dyme_probe.sh"' in text
     assert 'pgrep -af "main.py --config opd_7b_dyme_probe"' not in text
     assert 'pgrep -af "train_opd_7b_dyme_probe.sh"' not in text
+
+
+def test_main5_campaign_defaults_to_sixty_gb_free_gpu_gate() -> None:
+    script = ROOT / "scripts" / "test" / "run_main5_10epoch_campaign.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'GPU_MAX_USED_MB="${DYME_MAIN5_GPU_MAX_USED_MB:-20000}"' in text
+    assert 'awk -v max_used="${GPU_MAX_USED_MB}"' in text
