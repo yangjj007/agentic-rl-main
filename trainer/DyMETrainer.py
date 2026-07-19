@@ -1252,6 +1252,45 @@ class DyMETrainer(Trainer):
             "target_style": (cfg.get("target_style") or cfg.get("target_constraint") or "chartqa_hint").lower(),
         }
 
+    def _online_sft_target_style(self) -> str:
+        gate_cfg = self.opsd_config.get("gate") or {}
+        return str(gate_cfg.get("online_sft_target_style") or "").strip().lower()
+
+    def _format_online_sft_target(
+        self,
+        hint: Any,
+        answer: Any,
+        sample: dict[str, Any] | None = None,
+    ) -> str:
+        style = self._online_sft_target_style()
+        if style:
+            raw_target = f"{str(hint or '').strip()}\n{str(answer or '').strip()}".strip()
+            constrained = build_teacher_sft_repair_target(
+                raw_target,
+                sample=sample,
+                reference_answer=answer,
+                target_style=style,
+                sanitize_privileged=True,
+            )
+            target = constrained.text
+        else:
+            target = f"{hint}\n{answer}"
+        if self.end_flag and not target.endswith(self.end_flag):
+            target = f"{target}{self.end_flag}"
+        return target
+
+    def _build_online_sft_targets(
+        self,
+        hints: list[Any],
+        answers: list[Any],
+        samples: list[dict[str, Any]],
+    ) -> list[str]:
+        targets: list[str] = []
+        for row, (hint, answer) in enumerate(zip(hints, answers)):
+            sample = samples[row] if row < len(samples) else {}
+            targets.append(self._format_online_sft_target(hint, answer, sample))
+        return targets
+
     def _chart_cot_quality_gate_config(self) -> ChartCoTQualityGateConfig:
         return ChartCoTQualityGateConfig.from_mapping(
             self.opsd_config.get("chart_cot_quality_gate")
@@ -2256,7 +2295,8 @@ class DyMETrainer(Trainer):
         sft_gt_rows = []
         for i in range(prompts_count):
             src = self._source_row_index(i, raw_count, prompts_count)
-            sft_gt_rows.append(hints[src] + "\n" + answers[src] + self.end_flag)
+            sample_i = inputs[src] if src < len(inputs) else {}
+            sft_gt_rows.append(self._format_online_sft_target(hints[src], answers[src], sample_i))
 
         sft_dt = self.processing_class.tokenizer(
             sft_gt_rows,
@@ -3085,7 +3125,7 @@ class DyMETrainer(Trainer):
         visual_batch_stats = self._finish_visual_supervision_batch(global_step)
         opsd_debug.log("refine", "context refinement finished", num_hints=len(hints))
 
-        sft_gt = [hint + '\n' + answer + self.end_flag for hint, answer in zip(hints, answers)]
+        sft_gt = self._build_online_sft_targets(hints, answers, inputs)
 
         sft_dt = self.processing_class.tokenizer(sft_gt, return_tensors="pt", padding=True,
                                                         padding_side="right")

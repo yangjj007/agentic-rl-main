@@ -30,3 +30,12 @@ def test_refiner_sft_keeps_teacher_probe_text_without_teacher_trajectory() -> No
     assert body.index("teacher_traj_texts[global_idx] = text") < body.index(
         'if self._teacher_trajectory_config()["enabled"]'
     )
+
+
+def test_online_sft_targets_use_configurable_formatter() -> None:
+    trainer = (ROOT / "trainer" / "DyMETrainer.py").read_text(encoding="utf-8")
+
+    assert "def _format_online_sft_target(" in trainer
+    assert "online_sft_target_style" in trainer
+    assert "hints[src] + \"\\n\" + answers[src] + self.end_flag" not in trainer
+    assert "hint + '\\n' + answer + self.end_flag" not in trainer
