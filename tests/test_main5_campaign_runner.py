@@ -82,7 +82,8 @@ def test_main5_campaign_defaults_to_sixty_gb_free_gpu_gate() -> None:
     text = script.read_text(encoding="utf-8")
 
     assert 'GPU_MAX_USED_MB="${DYME_MAIN5_GPU_MAX_USED_MB:-20000}"' in text
-    assert 'max_used="${GPU_MAX_USED_MB}"' in text
+    assert 'max_used = float(sys.argv[1])' in text
+    assert '"${GPU_MAX_USED_MB}" "${GPU_MAX_UTIL_PCT}"' in text
 
 
 def test_main5_campaign_gpu_gate_rejects_busy_compute_cards() -> None:
@@ -91,7 +92,8 @@ def test_main5_campaign_gpu_gate_rejects_busy_compute_cards() -> None:
 
     assert 'GPU_MAX_UTIL_PCT="${DYME_MAIN5_GPU_MAX_UTIL_PCT:-20}"' in text
     assert "--query-gpu=index,memory.used,utilization.gpu" in text
-    assert 'awk -F, -v max_used="${GPU_MAX_USED_MB}" -v max_util="${GPU_MAX_UTIL_PCT}"' in text
+    assert "float(used.strip()) <= max_used" in text
+    assert "float(util.strip()) <= max_util" in text
     assert "max_util_pct=${GPU_MAX_UTIL_PCT}" in text
 
 

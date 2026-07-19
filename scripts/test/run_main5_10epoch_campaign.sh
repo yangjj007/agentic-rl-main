@@ -122,17 +122,25 @@ wait_for_models() {
 }
 
 ready_gpu_indices() {
-  nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null \
-    | awk -F, -v max_used="${GPU_MAX_USED_MB}" -v max_util="${GPU_MAX_UTIL_PCT}" '
-      {
-        gsub(/ /, "", $1)
-        gsub(/ /, "", $2)
-        gsub(/ /, "", $3)
-        if ($2 <= max_used && $3 <= max_util) {
-          print $1
-        }
-      }
-    '
+  local gpu_csv
+  gpu_csv="$(nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true)"
+  GPU_CSV="${gpu_csv}" "${PYTHON_BIN}" - "${GPU_MAX_USED_MB}" "${GPU_MAX_UTIL_PCT}" <<'PY'
+import os
+import sys
+
+max_used = float(sys.argv[1])
+max_util = float(sys.argv[2])
+for line in os.environ.get("GPU_CSV", "").splitlines():
+    parts = line.rstrip("\n").split(",")
+    if len(parts) != 3:
+        continue
+    idx, used, util = parts
+    try:
+        if float(used.strip()) <= max_used and float(util.strip()) <= max_util:
+            print(idx.strip())
+    except ValueError:
+        continue
+PY
 }
 
 free_gpu_count() {
