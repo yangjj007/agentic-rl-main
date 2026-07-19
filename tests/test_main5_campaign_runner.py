@@ -51,7 +51,7 @@ def test_main5_campaign_download_uses_single_worker_resume() -> None:
     assert "max_workers=1" in text
 
 
-def test_main5_campaign_prioritizes_refiner_sft_repair_variant() -> None:
+def test_main5_campaign_defaults_to_refiner_sft_repair_variant_only() -> None:
     script = ROOT / "scripts" / "test" / "run_main5_10epoch_campaign.sh"
     text = script.read_text(encoding="utf-8")
 
@@ -60,7 +60,8 @@ def test_main5_campaign_prioritizes_refiner_sft_repair_variant() -> None:
     )
     base_variant = '  "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision"'
 
-    assert text.index(repair_variant) < text.index(base_variant)
+    assert repair_variant in text
+    assert base_variant not in text
 
 
 def test_main5_campaign_training_active_uses_self_excluding_pgrep_patterns() -> None:

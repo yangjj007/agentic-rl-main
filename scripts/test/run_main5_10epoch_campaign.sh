@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Long-running main5 10-epoch campaign.
 #
-# Runs the stronger refiner-SFT repair route first, then the restored
-# gold-hidden CLRC OPD main variant, and evaluates all produced checkpoints.
+# Runs the stronger refiner-SFT repair route and evaluates all produced checkpoints.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -29,7 +28,6 @@ TEACHER_REPO="${DYME_MAIN5_TEACHER_REPO:-llava-hf/llava-onevision-qwen2-7b-ov-hf
 
 VARIANTS=(
   "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision_sft_repair"
-  "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision"
 )
 
 mkdir -p "${OUT_ROOT}" "${LOG_ROOT}" "${CAMPAIGN_DIR}" "$(dirname "${STUDENT_MODEL}")" "$(dirname "${TEACHER_MODEL}")"
