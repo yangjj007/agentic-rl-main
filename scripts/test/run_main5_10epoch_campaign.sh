@@ -17,6 +17,9 @@ GPU_WAIT_INTERVAL="${DYME_MAIN5_GPU_WAIT_INTERVAL:-300}"
 MODEL_WAIT_INTERVAL="${DYME_MAIN5_MODEL_WAIT_INTERVAL:-600}"
 REQUIRED_GPUS="${DYME_MAIN5_REQUIRED_GPUS:-8}"
 GPU_MAX_USED_MB="${DYME_MAIN5_GPU_MAX_USED_MB:-20000}"
+GPU_MAX_UTIL_PCT="${DYME_MAIN5_GPU_MAX_UTIL_PCT:-20}"
+TRAIN_MAX_ATTEMPTS="${DYME_MAIN5_TRAIN_MAX_ATTEMPTS:-3}"
+TRAIN_RETRY_DELAY="${DYME_MAIN5_TRAIN_RETRY_DELAY:-300}"
 PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
 
 STUDENT_MODEL="${DYME_STUDENT_MODEL:-/data/deepseek_vg/yjj/models/llava-onevision-qwen2-0.5b-ov-hf}"
@@ -120,8 +123,17 @@ wait_for_models() {
 }
 
 free_gpu_count() {
-  nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null \
-    | awk -v max_used="${GPU_MAX_USED_MB}" '$1 <= max_used {count++} END {print count + 0}'
+  nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null \
+    | awk -F, -v max_used="${GPU_MAX_USED_MB}" -v max_util="${GPU_MAX_UTIL_PCT}" '
+      {
+        gsub(/ /, "", $1)
+        gsub(/ /, "", $2)
+        if ($1 <= max_used && $2 <= max_util) {
+          count++
+        }
+      }
+      END {print count + 0}
+    '
 }
 
 training_active() {
@@ -135,10 +147,10 @@ wait_for_gpus() {
     local free_count
     free_count="$(free_gpu_count)"
     if [[ "${free_count}" -ge "${REQUIRED_GPUS}" ]] && ! training_active; then
-      log "GPU gate passed: free=${free_count}/${REQUIRED_GPUS}, max_used_mb=${GPU_MAX_USED_MB}"
+      log "GPU gate passed: free=${free_count}/${REQUIRED_GPUS}, max_used_mb=${GPU_MAX_USED_MB}, max_util_pct=${GPU_MAX_UTIL_PCT}"
       return 0
     fi
-    log "waiting for GPUs: free=${free_count}/${REQUIRED_GPUS}, active_training=$(training_active && echo 1 || echo 0)"
+    log "waiting for GPUs: free=${free_count}/${REQUIRED_GPUS}, max_used_mb=${GPU_MAX_USED_MB}, max_util_pct=${GPU_MAX_UTIL_PCT}, active_training=$(training_active && echo 1 || echo 0)"
     sleep "${GPU_WAIT_INTERVAL}"
   done
 }
@@ -151,26 +163,50 @@ latest_checkpoint() {
 run_variant() {
   local variant="$1"
   local variant_dir="${OUT_ROOT}/${variant}"
-  local resume_args=(--resume none)
-  if [[ -d "${variant_dir}/final_checkpoint" ]]; then
-    log "${variant}: final_checkpoint exists; skip training"
-    return 0
-  fi
-  if [[ -n "$(latest_checkpoint "${variant_dir}")" ]]; then
-    resume_args=(--resume auto)
-  fi
-  wait_for_models
-  wait_for_gpus
-  log "${variant}: start 10epoch training (${resume_args[*]})"
-  echo -e "$(timestamp)\ttrain_start\t${variant}\t${resume_args[*]}" >> "${STATUS_TSV}"
-  CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}" \
-  DYME_STUDENT_MODEL="${STUDENT_MODEL}" \
-  DYME_TEACHER_MODEL="${TEACHER_MODEL}" \
-  DYME_PCD_RUN_ID="${RUN_ID}" \
-  DYME_PCD_OUTPUT_ROOT="${OUT_ROOT}" \
-  DYME_PCD_LOG_ROOT="${LOG_ROOT}" \
-  bash scripts/test/run_pcd_no_visual.sh 10 "${resume_args[@]}" --variant "${variant}"
-  echo -e "$(timestamp)\ttrain_done\t${variant}\t0" >> "${STATUS_TSV}"
+  local attempt=1
+  local train_rc=0
+  while true; do
+    local resume_args=(--resume none)
+    if [[ -d "${variant_dir}/final_checkpoint" ]]; then
+      log "${variant}: final_checkpoint exists; skip training"
+      return 0
+    fi
+    if [[ -n "$(latest_checkpoint "${variant_dir}")" ]]; then
+      resume_args=(--resume auto)
+    fi
+    wait_for_models
+    wait_for_gpus
+    log "${variant}: start 10epoch training (${resume_args[*]}, attempt=${attempt}/${TRAIN_MAX_ATTEMPTS})"
+    echo -e "$(timestamp)\ttrain_start\t${variant}\t${resume_args[*]} attempt=${attempt}" >> "${STATUS_TSV}"
+    set +e
+    CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}" \
+    DYME_STUDENT_MODEL="${STUDENT_MODEL}" \
+    DYME_TEACHER_MODEL="${TEACHER_MODEL}" \
+    DYME_PCD_RUN_ID="${RUN_ID}" \
+    DYME_PCD_OUTPUT_ROOT="${OUT_ROOT}" \
+    DYME_PCD_LOG_ROOT="${LOG_ROOT}" \
+    bash scripts/test/run_pcd_no_visual.sh 10 "${resume_args[@]}" --variant "${variant}"
+    train_rc=$?
+    set -e
+    if [[ "${train_rc}" -eq 0 ]]; then
+      echo -e "$(timestamp)\ttrain_done\t${variant}\t0" >> "${STATUS_TSV}"
+      return 0
+    fi
+    echo -e "$(timestamp)\ttrain_failed\t${variant}\texit_code=${train_rc} attempt=${attempt}" >> "${STATUS_TSV}"
+    {
+      echo "variant=${variant}"
+      echo "train_exit_code=${train_rc}"
+      echo "attempt=${attempt}"
+      echo "next_action=wait for idle GPUs and retry training"
+    } > "${ATTENTION_FILE}"
+    if [[ "${TRAIN_MAX_ATTEMPTS}" != "0" && "${attempt}" -ge "${TRAIN_MAX_ATTEMPTS}" ]]; then
+      log "${variant}: training failed after ${attempt} attempt(s)"
+      return "${train_rc}"
+    fi
+    log "${variant}: training failed with exit code ${train_rc}; retry in ${TRAIN_RETRY_DELAY}s"
+    sleep "${TRAIN_RETRY_DELAY}"
+    attempt=$((attempt + 1))
+  done
 }
 
 evaluate_all() {
@@ -208,7 +244,9 @@ PY
   log "log_root=${LOG_ROOT}"
   log "campaign_dir=${CAMPAIGN_DIR}"
   log "target_accuracy=${TARGET_ACCURACY}"
-  printf "timestamp\tevent\tvariant\tdetail\n" > "${STATUS_TSV}"
+  if [[ ! -s "${STATUS_TSV}" ]]; then
+    printf "timestamp\tevent\tvariant\tdetail\n" > "${STATUS_TSV}"
+  fi
   for variant in "${VARIANTS[@]}"; do
     run_variant "${variant}"
   done

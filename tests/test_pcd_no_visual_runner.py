@@ -142,9 +142,9 @@ def test_gold_hidden_clrc_sft_repair_uses_stronger_answer_repair_without_oracle(
     assert "DYME_TEACHER_SFT_TARGET_MAX_TOKENS=64" in out
     assert "DYME_TEACHER_SFT_TARGET_STYLE=answer_only" in out
     assert "DYME_TEACHER_SFT_TARGET_CONSTRAINT=chartqa_hint" in out
-    assert "teacher probe max new tokens: 192" in out
-    assert "DYME_TEACHER_PROBE_MAX_NEW_TOKENS=192" in out
-    assert "DYME_TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS=768" in out
+    assert "teacher probe max new tokens: 320" in out
+    assert "DYME_TEACHER_PROBE_MAX_NEW_TOKENS=320" in out
+    assert "DYME_TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS=1024" in out
     assert "DYME_TEACHER_TRAJECTORY=0" in out
     assert "DYME_ADAPTIVE_TARGET_READINESS=0.15" in out
     assert "DYME_ADAPTIVE_OPSD_INITIAL_CAP=4" in out
