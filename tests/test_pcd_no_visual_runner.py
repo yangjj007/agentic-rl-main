@@ -138,7 +138,7 @@ def test_gold_hidden_clrc_sft_repair_uses_stronger_answer_repair_without_oracle(
     assert "DYME_TEACHER_PROBE_PROVIDERS=format_only,visual_facts_deplot" in out
     assert "DYME_TEACHER_CORRECT_REPAIR_MODE=refiner_sft" in out
     assert "DYME_TEACHER_SFT_REPAIR_SCOPE=all_wrong" in out
-    assert "DYME_TEACHER_SFT_REPAIR_SLOTS=2" in out
+    assert "DYME_TEACHER_SFT_REPAIR_SLOTS=4" in out
     assert "DYME_TEACHER_SFT_TARGET_MAX_TOKENS=64" in out
     assert "DYME_TEACHER_SFT_TARGET_STYLE=answer_only" in out
     assert "DYME_TEACHER_SFT_TARGET_CONSTRAINT=chartqa_hint" in out
@@ -147,8 +147,11 @@ def test_gold_hidden_clrc_sft_repair_uses_stronger_answer_repair_without_oracle(
     assert "DYME_TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS=1024" in out
     assert "DYME_TEACHER_TRAJECTORY=0" in out
     assert "DYME_ADAPTIVE_TARGET_READINESS=0.15" in out
-    assert "DYME_ADAPTIVE_OPSD_INITIAL_CAP=4" in out
+    assert "DYME_ADAPTIVE_OPSD_INITIAL_CAP=2" in out
     assert "DYME_ADAPTIVE_OPSD_FINAL_CAP=1" in out
+    assert "DYME_SIGNAL_AWARE_ROUTING=1" in out
+    assert "DYME_DEGENERATE_HARD_OVERRIDE=1" in out
+    assert "DYME_CLIPPED_HARD_OVERRIDE=1" in out
     assert "DYME_EFFECTIVE_SAMPLING=1" in out
     assert "DYME_EFFECTIVE_SAMPLING_MIXED_WEIGHT=6.0" in out
     assert "DYME_OPSD_OVERFLOW_ROUTE=mixed_grpo_all_wrong_skip" in out
