@@ -64,14 +64,17 @@ def test_main5_campaign_defaults_to_refiner_sft_repair_variant_only() -> None:
     assert base_variant not in text
 
 
-def test_main5_campaign_training_active_uses_self_excluding_pgrep_patterns() -> None:
+def test_main5_campaign_training_active_uses_exact_proc_cmdline_matching() -> None:
     script = ROOT / "scripts" / "test" / "run_main5_10epoch_campaign.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert 'pgrep -af "[m]ain.py --config opd_7b_dyme_probe"' in text
-    assert 'pgrep -af "[t]rain_opd_7b_dyme_probe.sh"' in text
-    assert 'pgrep -af "main.py --config opd_7b_dyme_probe"' not in text
-    assert 'pgrep -af "train_opd_7b_dyme_probe.sh"' not in text
+    assert 'Path("/proc").iterdir()' in text
+    assert 'cmdline.split(b"\\0")' in text
+    assert 'b"main.py" in parts' in text
+    assert 'b"opd_7b_dyme_probe" in parts' in text
+    assert "scripts/test/run_pcd_no_visual.sh" in text
+    assert "scripts/train_opd_7b_dyme_probe.sh" in text
+    assert "pgrep -af" not in text
 
 
 def test_main5_campaign_defaults_to_sixty_gb_free_gpu_gate() -> None:

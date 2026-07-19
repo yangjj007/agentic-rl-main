@@ -144,9 +144,45 @@ select_ready_gpus() {
 }
 
 training_active() {
-  pgrep -af "[m]ain.py --config opd_7b_dyme_probe" >/dev/null 2>&1 && return 0
-  pgrep -af "[t]rain_opd_7b_dyme_probe.sh" >/dev/null 2>&1 && return 0
-  return 1
+  "${PYTHON_BIN}" - <<'PY'
+from pathlib import Path
+import os
+import sys
+
+TRAIN_SCRIPTS = (
+    b"scripts/test/run_pcd_no_visual.sh",
+    b"scripts/train_opd_7b_dyme_probe.sh",
+)
+
+
+def _is_script_arg(arg: bytes, suffix: bytes) -> bool:
+    return arg == suffix or arg.endswith(b"/" + suffix)
+
+
+for proc_dir in Path("/proc").iterdir():
+    if not proc_dir.name.isdigit():
+        continue
+    try:
+        cmdline = (proc_dir / "cmdline").read_bytes()
+    except OSError:
+        continue
+    parts = [part for part in cmdline.split(b"\0") if part]
+    if not parts:
+        continue
+    exe = os.path.basename(parts[0])
+    if (
+        exe.startswith(b"python")
+        and b"main.py" in parts
+        and b"--config" in parts
+        and b"opd_7b_dyme_probe" in parts
+    ):
+        raise SystemExit(0)
+    if exe in (b"bash", b"sh") and len(parts) >= 2:
+        if any(_is_script_arg(parts[1], script) for script in TRAIN_SCRIPTS):
+            raise SystemExit(0)
+
+raise SystemExit(1)
+PY
 }
 
 wait_for_gpus() {
