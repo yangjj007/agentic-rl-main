@@ -93,6 +93,7 @@ check_once() {
       | tee -a "${CAMPAIGN_DIR}/health_snapshots.jsonl"
     if [[ "${health_json}" == *'"status": "template_collapse"'* ||
           "${health_json}" == *'"status": "template_drift"'* ||
+          "${health_json}" == *'"status": "clip_sft_collapse"'* ||
           "${health_json}" == *'"status": "mechanism_violation"'* ]]; then
       {
         echo "timestamp=$(timestamp)"

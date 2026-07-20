@@ -15,7 +15,7 @@ TARGET_ACCURACY="${DYME_MAIN5_TARGET_ACCURACY:-0.67}"
 GPU_WAIT_INTERVAL="${DYME_MAIN5_GPU_WAIT_INTERVAL:-300}"
 MODEL_WAIT_INTERVAL="${DYME_MAIN5_MODEL_WAIT_INTERVAL:-600}"
 REQUIRED_GPUS="${DYME_MAIN5_REQUIRED_GPUS:-8}"
-GPU_MAX_USED_MB="${DYME_MAIN5_GPU_MAX_USED_MB:-20000}"
+GPU_MIN_FREE_MB="${DYME_MAIN5_GPU_MIN_FREE_MB:-60000}"
 GPU_MAX_UTIL_PCT="${DYME_MAIN5_GPU_MAX_UTIL_PCT:-20}"
 TRAIN_MAX_ATTEMPTS="${DYME_MAIN5_TRAIN_MAX_ATTEMPTS:-3}"
 TRAIN_RETRY_DELAY="${DYME_MAIN5_TRAIN_RETRY_DELAY:-300}"
@@ -29,6 +29,9 @@ TEACHER_REPO="${DYME_MAIN5_TEACHER_REPO:-llava-hf/llava-onevision-qwen2-7b-ov-hf
 VARIANTS=(
   "deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision_sft_repair"
 )
+if [[ -n "${DYME_MAIN5_VARIANTS:-}" ]]; then
+  IFS="," read -r -a VARIANTS <<< "${DYME_MAIN5_VARIANTS}"
+fi
 
 mkdir -p "${OUT_ROOT}" "${LOG_ROOT}" "${CAMPAIGN_DIR}" "$(dirname "${STUDENT_MODEL}")" "$(dirname "${TEACHER_MODEL}")"
 STATUS_TSV="${CAMPAIGN_DIR}/campaign_status.tsv"
@@ -123,20 +126,20 @@ wait_for_models() {
 
 ready_gpu_indices() {
   local gpu_csv
-  gpu_csv="$(nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true)"
-  GPU_CSV="${gpu_csv}" "${PYTHON_BIN}" - "${GPU_MAX_USED_MB}" "${GPU_MAX_UTIL_PCT}" <<'PY'
+  gpu_csv="$(nvidia-smi --query-gpu=index,memory.free,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true)"
+  GPU_CSV="${gpu_csv}" "${PYTHON_BIN}" - "${GPU_MIN_FREE_MB}" "${GPU_MAX_UTIL_PCT}" <<'PY'
 import os
 import sys
 
-max_used = float(sys.argv[1])
+min_free = float(sys.argv[1])
 max_util = float(sys.argv[2])
 for line in os.environ.get("GPU_CSV", "").splitlines():
     parts = line.rstrip("\n").split(",")
     if len(parts) != 3:
         continue
-    idx, used, util = parts
+    idx, free, util = parts
     try:
-        if float(used.strip()) <= max_used and float(util.strip()) <= max_util:
+        if float(free.strip()) >= min_free and float(util.strip()) <= max_util:
             print(idx.strip())
     except ValueError:
         continue
@@ -199,10 +202,10 @@ wait_for_gpus() {
     free_count="$(free_gpu_count)"
     if [[ "${free_count}" -ge "${REQUIRED_GPUS}" ]] && ! training_active; then
       SELECTED_CUDA_VISIBLE_DEVICES="$(select_ready_gpus)"
-      log "GPU gate passed: free=${free_count}/${REQUIRED_GPUS}, max_used_mb=${GPU_MAX_USED_MB}, max_util_pct=${GPU_MAX_UTIL_PCT}, devices=${SELECTED_CUDA_VISIBLE_DEVICES}"
+      log "GPU gate passed: free=${free_count}/${REQUIRED_GPUS}, min_free_mb=${GPU_MIN_FREE_MB}, max_util_pct=${GPU_MAX_UTIL_PCT}, devices=${SELECTED_CUDA_VISIBLE_DEVICES}"
       return 0
     fi
-    log "waiting for GPUs: free=${free_count}/${REQUIRED_GPUS}, max_used_mb=${GPU_MAX_USED_MB}, max_util_pct=${GPU_MAX_UTIL_PCT}, active_training=$(training_active && echo 1 || echo 0)"
+    log "waiting for GPUs: free=${free_count}/${REQUIRED_GPUS}, min_free_mb=${GPU_MIN_FREE_MB}, max_util_pct=${GPU_MAX_UTIL_PCT}, active_training=$(training_active && echo 1 || echo 0)"
     sleep "${GPU_WAIT_INTERVAL}"
   done
 }

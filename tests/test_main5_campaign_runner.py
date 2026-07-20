@@ -64,6 +64,14 @@ def test_main5_campaign_defaults_to_refiner_sft_repair_variant_only() -> None:
     assert base_variant not in text
 
 
+def test_main5_campaign_allows_variant_override_from_env() -> None:
+    script = ROOT / "scripts" / "test" / "run_main5_10epoch_campaign.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'DYME_MAIN5_VARIANTS' in text
+    assert 'IFS="," read -r -a VARIANTS' in text
+
+
 def test_main5_campaign_training_active_uses_exact_proc_cmdline_matching() -> None:
     script = ROOT / "scripts" / "test" / "run_main5_10epoch_campaign.sh"
     text = script.read_text(encoding="utf-8")
@@ -81,9 +89,9 @@ def test_main5_campaign_defaults_to_sixty_gb_free_gpu_gate() -> None:
     script = ROOT / "scripts" / "test" / "run_main5_10epoch_campaign.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert 'GPU_MAX_USED_MB="${DYME_MAIN5_GPU_MAX_USED_MB:-20000}"' in text
-    assert 'max_used = float(sys.argv[1])' in text
-    assert '"${GPU_MAX_USED_MB}" "${GPU_MAX_UTIL_PCT}"' in text
+    assert 'GPU_MIN_FREE_MB="${DYME_MAIN5_GPU_MIN_FREE_MB:-60000}"' in text
+    assert 'min_free = float(sys.argv[1])' in text
+    assert '"${GPU_MIN_FREE_MB}" "${GPU_MAX_UTIL_PCT}"' in text
 
 
 def test_main5_campaign_gpu_gate_rejects_busy_compute_cards() -> None:
@@ -91,9 +99,10 @@ def test_main5_campaign_gpu_gate_rejects_busy_compute_cards() -> None:
     text = script.read_text(encoding="utf-8")
 
     assert 'GPU_MAX_UTIL_PCT="${DYME_MAIN5_GPU_MAX_UTIL_PCT:-20}"' in text
-    assert "--query-gpu=index,memory.used,utilization.gpu" in text
-    assert "float(used.strip()) <= max_used" in text
+    assert "--query-gpu=index,memory.free,utilization.gpu" in text
+    assert "float(free.strip()) >= min_free" in text
     assert "float(util.strip()) <= max_util" in text
+    assert "min_free_mb=${GPU_MIN_FREE_MB}" in text
     assert "max_util_pct=${GPU_MAX_UTIL_PCT}" in text
 
 
@@ -134,3 +143,10 @@ def test_main5_monitor_allows_expected_sft_repair_route() -> None:
     assert 'health_args=(' in text
     assert 'if [[ "${variant}" == *"sft_repair"* ]]; then' in text
     assert "health_args+=(--allow-teacher-sft-repair)" in text
+
+
+def test_main5_monitor_flags_clip_sft_collapse() -> None:
+    script = ROOT / "scripts" / "test" / "monitor_main5_10epoch_campaign.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert '"status": "clip_sft_collapse"' in text
