@@ -101,7 +101,7 @@ case "${SPEED_PROFILE}" in
     ;;
 esac
 case "${VARIANT}" in
-  deplot_no_vs_opd_pcd|deplot_no_vs_opd_pcd_oracle_hint|deplot_no_vs_opd_pcd_oracle_hint_eval_format_reward|deplot_no_vs_opd_pcd_oracle_hint_late_traj_decay|deplot_no_vs_opd_pcd_oracle_hint_eval_format_late_traj_decay|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_student_style|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_student_hint_short|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling_eval_format|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling_grpo_overflow|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_replay_mix|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay_effective_filter|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay_effective_filter_rl_transition|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_answer_only|deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_diagnostic|deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_gate|deplot_no_vs_opd_pcd_oracle_hint_full_cot_adaptive_supervision|deplot_no_vs_opd_pcd_oracle_hint_opd_no_hard_imitation_adaptive_supervision|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision_sft_repair|deplot_no_vs_opd_pcd_route_guard|deplot_no_vs_opd_pcd_oracle_hint_route_guard|deplot_no_vs_opd_pcd_route_guard_perception_teacher|deplot_no_vs_opd_pcd_route_guard_perception_hint)
+  deplot_no_vs_opd_pcd|deplot_no_vs_opd_pcd_oracle_hint|deplot_no_vs_opd_pcd_oracle_hint_eval_format_reward|deplot_no_vs_opd_pcd_oracle_hint_late_traj_decay|deplot_no_vs_opd_pcd_oracle_hint_eval_format_late_traj_decay|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_student_style|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_student_hint_short|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling_eval_format|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_effective_sampling_grpo_overflow|deplot_no_vs_opd_pcd_oracle_hint_signal_utility_routing|deplot_no_vs_opd_pcd_oracle_hint_mode_stable_utility_routing|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_replay_mix|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay_effective_filter|deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_decay_sampling_rollout_replay_effective_filter_rl_transition|deplot_no_vs_opd_pcd_oracle_hint_teacher_sft_repair_answer_only|deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_diagnostic|deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_gate|deplot_no_vs_opd_pcd_oracle_hint_full_cot_adaptive_supervision|deplot_no_vs_opd_pcd_oracle_hint_opd_no_hard_imitation_adaptive_supervision|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision|deplot_no_vs_opd_pcd_gold_hidden_opd_no_full_hint_hard_sft_adaptive_supervision_sft_repair|deplot_no_vs_opd_pcd_route_guard|deplot_no_vs_opd_pcd_oracle_hint_route_guard|deplot_no_vs_opd_pcd_route_guard_perception_teacher|deplot_no_vs_opd_pcd_route_guard_perception_hint)
     ;;
   *)
     echo "Unknown PCD variant: ${VARIANT}" >&2
@@ -233,6 +233,20 @@ ADAPTIVE_TEACHER_FINAL_WEIGHT="${DYME_ADAPTIVE_TEACHER_FINAL_WEIGHT:-0.0}"
 ADAPTIVE_OPSD_INITIAL_CAP="${DYME_ADAPTIVE_OPSD_INITIAL_CAP:-8}"
 ADAPTIVE_OPSD_FINAL_CAP="${DYME_ADAPTIVE_OPSD_FINAL_CAP:-2}"
 GLOBAL_SIGNAL_LOGGING="${DYME_GLOBAL_SIGNAL_LOGGING:-0}"
+SIGNAL_UTILITY_ROUTING="${DYME_SIGNAL_UTILITY_ROUTING:-0}"
+SIGNAL_UTILITY_REWARD_STD_SCALE="${DYME_SIGNAL_UTILITY_REWARD_STD_SCALE:-0.10}"
+SIGNAL_UTILITY_GRPO_READINESS_WEIGHT="${DYME_SIGNAL_UTILITY_GRPO_READINESS_WEIGHT:-0.70}"
+SIGNAL_UTILITY_OPD_TEACHER_NEED_WEIGHT="${DYME_SIGNAL_UTILITY_OPD_TEACHER_NEED_WEIGHT:-0.60}"
+SIGNAL_UTILITY_OPD_FORMAT_PENALTY="${DYME_SIGNAL_UTILITY_OPD_FORMAT_PENALTY:-1.00}"
+SIGNAL_UTILITY_SFT_FORMAT_BAD_BONUS="${DYME_SIGNAL_UTILITY_SFT_FORMAT_BAD_BONUS:-1.10}"
+SIGNAL_UTILITY_SFT_CLIPPED_BONUS="${DYME_SIGNAL_UTILITY_SFT_CLIPPED_BONUS:-0.80}"
+SIGNAL_UTILITY_SFT_ALL_WRONG_BONUS="${DYME_SIGNAL_UTILITY_SFT_ALL_WRONG_BONUS:-0.20}"
+SIGNAL_UTILITY_SFT_LOW_SIGNAL_BONUS="${DYME_SIGNAL_UTILITY_SFT_LOW_SIGNAL_BONUS:-0.25}"
+SIGNAL_UTILITY_SKIP_CLIPPED_WITHOUT_TEACHER="${DYME_SIGNAL_UTILITY_SKIP_CLIPPED_WITHOUT_TEACHER:-0}"
+SIGNAL_UTILITY_MODE_STABLE="${DYME_SIGNAL_UTILITY_MODE_STABLE:-0}"
+SIGNAL_UTILITY_EMA_BETA="${DYME_SIGNAL_UTILITY_EMA_BETA:-0.80}"
+SIGNAL_UTILITY_SWITCH_MARGIN="${DYME_SIGNAL_UTILITY_SWITCH_MARGIN:-0.20}"
+SIGNAL_UTILITY_MIN_HOLD_STEPS="${DYME_SIGNAL_UTILITY_MIN_HOLD_STEPS:-2}"
 case "${VARIANT}" in
   deplot_no_vs_opd_pcd_route_guard|deplot_no_vs_opd_pcd_oracle_hint_route_guard|deplot_no_vs_opd_pcd_route_guard_perception_teacher|deplot_no_vs_opd_pcd_route_guard_perception_hint)
     ROUTE_GUARD_ENABLED=1
@@ -358,6 +372,41 @@ if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_oracle_hint_student_hint_short_opd_d
   POSITIVE_REPLAY="${DYME_POSITIVE_REPLAY:-0}"
   ROLLOUT_REPLAY="${DYME_ROLLOUT_REPLAY:-0}"
   DYNAMIC_TRIGGER_MONITOR="${DYME_DYNAMIC_TRIGGER_MONITOR:-1}"
+fi
+if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_oracle_hint_signal_utility_routing" ||
+      "${VARIANT}" == "deplot_no_vs_opd_pcd_oracle_hint_mode_stable_utility_routing" ]]; then
+  TEACHER_PROVIDERS="format_only,visual_facts_deplot,oracle_hint"
+  TEACHER_PROBE_PROMPT_PROFILE="${DYME_TEACHER_PROBE_PROMPT_PROFILE:-chartqa_oracle_hint}"
+  TEACHER_PROBE_MAX_NEW_TOKENS="${DYME_TEACHER_PROBE_MAX_NEW_TOKENS:-320}"
+  TEACHER_TRAJ_MAX_NEW_TOKENS="${DYME_TEACHER_TRAJ_MAX_NEW_TOKENS:-320}"
+  ORACLE_GOLD_SUFFIX_EXPECTED=1
+  TEACHER_TRAJECTORY="${DYME_TEACHER_TRAJECTORY:-0}"
+  TEACHER_CORRECT_REPAIR_MODE="${DYME_TEACHER_CORRECT_REPAIR_MODE:-opd}"
+  TEACHER_SFT_TARGET_STYLE="${DYME_TEACHER_SFT_TARGET_STYLE:-answer_only}"
+  ONLINE_SFT_TARGET_STYLE="${DYME_ONLINE_SFT_TARGET_STYLE:-answer_only}"
+  TEACHER_SFT_TARGET_MAX_TOKENS="${DYME_TEACHER_SFT_TARGET_MAX_TOKENS:-64}"
+  OPSD_WEIGHT_DECAY=0
+  TEACHER_TRAJ_WEIGHT_DECAY=0
+  OPSD_MAX_PER_PROMPT=0
+  SIGNAL_UTILITY_ROUTING="${DYME_SIGNAL_UTILITY_ROUTING:-1}"
+  if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_oracle_hint_mode_stable_utility_routing" ]]; then
+    SIGNAL_UTILITY_MODE_STABLE="${DYME_SIGNAL_UTILITY_MODE_STABLE:-1}"
+  fi
+  ADAPTIVE_SUPERVISION=1
+  ADAPTIVE_READINESS_SOURCE=global_grpo_route
+  ADAPTIVE_TARGET_READINESS="${DYME_ADAPTIVE_TARGET_READINESS:-0.30}"
+  ADAPTIVE_OPSD_INITIAL_WEIGHT="${DYME_ADAPTIVE_OPSD_INITIAL_WEIGHT:-1.5}"
+  ADAPTIVE_OPSD_FINAL_WEIGHT="${DYME_ADAPTIVE_OPSD_FINAL_WEIGHT:-0.5}"
+  ADAPTIVE_TEACHER_INITIAL_WEIGHT=0.0
+  ADAPTIVE_TEACHER_FINAL_WEIGHT=0.0
+  GLOBAL_SIGNAL_LOGGING=1
+  EFFECTIVE_SAMPLING="${DYME_EFFECTIVE_SAMPLING:-1}"
+  PHASE_SCHEDULE_MODE="${DYME_PHASE_SCHEDULE_MODE:-progress}"
+  EVAL_FORMAT_REWARD="${DYME_EVAL_FORMAT_REWARD:-0}"
+  POSITIVE_REPLAY="${DYME_POSITIVE_REPLAY:-0}"
+  ROLLOUT_REPLAY="${DYME_ROLLOUT_REPLAY:-0}"
+  DYNAMIC_TRIGGER_MONITOR="${DYME_DYNAMIC_TRIGGER_MONITOR:-0}"
+  CHART_COT_VERIFY="${DYME_CHART_COT_VERIFY:-0}"
 fi
 if [[ "${VARIANT}" == "deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_diagnostic" || "${VARIANT}" == "deplot_no_vs_opd_pcd_oracle_hint_full_cot_quality_gate" ]]; then
   TEACHER_PROVIDERS="format_only,visual_facts_deplot,oracle_hint"
@@ -549,6 +598,7 @@ echo "SFT cold start: steps=${SFT_COLD_START_STEPS}"
 echo "perception reward: enabled=${PERCEPTION_REWARD} source=${PERCEPTION_REWARD_SOURCE} weight=${PERCEPTION_REWARD_WEIGHT} batch_size=${PERCEPTION_REWARD_BATCH_SIZE} max_new_tokens=${PERCEPTION_REWARD_MAX_NEW_TOKENS}"
 echo "eval-format reward: enabled=${EVAL_FORMAT_REWARD} weight=${EVAL_FORMAT_REWARD_WEIGHT}"
 echo "Chart CoT quality: enabled=${CHART_COT_VERIFY} mode=${CHART_COT_GATE_MODE} require_q3=${CHART_COT_REQUIRE_Q3} log_samples=${CHART_COT_LOG_SAMPLES} max_log_samples=${CHART_COT_MAX_LOG_SAMPLES}"
+echo "signal utility: enabled=${SIGNAL_UTILITY_ROUTING} std_scale=${SIGNAL_UTILITY_REWARD_STD_SCALE} grpo_readiness=${SIGNAL_UTILITY_GRPO_READINESS_WEIGHT} opd_teacher_need=${SIGNAL_UTILITY_OPD_TEACHER_NEED_WEIGHT} opd_format_penalty=${SIGNAL_UTILITY_OPD_FORMAT_PENALTY} sft_format_bad=${SIGNAL_UTILITY_SFT_FORMAT_BAD_BONUS} sft_clipped=${SIGNAL_UTILITY_SFT_CLIPPED_BONUS} sft_all_wrong=${SIGNAL_UTILITY_SFT_ALL_WRONG_BONUS} sft_low_signal=${SIGNAL_UTILITY_SFT_LOW_SIGNAL_BONUS} skip_clipped_without_teacher=${SIGNAL_UTILITY_SKIP_CLIPPED_WITHOUT_TEACHER} mode_stable=${SIGNAL_UTILITY_MODE_STABLE} ema_beta=${SIGNAL_UTILITY_EMA_BETA} switch_margin=${SIGNAL_UTILITY_SWITCH_MARGIN} min_hold_steps=${SIGNAL_UTILITY_MIN_HOLD_STEPS}"
 echo "============================================================"
 
 TRAIN_ENV=(
@@ -645,6 +695,20 @@ TRAIN_ENV=(
   "DYME_ADAPTIVE_OPSD_INITIAL_CAP=${ADAPTIVE_OPSD_INITIAL_CAP}"
   "DYME_ADAPTIVE_OPSD_FINAL_CAP=${ADAPTIVE_OPSD_FINAL_CAP}"
   "DYME_GLOBAL_SIGNAL_LOGGING=${GLOBAL_SIGNAL_LOGGING}"
+  "DYME_SIGNAL_UTILITY_ROUTING=${SIGNAL_UTILITY_ROUTING}"
+  "DYME_SIGNAL_UTILITY_REWARD_STD_SCALE=${SIGNAL_UTILITY_REWARD_STD_SCALE}"
+  "DYME_SIGNAL_UTILITY_GRPO_READINESS_WEIGHT=${SIGNAL_UTILITY_GRPO_READINESS_WEIGHT}"
+  "DYME_SIGNAL_UTILITY_OPD_TEACHER_NEED_WEIGHT=${SIGNAL_UTILITY_OPD_TEACHER_NEED_WEIGHT}"
+  "DYME_SIGNAL_UTILITY_OPD_FORMAT_PENALTY=${SIGNAL_UTILITY_OPD_FORMAT_PENALTY}"
+  "DYME_SIGNAL_UTILITY_SFT_FORMAT_BAD_BONUS=${SIGNAL_UTILITY_SFT_FORMAT_BAD_BONUS}"
+  "DYME_SIGNAL_UTILITY_SFT_CLIPPED_BONUS=${SIGNAL_UTILITY_SFT_CLIPPED_BONUS}"
+  "DYME_SIGNAL_UTILITY_SFT_ALL_WRONG_BONUS=${SIGNAL_UTILITY_SFT_ALL_WRONG_BONUS}"
+  "DYME_SIGNAL_UTILITY_SFT_LOW_SIGNAL_BONUS=${SIGNAL_UTILITY_SFT_LOW_SIGNAL_BONUS}"
+  "DYME_SIGNAL_UTILITY_SKIP_CLIPPED_WITHOUT_TEACHER=${SIGNAL_UTILITY_SKIP_CLIPPED_WITHOUT_TEACHER}"
+  "DYME_SIGNAL_UTILITY_MODE_STABLE=${SIGNAL_UTILITY_MODE_STABLE}"
+  "DYME_SIGNAL_UTILITY_EMA_BETA=${SIGNAL_UTILITY_EMA_BETA}"
+  "DYME_SIGNAL_UTILITY_SWITCH_MARGIN=${SIGNAL_UTILITY_SWITCH_MARGIN}"
+  "DYME_SIGNAL_UTILITY_MIN_HOLD_STEPS=${SIGNAL_UTILITY_MIN_HOLD_STEPS}"
   "DYME_OPSD_VARIANCE_ADAPTIVE=0"
   "DYME_OPSD_ADAPTIVE_STD_TARGET=0.25"
   "DYME_OPSD_ADAPTIVE_MAX_MULT=2.0"

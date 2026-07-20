@@ -113,8 +113,10 @@ from opsd_utils.positive_replay import PositiveReplayBuffer, PositiveReplayConfi
 from opsd_utils.rollout_replay import RolloutReplayBuffer, RolloutReplayConfig, stack_optional_compatible_tensors
 from opsd_utils.signal_aware_routing import (
     CompletionQuality,
+    ModeStableRouteState,
     apply_opd_route_cap,
     apply_signal_aware_routing,
+    apply_signal_utility_routing,
     is_table_spam_completion,
     local_teacher_traj_indices,
 )
@@ -504,6 +506,7 @@ class DyMETrainer(Trainer):
         self._teacher_vocab_checked = False
         self._teacher_probe_preview_logged = False
         self._teacher_sft_repaired_prompt_keys: set[str] = set()
+        self._mode_stable_route_states: dict[str, ModeStableRouteState] = {}
         self._effective_signal_sampler: DynamicSignalRepeatSampler | None = None
         self._positive_replay_buffer: PositiveReplayBuffer | None = None
         self._rollout_replay_buffer: RolloutReplayBuffer | None = None
@@ -1473,6 +1476,60 @@ class DyMETrainer(Trainer):
             "start_progress": float(cap_cfg.get("start_progress", 0.5)),
             "overflow_route": (cap_cfg.get("overflow_route") or "sft").lower(),
         }
+
+    def _signal_utility_routing_config(self) -> dict[str, Any]:
+        cfg = self.opsd_config.get("signal_utility_routing") or {}
+        return {
+            "enabled": bool(cfg.get("enabled", False)),
+            "reward_std_scale": float(cfg.get("reward_std_scale", 0.10) or 0.10),
+            "allow_grpo_on_format_bad": bool(cfg.get("allow_grpo_on_format_bad", False)),
+            "grpo_base": float(cfg.get("grpo_base", 0.05)),
+            "grpo_correct_bonus": float(cfg.get("grpo_correct_bonus", 1.00)),
+            "grpo_mixed_bonus": float(cfg.get("grpo_mixed_bonus", 0.25)),
+            "grpo_signal_weight": float(cfg.get("grpo_signal_weight", 0.40)),
+            "grpo_readiness_weight": float(cfg.get("grpo_readiness_weight", 0.70)),
+            "opd_base": float(cfg.get("opd_base", 0.10)),
+            "opd_teacher_bonus": float(cfg.get("opd_teacher_bonus", 0.45)),
+            "opd_wrong_bonus": float(cfg.get("opd_wrong_bonus", 0.20)),
+            "opd_gap_weight": float(cfg.get("opd_gap_weight", 0.55)),
+            "opd_all_wrong_bonus": float(cfg.get("opd_all_wrong_bonus", 0.20)),
+            "opd_teacher_need_weight": float(cfg.get("opd_teacher_need_weight", 0.60)),
+            "opd_format_penalty": float(cfg.get("opd_format_penalty", 1.00)),
+            "sft_base": float(cfg.get("sft_base", 0.02)),
+            "sft_format_bad_bonus": float(cfg.get("sft_format_bad_bonus", 1.10)),
+            "sft_clipped_bonus": float(cfg.get("sft_clipped_bonus", 0.80)),
+            "sft_all_wrong_bonus": float(cfg.get("sft_all_wrong_bonus", 0.20)),
+            "sft_low_signal_bonus": float(cfg.get("sft_low_signal_bonus", 0.25)),
+            "sft_correct_penalty": float(cfg.get("sft_correct_penalty", 1.00)),
+            "skip_clipped_without_teacher": bool(cfg.get("skip_clipped_without_teacher", False)),
+            "mode_stable_enabled": bool(cfg.get("mode_stable_enabled", False)),
+            "mode_stable_ema_beta": float(cfg.get("mode_stable_ema_beta", 0.80)),
+            "mode_stable_switch_margin": float(cfg.get("mode_stable_switch_margin", 0.20)),
+            "mode_stable_min_hold_steps": int(cfg.get("mode_stable_min_hold_steps", 2)),
+        }
+
+    def _signal_utility_state_keys(self, inputs: list[Any], completion_count: int) -> list[str]:
+        keys: list[str] = []
+        raw_count = len(inputs) if isinstance(inputs, list) else 0
+        expanded_count = max(int(completion_count), 0)
+        for row in range(expanded_count):
+            source_idx = self._source_row_index(row, raw_count, expanded_count)
+            sample = inputs[source_idx] if raw_count and source_idx < raw_count else {}
+            sample_id = None
+            if isinstance(sample, dict):
+                for field in ("source_idx", "idx", "id", "question_id", "qid"):
+                    value = sample.get(field)
+                    if value is not None and str(value).strip():
+                        sample_id = str(value).strip()
+                        break
+                if sample_id is None:
+                    image = str(sample.get("image", source_idx)).strip()
+                    question = str(sample.get("question", "")).strip().replace("\n", " ")
+                    sample_id = f"{image}|{question[:120]}"
+            if sample_id is None:
+                sample_id = str(source_idx)
+            keys.append(f"{sample_id}::slot={row % max(self.num_generations, 1)}")
+        return keys
 
     def _effective_group_filter_config(self) -> EffectiveGroupFilterConfig:
         return EffectiveGroupFilterConfig.from_mapping(self.opsd_config.get("effective_group_filter"))
@@ -2849,6 +2906,7 @@ class DyMETrainer(Trainer):
             "teacher_probe_skipped_budget": 0,
         }
         route_guard_stats = None
+        utility_routing_stats = None
         opd_cap_stats = None
         opsd_debug.log(
             "opsd_router",
@@ -2897,6 +2955,35 @@ class DyMETrainer(Trainer):
             self._perf_metric(mode, "teacher_probe_s", self._perf_elapsed(teacher_probe_start))
             self._perf_metric(mode, "teacher_probe_generate_s", teacher_probe_stats.get("teacher_probe_generate_s", 0.0))
             self._perf_metric(mode, "teacher_probe_candidates", teacher_probe_stats.get("teacher_probe_candidates", 0))
+            route_qualities: list[CompletionQuality] | None = None
+
+            def build_route_qualities() -> list[CompletionQuality]:
+                qualities: list[CompletionQuality] = []
+                for row in range(len(completion_modes)):
+                    eff_len = int(completion_mask[row].sum().item())
+                    ids_eff = completion_ids[row, :eff_len].tolist() if eff_len > 0 else []
+                    text_i = completions[row] if row < len(completions) else ""
+                    no_eos = not bool(is_eos[row].any().item())
+                    clipped = no_eos or (
+                        self.max_completion_length is not None
+                        and eff_len >= int(self.max_completion_length) - 1
+                    )
+                    degenerate = opsd_diagnostics.is_degenerate_completion(
+                        ids_eff,
+                        text_i,
+                        answer_flag=answer_flag,
+                        require_answer_flag=True,
+                    )
+                    qualities.append(
+                        CompletionQuality(
+                            degenerate=degenerate,
+                            clipped=clipped,
+                            force_sft=self._should_force_sft_replace(row, completions, answer_flag),
+                            table_spam=is_table_spam_completion(text_i),
+                        )
+                    )
+                return qualities
+
             cot_quality_cfg = self._chart_cot_quality_gate_config()
             if cot_quality_cfg.enabled:
                 prompt_count = (
@@ -2934,6 +3021,70 @@ class DyMETrainer(Trainer):
                         for idx, trajectory in teacher_trajs.items()
                         if idx in eligible
                     }
+            utility_cfg = self._signal_utility_routing_config()
+            if utility_cfg["enabled"]:
+                if route_qualities is None:
+                    route_qualities = build_route_qualities()
+                teacher_correct_indices = {
+                    idx
+                    for idx, mode_i in enumerate(completion_modes)
+                    if mode_i == MODE_OPSD
+                }
+                student_correct_flags = (
+                    (acc_rewards.reshape(-1) > threshold)
+                    .detach()
+                    .cpu()
+                    .tolist()
+                )
+                readiness_value = 0.0
+                if self._adaptive_supervision_state is not None:
+                    readiness_value = float(
+                        getattr(
+                            self._adaptive_supervision_state,
+                            "mastery",
+                            getattr(self._adaptive_supervision_state, "readiness", 0.0),
+                        )
+                    )
+                stable_state_keys = (
+                    self._signal_utility_state_keys(inputs, len(completion_modes))
+                    if bool(utility_cfg.get("mode_stable_enabled", False))
+                    else None
+                )
+                (
+                    completion_modes,
+                    kept_traj_indices,
+                    utility_routing_stats,
+                ) = apply_signal_utility_routing(
+                    completion_modes=completion_modes,
+                    teacher_traj_indices=set(teacher_trajs.keys()),
+                    teacher_correct_indices=teacher_correct_indices,
+                    student_correct=student_correct_flags,
+                    group_has_correct=group_has_correct_list,
+                    group_reward_std=group_reward_std_list,
+                    qualities=route_qualities,
+                    num_generations=self.num_generations,
+                    readiness=readiness_value,
+                    config=utility_cfg,
+                    state_keys=stable_state_keys,
+                    mode_stable_states=self._mode_stable_route_states,
+                    global_step=global_step,
+                )
+                if utility_routing_stats.updated_stable_states:
+                    self._mode_stable_route_states.update(
+                        utility_routing_stats.updated_stable_states
+                    )
+                teacher_trajs = {
+                    idx: traj
+                    for idx, traj in teacher_trajs.items()
+                    if idx in kept_traj_indices
+                }
+                prompt_modes = [
+                    completion_modes[i * self.num_generations]
+                    for i in range(acc_rewards.shape[0])
+                ]
+                opsd_debug.log_mode_summary(
+                    "opsd_router_post_utility", prompt_modes, completion_modes
+                )
             repair_cfg = self._teacher_correct_repair_config()
             teacher_correct_indices = {
                 idx
@@ -3036,34 +3187,12 @@ class DyMETrainer(Trainer):
                 or gate_cfg.get("clipped_hard_override", False)
             )
             if route_guard_enabled:
-                qualities: list[CompletionQuality] = []
-                for row in range(batch_size):
-                    eff_len = int(completion_mask[row].sum().item())
-                    ids_eff = completion_ids[row, :eff_len].tolist() if eff_len > 0 else []
-                    text_i = completions[row] if row < len(completions) else ""
-                    no_eos = not bool(is_eos[row].any().item())
-                    clipped = no_eos or (
-                        self.max_completion_length is not None
-                        and eff_len >= int(self.max_completion_length) - 1
-                    )
-                    degenerate = opsd_diagnostics.is_degenerate_completion(
-                        ids_eff,
-                        text_i,
-                        answer_flag=answer_flag,
-                        require_answer_flag=True,
-                    )
-                    qualities.append(
-                        CompletionQuality(
-                            degenerate=degenerate,
-                            clipped=clipped,
-                            force_sft=self._should_force_sft_replace(row, completions, answer_flag),
-                            table_spam=is_table_spam_completion(text_i),
-                        )
-                    )
+                if route_qualities is None:
+                    route_qualities = build_route_qualities()
                 completion_modes, kept_traj_indices, route_guard_stats = apply_signal_aware_routing(
                     completion_modes=completion_modes,
                     teacher_traj_indices=set(teacher_trajs.keys()),
-                    qualities=qualities,
+                    qualities=route_qualities,
                     group_reward_std=group_reward_std_list,
                     num_generations=self.num_generations,
                     config=gate_cfg,
@@ -3414,6 +3543,18 @@ class DyMETrainer(Trainer):
             guard_clipped = int(getattr(route_guard_stats, "clipped_hard_overrides", 0) or 0)
             guard_teacher = int(getattr(route_guard_stats, "teacher_correct_overrides", 0) or 0)
             guard_signal_sft = int(getattr(route_guard_stats, "signal_aware_sft", 0) or 0)
+            utility_candidates = int(getattr(utility_routing_stats, "candidate_count", 0) or 0)
+            utility_denom = max(utility_candidates, 1)
+            utility_reroute_grpo = int(getattr(utility_routing_stats, "rerouted_grpo", 0) or 0)
+            utility_reroute_opd = int(getattr(utility_routing_stats, "rerouted_opd", 0) or 0)
+            utility_reroute_sft = int(getattr(utility_routing_stats, "rerouted_sft", 0) or 0)
+            utility_traj_removed = int(getattr(utility_routing_stats, "teacher_traj_removed", 0) or 0)
+            utility_switches = int(getattr(utility_routing_stats, "switches", 0) or 0)
+            utility_blocked_switches = int(getattr(utility_routing_stats, "blocked_switches", 0) or 0)
+            utility_stable_holds = int(getattr(utility_routing_stats, "stable_holds", 0) or 0)
+            utility_invalid_current_switches = int(
+                getattr(utility_routing_stats, "invalid_current_switches", 0) or 0
+            )
             opd_cap_capped = int(getattr(opd_cap_stats, "capped", 0) or 0)
             opd_cap_prompts = int(getattr(opd_cap_stats, "eligible_prompts", 0) or 0)
             opd_cap_kept = int(getattr(opd_cap_stats, "kept_opd", 0) or 0)
@@ -3451,6 +3592,24 @@ class DyMETrainer(Trainer):
                     "clipped_hard_override_rate": guard_clipped / local_routing_n,
                     "teacher_correct_overridden_rate": guard_teacher / local_routing_n,
                     "signal_aware_sft_rate": guard_signal_sft / local_routing_n,
+                    "utility_candidate_rate": utility_candidates / local_routing_n,
+                    "utility_grpo_mean": float(getattr(utility_routing_stats, "grpo_mean", 0.0) or 0.0),
+                    "utility_opd_mean": float(getattr(utility_routing_stats, "opd_mean", 0.0) or 0.0),
+                    "utility_sft_mean": float(getattr(utility_routing_stats, "sft_mean", 0.0) or 0.0),
+                    "utility_margin_mean": float(getattr(utility_routing_stats, "margin_mean", 0.0) or 0.0),
+                    "utility_reroute_grpo_rate": utility_reroute_grpo / utility_denom,
+                    "utility_reroute_opd_rate": utility_reroute_opd / utility_denom,
+                    "utility_reroute_sft_rate": utility_reroute_sft / utility_denom,
+                    "utility_teacher_traj_removed_rate": utility_traj_removed / local_routing_n,
+                    "utility_switch_rate": utility_switches / utility_denom,
+                    "utility_blocked_switch_rate": utility_blocked_switches / utility_denom,
+                    "utility_stable_hold_rate": utility_stable_holds / utility_denom,
+                    "utility_invalid_current_switch_rate": utility_invalid_current_switches / utility_denom,
+                    "utility_switch_gain_mean": float(getattr(utility_routing_stats, "switch_gain_mean", 0.0) or 0.0),
+                    "utility_ema_grpo_mean": float(getattr(utility_routing_stats, "ema_grpo_mean", 0.0) or 0.0),
+                    "utility_ema_opd_mean": float(getattr(utility_routing_stats, "ema_opd_mean", 0.0) or 0.0),
+                    "utility_ema_sft_mean": float(getattr(utility_routing_stats, "ema_sft_mean", 0.0) or 0.0),
+                    "utility_mode_stable_state_count": float(len(getattr(self, "_mode_stable_route_states", {}) or {})),
                     "opd_route_cap_rate": opd_cap_capped / local_routing_n,
                     "opd_route_cap_prompt_rate": opd_cap_prompts / local_prompt_n,
                     "opd_route_cap_kept_rate": opd_cap_kept / local_routing_n,

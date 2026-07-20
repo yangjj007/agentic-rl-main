@@ -8,8 +8,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, MODE_SKIP
 from opsd_utils.signal_aware_routing import (
     CompletionQuality,
+    ModeStableRouteState,
     OpdRouteCapConfig,
     apply_opd_route_cap,
+    SignalUtilityRoutingConfig,
+    apply_signal_utility_routing,
     SignalAwareRoutingConfig,
     apply_signal_aware_routing,
     local_teacher_traj_indices,
@@ -190,3 +193,290 @@ def test_opd_route_cap_skips_all_wrong_overflow() -> None:
     assert stats.rerouted_grpo == 0
     assert stats.skipped == 2
     assert stats.teacher_traj_removed == 2
+
+
+def test_signal_utility_routes_early_all_wrong_teacher_correct_to_opd() -> None:
+    modes, kept_trajs, stats = apply_signal_utility_routing(
+        completion_modes=[MODE_OPSD],
+        teacher_traj_indices={0},
+        student_correct=[False],
+        group_has_correct=[False],
+        group_reward_std=[0.0],
+        qualities=[CompletionQuality()],
+        num_generations=1,
+        readiness=0.0,
+        config=SignalUtilityRoutingConfig(enabled=True),
+    )
+
+    assert modes == [MODE_OPSD]
+    assert kept_trajs == {0}
+    utility = stats.utilities[0]
+    assert utility.opd > utility.grpo
+    assert utility.opd > utility.sft
+    assert stats.routed_opd == 1
+
+
+def test_signal_utility_routes_late_mixed_correct_completion_to_grpo() -> None:
+    modes, kept_trajs, stats = apply_signal_utility_routing(
+        completion_modes=[MODE_GRPO, MODE_OPSD],
+        teacher_traj_indices={1},
+        student_correct=[True, False],
+        group_has_correct=[True],
+        group_reward_std=[0.12],
+        qualities=[CompletionQuality(), CompletionQuality()],
+        num_generations=2,
+        readiness=0.85,
+        config=SignalUtilityRoutingConfig(enabled=True),
+    )
+
+    assert modes[0] == MODE_GRPO
+    assert stats.utilities[0].grpo > stats.utilities[0].opd
+    assert stats.utilities[0].grpo > stats.utilities[0].sft
+    assert stats.routed_grpo >= 1
+
+
+def test_signal_utility_routes_format_bad_teacher_correct_to_sft_and_removes_traj() -> None:
+    modes, kept_trajs, stats = apply_signal_utility_routing(
+        completion_modes=[MODE_OPSD],
+        teacher_traj_indices={0},
+        student_correct=[False],
+        group_has_correct=[False],
+        group_reward_std=[0.0],
+        qualities=[CompletionQuality(degenerate=True)],
+        num_generations=1,
+        readiness=0.0,
+        config=SignalUtilityRoutingConfig(enabled=True),
+    )
+
+    assert modes == [MODE_SFT]
+    assert kept_trajs == set()
+    utility = stats.utilities[0]
+    assert utility.sft > utility.opd
+    assert utility.sft > utility.grpo
+    assert stats.routed_sft == 1
+    assert stats.teacher_traj_removed == 1
+
+
+def test_signal_utility_readiness_increases_grpo_and_decreases_opd_for_same_sample() -> None:
+    low_modes, _, low_stats = apply_signal_utility_routing(
+        completion_modes=[MODE_OPSD],
+        teacher_traj_indices={0},
+        student_correct=[False],
+        group_has_correct=[True],
+        group_reward_std=[0.08],
+        qualities=[CompletionQuality()],
+        num_generations=1,
+        readiness=0.05,
+        config=SignalUtilityRoutingConfig(enabled=True),
+    )
+    high_modes, _, high_stats = apply_signal_utility_routing(
+        completion_modes=[MODE_OPSD],
+        teacher_traj_indices={0},
+        student_correct=[False],
+        group_has_correct=[True],
+        group_reward_std=[0.08],
+        qualities=[CompletionQuality()],
+        num_generations=1,
+        readiness=0.85,
+        config=SignalUtilityRoutingConfig(enabled=True),
+    )
+
+    assert low_modes == [MODE_OPSD]
+    assert high_modes == [MODE_GRPO]
+    assert high_stats.utilities[0].grpo > low_stats.utilities[0].grpo
+    assert high_stats.utilities[0].opd < low_stats.utilities[0].opd
+
+
+def test_signal_utility_reward_std_increases_grpo_utility() -> None:
+    _, _, low_stats = apply_signal_utility_routing(
+        completion_modes=[MODE_OPSD],
+        teacher_traj_indices={0},
+        student_correct=[False],
+        group_has_correct=[True],
+        group_reward_std=[0.0],
+        qualities=[CompletionQuality()],
+        num_generations=1,
+        readiness=0.5,
+        config=SignalUtilityRoutingConfig(enabled=True),
+    )
+    _, _, high_stats = apply_signal_utility_routing(
+        completion_modes=[MODE_OPSD],
+        teacher_traj_indices={0},
+        student_correct=[False],
+        group_has_correct=[True],
+        group_reward_std=[0.12],
+        qualities=[CompletionQuality()],
+        num_generations=1,
+        readiness=0.5,
+        config=SignalUtilityRoutingConfig(enabled=True),
+    )
+
+    assert high_stats.utilities[0].grpo > low_stats.utilities[0].grpo
+    assert high_stats.utilities[0].sft < low_stats.utilities[0].sft
+
+
+def test_signal_utility_logs_raw_utilities_without_invalid_mask_sentinels() -> None:
+    _, _, stats = apply_signal_utility_routing(
+        completion_modes=[MODE_GRPO, MODE_OPSD],
+        teacher_traj_indices={1},
+        student_correct=[True, False],
+        group_has_correct=[True],
+        group_reward_std=[0.12],
+        qualities=[CompletionQuality(), CompletionQuality()],
+        num_generations=2,
+        readiness=0.85,
+        config=SignalUtilityRoutingConfig(enabled=True),
+    )
+
+    assert stats.grpo_mean > -10.0
+    assert stats.opd_mean > -10.0
+    assert stats.sft_mean > -10.0
+    assert 0.0 <= stats.margin_mean < 10.0
+
+
+def test_signal_utility_margin_is_zero_when_only_one_route_is_valid() -> None:
+    _, _, stats = apply_signal_utility_routing(
+        completion_modes=[MODE_GRPO],
+        teacher_traj_indices=set(),
+        student_correct=[True],
+        group_has_correct=[True],
+        group_reward_std=[0.12],
+        qualities=[CompletionQuality(degenerate=True)],
+        num_generations=1,
+        readiness=0.5,
+        config=SignalUtilityRoutingConfig(enabled=True),
+    )
+
+    assert stats.margin_mean == 0.0
+
+
+def test_signal_utility_skips_clipped_completion_without_teacher_when_enabled() -> None:
+    modes, kept_trajs, stats = apply_signal_utility_routing(
+        completion_modes=[MODE_SFT],
+        teacher_traj_indices=set(),
+        teacher_correct_indices=set(),
+        student_correct=[False],
+        group_has_correct=[False],
+        group_reward_std=[0.0],
+        qualities=[CompletionQuality(clipped=True)],
+        num_generations=1,
+        readiness=0.5,
+        config=SignalUtilityRoutingConfig(
+            enabled=True,
+            skip_clipped_without_teacher=True,
+        ),
+    )
+
+    assert modes == [MODE_SKIP]
+    assert kept_trajs == set()
+    assert stats.routed_skip == 1
+    assert stats.utilities[0].selected == MODE_SKIP
+
+
+def test_mode_stable_utility_keeps_current_route_when_switch_gain_is_small() -> None:
+    modes, kept_trajs, stats = apply_signal_utility_routing(
+        completion_modes=[MODE_OPSD],
+        teacher_traj_indices={0},
+        teacher_correct_indices={0},
+        student_correct=[False],
+        group_has_correct=[True],
+        group_reward_std=[0.12],
+        qualities=[CompletionQuality()],
+        num_generations=1,
+        readiness=0.0,
+        config=SignalUtilityRoutingConfig(
+            enabled=True,
+            mode_stable_enabled=True,
+            mode_stable_ema_beta=1.0,
+            mode_stable_switch_margin=0.20,
+            mode_stable_min_hold_steps=0,
+        ),
+        state_keys=["sample0:0"],
+        mode_stable_states={
+            "sample0:0": ModeStableRouteState(
+                previous_mode=MODE_SFT,
+                utility_ema_grpo=0.0,
+                utility_ema_opd=0.90,
+                utility_ema_sft=0.82,
+                hold_steps=3,
+            )
+        },
+    )
+
+    assert modes == [MODE_SFT]
+    assert kept_trajs == set()
+    assert stats.blocked_switches == 1
+    assert stats.switch_gain_mean < 0.20
+    assert stats.updated_stable_states["sample0:0"].previous_mode == MODE_SFT
+
+
+def test_mode_stable_utility_switches_when_switch_gain_exceeds_margin() -> None:
+    modes, kept_trajs, stats = apply_signal_utility_routing(
+        completion_modes=[MODE_OPSD],
+        teacher_traj_indices={0},
+        teacher_correct_indices={0},
+        student_correct=[False],
+        group_has_correct=[False],
+        group_reward_std=[0.0],
+        qualities=[CompletionQuality()],
+        num_generations=1,
+        readiness=0.0,
+        config=SignalUtilityRoutingConfig(
+            enabled=True,
+            mode_stable_enabled=True,
+            mode_stable_ema_beta=1.0,
+            mode_stable_switch_margin=0.20,
+            mode_stable_min_hold_steps=0,
+        ),
+        state_keys=["sample0:0"],
+        mode_stable_states={
+            "sample0:0": ModeStableRouteState(
+                previous_mode=MODE_SFT,
+                utility_ema_grpo=0.0,
+                utility_ema_opd=1.50,
+                utility_ema_sft=1.00,
+                hold_steps=3,
+            )
+        },
+    )
+
+    assert modes == [MODE_OPSD]
+    assert kept_trajs == {0}
+    assert stats.switches == 1
+    assert stats.updated_stable_states["sample0:0"].previous_mode == MODE_OPSD
+
+
+def test_mode_stable_utility_does_not_keep_invalid_current_route() -> None:
+    modes, kept_trajs, stats = apply_signal_utility_routing(
+        completion_modes=[MODE_GRPO],
+        teacher_traj_indices=set(),
+        teacher_correct_indices=set(),
+        student_correct=[True],
+        group_has_correct=[True],
+        group_reward_std=[0.12],
+        qualities=[CompletionQuality()],
+        num_generations=1,
+        readiness=0.5,
+        config=SignalUtilityRoutingConfig(
+            enabled=True,
+            mode_stable_enabled=True,
+            mode_stable_ema_beta=1.0,
+            mode_stable_switch_margin=100.0,
+            mode_stable_min_hold_steps=10,
+        ),
+        state_keys=["sample0:0"],
+        mode_stable_states={
+            "sample0:0": ModeStableRouteState(
+                previous_mode=MODE_OPSD,
+                utility_ema_grpo=1.00,
+                utility_ema_opd=2.00,
+                utility_ema_sft=0.00,
+                hold_steps=10,
+            )
+        },
+    )
+
+    assert modes == [MODE_GRPO]
+    assert kept_trajs == set()
+    assert stats.invalid_current_switches == 1
+    assert stats.updated_stable_states["sample0:0"].previous_mode == MODE_GRPO

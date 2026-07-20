@@ -99,6 +99,49 @@ def test_opd_no_hard_imitation_variant_disables_trajectory_and_sft_repair(tmp_pa
     assert "DYME_EVAL_FORMAT_REWARD=0" in out
 
 
+def test_signal_utility_routing_variant_exports_utility_router_without_route_cap(tmp_path: Path) -> None:
+    out = _quality_variant_dry_run(
+        tmp_path, "deplot_no_vs_opd_pcd_oracle_hint_signal_utility_routing"
+    )
+
+    assert "DYME_OPSD_PROVIDERS=format_only,visual_facts_deplot,oracle_hint" in out
+    assert "DYME_TEACHER_PROBE_MAX_NEW_TOKENS=320" in out
+    assert "DYME_TEACHER_TRAJECTORY=0" in out
+    assert "DYME_TEACHER_CORRECT_REPAIR_MODE=opd" not in out
+    assert "DYME_ONLINE_SFT_TARGET_STYLE=answer_only" in out
+    assert "DYME_OPSD_MAX_PER_PROMPT=0" in out
+    assert "DYME_SIGNAL_UTILITY_ROUTING=1" in out
+    assert "DYME_SIGNAL_UTILITY_REWARD_STD_SCALE=0.10" in out
+    assert "DYME_SIGNAL_UTILITY_GRPO_READINESS_WEIGHT=0.70" in out
+    assert "DYME_SIGNAL_UTILITY_OPD_TEACHER_NEED_WEIGHT=0.60" in out
+    assert "DYME_SIGNAL_UTILITY_OPD_FORMAT_PENALTY=1.00" in out
+    assert "DYME_SIGNAL_UTILITY_SFT_FORMAT_BAD_BONUS=1.10" in out
+    assert "DYME_SIGNAL_UTILITY_SFT_CLIPPED_BONUS=0.80" in out
+    assert "DYME_SIGNAL_UTILITY_SFT_LOW_SIGNAL_BONUS=0.25" in out
+    assert "DYME_SIGNAL_UTILITY_SKIP_CLIPPED_WITHOUT_TEACHER=0" in out
+    assert "DYME_ADAPTIVE_SUPERVISION=1" in out
+    assert "DYME_ADAPTIVE_READINESS_SOURCE=global_grpo_route" in out
+    assert "DYME_GLOBAL_SIGNAL_LOGGING=1" in out
+    assert "DYME_DYNAMIC_TRIGGER_MONITOR=0" in out
+    assert "oracle gold suffix expected: 1" in out
+
+
+def test_mode_stable_utility_routing_variant_exports_stable_router(tmp_path: Path) -> None:
+    out = _quality_variant_dry_run(
+        tmp_path, "deplot_no_vs_opd_pcd_oracle_hint_mode_stable_utility_routing"
+    )
+
+    assert "DYME_OPSD_PROVIDERS=format_only,visual_facts_deplot,oracle_hint" in out
+    assert "DYME_SIGNAL_UTILITY_ROUTING=1" in out
+    assert "DYME_SIGNAL_UTILITY_MODE_STABLE=1" in out
+    assert "DYME_SIGNAL_UTILITY_EMA_BETA=0.80" in out
+    assert "DYME_SIGNAL_UTILITY_SWITCH_MARGIN=0.20" in out
+    assert "DYME_SIGNAL_UTILITY_MIN_HOLD_STEPS=2" in out
+    assert "DYME_SIGNAL_UTILITY_SKIP_CLIPPED_WITHOUT_TEACHER=0" in out
+    assert "DYME_OPSD_MAX_PER_PROMPT=0" in out
+    assert "DYME_DYNAMIC_TRIGGER_MONITOR=0" in out
+
+
 def test_gold_hidden_clrc_restores_grpo_recovery_defaults(tmp_path: Path) -> None:
     out = _quality_variant_dry_run(
         tmp_path,

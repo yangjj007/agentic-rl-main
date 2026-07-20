@@ -430,6 +430,7 @@ def _log_run_config_summary(
     probe_cfg = opsd_config.get("teacher_probe", {}) or {}
     traj_cfg = opsd_config.get("teacher_trajectory", {}) or {}
     visual_cfg = opsd_config.get("visual_supervision", {}) or {}
+    utility_cfg = opsd_config.get("signal_utility_routing", {}) or {}
     payload = {
         "config": config_path,
         "train_dataset": dataset_config.get("train_dataset"),
@@ -466,6 +467,18 @@ def _log_run_config_summary(
             "refiner_enabled": bool((visual_cfg.get("refiner") or {}).get("enabled", False)),
             "prefetch_ic": bool(visual_cfg.get("prefetch_ic", False)),
             "logging_enabled": bool((visual_cfg.get("logging") or {}).get("enabled", False)),
+        },
+        "signal_utility_routing": {
+            "enabled": bool(utility_cfg.get("enabled", False)),
+            "reward_std_scale": utility_cfg.get("reward_std_scale"),
+            "grpo_readiness_weight": utility_cfg.get("grpo_readiness_weight"),
+            "opd_teacher_need_weight": utility_cfg.get("opd_teacher_need_weight"),
+            "opd_format_penalty": utility_cfg.get("opd_format_penalty"),
+            "sft_format_bad_bonus": utility_cfg.get("sft_format_bad_bonus"),
+            "mode_stable_enabled": utility_cfg.get("mode_stable_enabled"),
+            "mode_stable_ema_beta": utility_cfg.get("mode_stable_ema_beta"),
+            "mode_stable_switch_margin": utility_cfg.get("mode_stable_switch_margin"),
+            "mode_stable_min_hold_steps": utility_cfg.get("mode_stable_min_hold_steps"),
         },
         "hang_debug_env": {
             "DYME_OPSD_HANG_DEBUG": os.environ.get("DYME_OPSD_HANG_DEBUG", "<unset>"),

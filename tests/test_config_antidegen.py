@@ -157,6 +157,34 @@ def test_probe_config_global_signal_logging_env(monkeypatch):
     assert mod.DYME_OPSD_CONFIG["global_signal_logging"] == {"enabled": True}
 
 
+def test_probe_config_signal_utility_routing_env(monkeypatch):
+    import config.config_opd_7b_dyme_probe as probe_mod
+
+    monkeypatch.setenv("DYME_SIGNAL_UTILITY_ROUTING", "1")
+    monkeypatch.setenv("DYME_SIGNAL_UTILITY_REWARD_STD_SCALE", "0.12")
+    monkeypatch.setenv("DYME_SIGNAL_UTILITY_MODE_STABLE", "1")
+    monkeypatch.setenv("DYME_SIGNAL_UTILITY_EMA_BETA", "0.91")
+    monkeypatch.setenv("DYME_SIGNAL_UTILITY_SWITCH_MARGIN", "0.17")
+    monkeypatch.setenv("DYME_SIGNAL_UTILITY_MIN_HOLD_STEPS", "3")
+    monkeypatch.setenv("DYME_SIGNAL_UTILITY_OPD_FORMAT_PENALTY", "1.25")
+    monkeypatch.setenv("DYME_SIGNAL_UTILITY_SFT_FORMAT_BAD_BONUS", "1.35")
+    monkeypatch.setenv("DYME_SIGNAL_UTILITY_SKIP_CLIPPED_WITHOUT_TEACHER", "1")
+    mod = importlib.reload(probe_mod)
+
+    cfg = mod.DYME_OPSD_CONFIG["signal_utility_routing"]
+    assert cfg["enabled"] is True
+    assert cfg["reward_std_scale"] == 0.12
+    assert cfg["grpo_readiness_weight"] == 0.70
+    assert cfg["opd_teacher_need_weight"] == 0.60
+    assert cfg["mode_stable_enabled"] is True
+    assert cfg["mode_stable_ema_beta"] == 0.91
+    assert cfg["mode_stable_switch_margin"] == 0.17
+    assert cfg["mode_stable_min_hold_steps"] == 3
+    assert cfg["opd_format_penalty"] == 1.25
+    assert cfg["sft_format_bad_bonus"] == 1.35
+    assert cfg["skip_clipped_without_teacher"] is True
+
+
 def test_probe_config_chart_cot_quality_gate_env(monkeypatch):
     import config.config_opd_7b_dyme_probe as probe_mod
 
