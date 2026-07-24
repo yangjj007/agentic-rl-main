@@ -92,6 +92,14 @@ def _ic_stats(ic_obj: Optional[dict], ic_text: str) -> dict[str, Any]:
     }
 
 
+def _has_image(image: Any) -> bool:
+    if image is None:
+        return False
+    if isinstance(image, str) and not image.strip():
+        return False
+    return True
+
+
 def extract_visual_facts_teacher(
     *,
     teacher_model,
@@ -127,21 +135,38 @@ def extract_visual_facts_teacher(
             recorder.record_ic(**meta)
         return ic_text, meta
 
-    if ic_source in ("auto", "teacher_image"):
-        ic_text, fb = _ic_text_from_sample(sample)
-        if ic_text:
-            meta.update(_ic_stats(None, ic_text))
-            meta.update(parse_ok=True, ic_source=f"offline_{fb}", ic_preview=ic_text[:400])
-            if cache is not None:
-                cache[cache_key] = ic_text
-            if recorder is not None:
-                recorder.record_ic(**meta)
-            return ic_text, meta
-
-    if ic_source == "auto" or teacher_model is None or processor is None:
+    if ic_source in ("offline", "sample", "deplot", "offline_deplot"):
         ic_text, fb = _ic_text_from_sample(sample)
         meta.update(_ic_stats(None, ic_text))
-        meta.update(parse_ok=bool(ic_text), fallback=fb, error="teacher_unavailable")
+        meta.update(parse_ok=bool(ic_text), ic_source=f"offline_{fb}", ic_preview=ic_text[:400])
+        if ic_text and cache is not None:
+            cache[cache_key] = ic_text
+        if recorder is not None:
+            recorder.record_ic(**meta)
+        return ic_text, meta
+
+    if teacher_model is None or processor is None:
+        ic_text, fb = _ic_text_from_sample(sample)
+        meta.update(_ic_stats(None, ic_text))
+        meta.update(
+            parse_ok=bool(ic_text),
+            ic_source=f"offline_{fb}",
+            fallback=fb,
+            error="teacher_unavailable",
+        )
+        if recorder is not None:
+            recorder.record_ic(**meta)
+        return ic_text, meta
+
+    if not _has_image(image):
+        ic_text, fb = _ic_text_from_sample(sample)
+        meta.update(_ic_stats(None, ic_text))
+        meta.update(
+            parse_ok=bool(ic_text),
+            ic_source=f"offline_{fb}",
+            fallback=fb,
+            error="image_missing",
+        )
         if recorder is not None:
             recorder.record_ic(**meta)
         return ic_text, meta
@@ -165,6 +190,7 @@ def extract_visual_facts_teacher(
             meta.update(_ic_stats(ic_obj, ic_text))
             meta.update(
                 parse_ok=True,
+                ic_source="teacher_image",
                 latency_ms=round(latency_ms, 1),
                 ic_preview=ic_text[:400],
                 raw_teacher_output=output[:200],
@@ -176,6 +202,7 @@ def extract_visual_facts_teacher(
             meta.update(_ic_stats(ic_obj, ic_text))
             meta.update(
                 parse_ok=False,
+                ic_source=f"offline_{fb}" if ic_text else ic_source,
                 error=err,
                 fallback=fb,
                 latency_ms=round(latency_ms, 1),
@@ -184,7 +211,12 @@ def extract_visual_facts_teacher(
     except Exception as exc:
         ic_text, fb = _ic_text_from_sample(sample)
         meta.update(_ic_stats(None, ic_text))
-        meta.update(parse_ok=False, error=str(exc)[:120], fallback=fb)
+        meta.update(
+            parse_ok=False,
+            ic_source=f"offline_{fb}" if ic_text else ic_source,
+            error=str(exc)[:120],
+            fallback=fb,
+        )
 
     if recorder is not None:
         recorder.record_ic(**meta)

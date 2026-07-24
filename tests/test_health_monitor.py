@@ -6,6 +6,7 @@ from opsd_utils.health_monitor import (
     ALERT_TEMPLATE_PARTIAL_DRIFT,
     ALERT_TEMPLATE_ANSWER_COLLAPSE,
     ALERT_TEMPLATE_SKELETON_COLLAPSE,
+    ALERT_VISUAL_IC_FAIL_HIGH,
     TrainingHealthMonitor,
 )
 
@@ -136,6 +137,17 @@ def test_finish_step_returns_metrics_keys():
     metrics = hm.finish_step(1)
     assert "completions/degenerate_rate" in metrics
     assert "health/alert_count" in metrics
+
+
+def test_visual_ic_alert_is_skipped_when_image_primary_checker_does_not_extract_ic():
+    hm = TrainingHealthMonitor({"enabled": True, "log_alerts_immediately": False})
+    hm.reset_step(1)
+    hm.record_visual(1, {"visual/ic_ok_rate": 0.0, "visual/ic_calls": 0.0})
+    assert ALERT_VISUAL_IC_FAIL_HIGH not in hm._step_alerts
+
+    hm.reset_step(2)
+    hm.record_visual(2, {"visual/ic_ok_rate": 0.0, "visual/ic_calls": 1.0})
+    assert ALERT_VISUAL_IC_FAIL_HIGH in hm._step_alerts
 
 
 def test_finish_step_returns_teacher_probe_diagnostic_metrics():

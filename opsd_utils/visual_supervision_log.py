@@ -53,7 +53,7 @@ def _prefix(tag: str) -> str:
 
 
 def _fmt_preview(text: Any, max_len: int) -> str:
-    s = str(text or "").replace("\n", "\\n")
+    s = ("" if text is None else str(text)).replace("\n", "\\n")
     if len(s) > max_len:
         return s[: max_len - 3] + "..."
     return s
@@ -90,6 +90,9 @@ class VisualBatchRecorder:
     checker_low: int = 0
     checker_skipped_no_thinking: int = 0
     checker_local_fallback: int = 0
+    checker_image_missing: int = 0
+    checker_aux_evidence_used: int = 0
+    checker_parse_failure: int = 0
     refiner_changed: int = 0
     refiner_unchanged: int = 0
     refiner_in_lens: list[int] = field(default_factory=list)
@@ -156,6 +159,12 @@ class VisualBatchRecorder:
             self.checker_skipped_no_thinking += 1
         if fields.get("local_fallback"):
             self.checker_local_fallback += 1
+        if fields.get("image_missing"):
+            self.checker_image_missing += 1
+        if fields.get("aux_evidence_used"):
+            self.checker_aux_evidence_used += 1
+        if fields.get("parse_failure"):
+            self.checker_parse_failure += 1
         n = _sample_count(self.log_cfg)
         idx = int(fields.get("sample_idx", 0))
         show = idx < n or fields.get("force_log")
@@ -193,10 +202,11 @@ class VisualBatchRecorder:
     def record_route(self, **fields: Any) -> None:
         if not self.log_cfg.get("log_route_binding", True):
             return
-        if not opsd_debug.should_log_detail(self.global_step):
-            return
         self.route_bindings.append(fields)
-        log_visual("VISUAL-ROUTE", f"sample[{fields.get('sample_idx')}]", cfg=self.log_cfg, **fields)
+        if opsd_debug.should_log_detail(self.global_step):
+            log_visual("VISUAL-ROUTE", f"sample[{fields.get('sample_idx')}]", cfg=self.log_cfg, **fields)
+        if _save_artifacts(self.log_cfg):
+            self.artifacts.append({"kind": "route", **fields})
 
     def finish(self) -> dict[str, Any]:
         n_ic = self.ic_ok + self.ic_fail
@@ -230,6 +240,9 @@ class VisualBatchRecorder:
             low=self.checker_low,
             skipped_no_thinking=self.checker_skipped_no_thinking,
             local_fallback=self.checker_local_fallback,
+            image_missing=self.checker_image_missing,
+            aux_evidence_used=self.checker_aux_evidence_used,
+            parse_failure=self.checker_parse_failure,
         )
         log_visual(
             "VISUAL-REFINER",
@@ -254,6 +267,9 @@ class VisualBatchRecorder:
             "visual/refiner_mean_delta_len": mean_delta,
             "visual/pool_updates": float(self.pool_updates),
             "visual/fallback_checker": float(self.checker_local_fallback),
+            "visual/checker_image_missing": float(self.checker_image_missing),
+            "visual/checker_aux_evidence_used": float(self.checker_aux_evidence_used),
+            "visual/checker_parse_failure": float(self.checker_parse_failure),
             "visual/fallback_refiner": float(self.refiner_fallback),
             "visual/ic_latency_ms": round(self.ic_latency_ms, 1),
             "visual/checker_latency_ms": round(self.checker_latency_ms, 1),

@@ -2,6 +2,7 @@
 
 import os
 import sys
+import inspect
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -78,6 +79,23 @@ def test_trimode_per_completion_skips_wrong_format_even_if_correct():
     }
     modes = route_completion_modes(acc, 2, 2, cfg, [True], format_rewards=fmt)
     assert modes == [MODE_SFT, MODE_OPSD]
+
+
+def test_teacher_probe_route_has_no_context_reward_input():
+    acc = torch.tensor([[1.0, 0.0, 0.0]])
+    fmt = torch.tensor([[1.0, 1.0, 1.0]])
+    cfg = {
+        "enabled": True,
+        "mode": "dyme_teacher_probe_opd",
+        "gate": {
+            "correct_threshold": 0.5,
+            "per_completion_opsd": True,
+            "require_format_for_opsd": True,
+        },
+    }
+    modes = route_completion_modes(acc, 3, 3, cfg, [True], format_rewards=fmt)
+    assert modes == [MODE_GRPO, MODE_OPSD, MODE_OPSD]
+    assert "context_rewards" not in inspect.signature(route_completion_modes).parameters
 
 
 if __name__ == "__main__":

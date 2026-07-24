@@ -231,7 +231,9 @@ class TrainingHealthMonitor:
             return
         self._step_fields.update(fields)
         ic_ok_rate = _safe_float(fields.get("visual/ic_ok_rate"), default=1.0)
-        if ic_ok_rate < 0.8:
+        ic_calls = _safe_float(fields.get("visual/ic_calls"), default=0.0)
+        ic_fail_count = _safe_float(fields.get("visual/ic_fail_count"), default=0.0)
+        if (ic_calls > 0.0 or ic_fail_count > 0.0) and ic_ok_rate < 0.8:
             self._emit_alert(
                 step,
                 ALERT_VISUAL_IC_FAIL_HIGH,

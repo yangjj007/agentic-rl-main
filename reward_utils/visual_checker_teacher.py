@@ -1,6 +1,7 @@
 """7B teacher Visual Checker for thinking reward."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -14,7 +15,111 @@ from reward_utils.teacher_generate import (
     teacher_generate_one,
 )
 from reward_utils.visual_batch_ops import prefetch_ic_unique
-from reward_utils.visual_ic import extract_visual_facts_teacher
+from reward_utils.visual_ic import extract_visual_facts_teacher, ic_text_from_offline_sample
+
+
+def build_image_primary_checker_prompt(
+    *,
+    question: str,
+    answer: str,
+    reasoning: str,
+    aux_evidence: str = "",
+    aux_mode: str = "none",
+    has_answer_flag: Optional[bool] = None,
+) -> str:
+    """Build the strict image-grounded checker prompt.
+
+    The chart image is passed separately through the multimodal teacher request.
+    Any textual extraction is opt-in and explicitly marked as noisy.
+    """
+    prompt = f"""You are a strict chart reasoning judge. The attached chart image is the only authoritative visual source.
+Judge whether the student's reasoning is grounded in the image and supports the reference answer.
+Return exactly one token: high, medium, or low. No explanation.
+
+Question:
+{question}
+
+Reference answer:
+{answer}
+
+Required final answer marker present:
+{"unknown" if has_answer_flag is None else ("yes" if has_answer_flag else "no")}
+
+Student reasoning:
+{reasoning}
+"""
+    if aux_mode == "deplot_noisy" and aux_evidence:
+        prompt += f"""
+Optional noisy extracted text:
+{aux_evidence}
+
+This text may be incomplete or wrong. Ignore it whenever it conflicts with the image.
+"""
+    prompt += """
+Rubric:
+high = A complete reasoning chain uses visible chart evidence, cites or compares the relevant values/categories correctly, and explicitly supports the reference answer. Do not use high for terse answer fragments.
+medium = The reasoning is mostly grounded in the image and supports the answer, but evidence is incomplete, vague, partially checked, or missing the required final answer marker.
+low = The reasoning does not use visible chart evidence, fabricates or misreads chart data, is logically inconsistent with the answer, is empty, lacks a clear reasoning chain, or only repeats/guesses an answer fragment.
+
+Return one token only.
+"""
+    return prompt
+
+
+_ANSWER_FRAGMENT_WORD_LIMIT = 10
+_REASONING_MARKERS = (
+    "because",
+    "therefore",
+    "reason",
+    "shows",
+    "shown",
+    "chart",
+    "graph",
+    "compare",
+    "compared",
+    "higher",
+    "lower",
+    "largest",
+    "smallest",
+    "highest",
+    "lowest",
+    "increase",
+    "decrease",
+    "difference",
+    "sum",
+    "total",
+    "average",
+    "mode",
+)
+
+
+def _looks_like_answer_fragment(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    low = stripped.lower()
+    words = re.findall(r"[a-zA-Z0-9]+", low)
+    if len(words) > _ANSWER_FRAGMENT_WORD_LIMIT:
+        return False
+    if any(marker in low for marker in _REASONING_MARKERS):
+        return False
+    return True
+
+
+def _postprocess_checker_label(
+    *,
+    score: float,
+    label: str,
+    reasoning: str,
+    has_answer_flag: bool,
+) -> tuple[float, str, str]:
+    if _looks_like_answer_fragment(reasoning):
+        if score > 0.0 or label != "low":
+            return 0.0, "low", "answer_fragment"
+        return score, label, ""
+    if not has_answer_flag and score > 0.5:
+        return 0.5, "medium", "missing_answer_flag_high_cap"
+    return score, label, ""
 
 
 def _score_from_label(text: str) -> tuple[float, str]:
@@ -25,7 +130,15 @@ def _score_from_label(text: str) -> tuple[float, str]:
         return 0.5, "medium"
     if "low" in low:
         return 0.0, "low"
-    return 0.0, "low"
+    return 0.0, "unknown"
+
+
+def _has_image(image: Any) -> bool:
+    if image is None:
+        return False
+    if isinstance(image, str) and not image.strip():
+        return False
+    return True
 
 
 def _chart_system_prompt() -> str:
@@ -67,6 +180,10 @@ class TeacherVisualChecker(RewardCalculatorLocal):
         checker_cfg = self.visual_config.get("checker", {})
         self._enabled = bool(checker_cfg.get("enabled", True))
         self._max_per_batch = int(checker_cfg.get("max_per_batch", 0) or 0)
+        self._grounding = str(checker_cfg.get("grounding", "image_primary") or "image_primary").lower()
+        self._aux_evidence_mode = str(
+            checker_cfg.get("aux_evidence", checker_cfg.get("aux", "none")) or "none"
+        ).lower()
         self._ic_source = self.visual_config.get("ic_source", "teacher_image")
         self._max_ic_tokens = int(checker_cfg.get("max_ic_tokens", 768))
         self._max_score_tokens = int(checker_cfg.get("max_score_tokens", 16))
@@ -89,6 +206,12 @@ class TeacherVisualChecker(RewardCalculatorLocal):
         self._teacher_budget_used = 0
         self._prefetch_ic = bool(self.visual_config.get("prefetch_ic", True))
         self._thinking_score_cache: dict[int, float] = {}
+
+    def _uses_legacy_ic_prompt(self) -> bool:
+        return self._grounding in ("ic_text", "legacy_ic", "text")
+
+    def _uses_aux_evidence(self) -> bool:
+        return self._aux_evidence_mode == "deplot_noisy"
 
     def bind_teacher(self, teacher_model, processor) -> None:
         self._teacher_model = teacher_model
@@ -115,7 +238,7 @@ class TeacherVisualChecker(RewardCalculatorLocal):
         self._ic_cache = {}
         self._teacher_budget_used = 0
         self._thinking_score_cache = {}
-        if self._prefetch_ic:
+        if self._prefetch_ic and (self._uses_legacy_ic_prompt() or self._uses_aux_evidence()):
             prefetch_ic_unique(
                 teacher_model=self._teacher_model,
                 processor=self._processor,
@@ -198,6 +321,7 @@ class TeacherVisualChecker(RewardCalculatorLocal):
     ) -> dict[int, float]:
         if not jobs or "chart" not in task:
             return {}
+        scores: dict[int, float] = {}
         requests: list[TeacherGenerateRequest] = []
         job_meta: list[_CheckerJob] = []
         ic_texts: list[str] = []
@@ -205,19 +329,49 @@ class TeacherVisualChecker(RewardCalculatorLocal):
             sample = self._batch_samples[job.sample_idx] if job.sample_idx < len(self._batch_samples) else {}
             image = self._batch_images[job.sample_idx] if job.sample_idx < len(self._batch_images) else None
             q_wo = self._batch_questions[job.sample_idx] if job.sample_idx < len(self._batch_questions) else job.question
-            ic_text, _ = extract_visual_facts_teacher(
-                teacher_model=self._teacher_model,
-                processor=self._processor,
-                sample=sample,
-                question=q_wo,
-                image=image,
-                ic_source=self._ic_source,
-                max_new_tokens=self._max_ic_tokens,
-                cache=self._ic_cache,
-                recorder=self._recorder,
-                sample_idx=job.sample_idx,
-            )
-            eval_prompt = prompt_thinking_reward % (ic_text, q_wo, job.answer, job.thinking_part)
+            ic_text = ""
+            aux_evidence = ""
+            aux_used = False
+            if self._uses_legacy_ic_prompt():
+                ic_text, _ = extract_visual_facts_teacher(
+                    teacher_model=self._teacher_model,
+                    processor=self._processor,
+                    sample=sample,
+                    question=q_wo,
+                    image=image,
+                    ic_source=self._ic_source,
+                    max_new_tokens=self._max_ic_tokens,
+                    cache=self._ic_cache,
+                    recorder=self._recorder,
+                    sample_idx=job.sample_idx,
+                )
+                eval_prompt = prompt_thinking_reward % (ic_text, q_wo, job.answer, job.thinking_part)
+            else:
+                if not _has_image(image):
+                    if self._recorder is not None:
+                        self._recorder.record_checker(
+                            sample_idx=job.sample_idx,
+                            score=0.0,
+                            label="image_missing",
+                            thinking_len=len(job.thinking_part),
+                            has_answer_flag=job.has_answer_flag,
+                            thinking_preview=job.thinking_part[:400],
+                            image_missing=True,
+                            fallback_reason="checker_image_missing",
+                        )
+                    scores[job.sample_idx] = 0.0
+                    continue
+                if self._uses_aux_evidence():
+                    aux_evidence, _ = ic_text_from_offline_sample(sample)
+                    aux_used = bool(aux_evidence)
+                eval_prompt = build_image_primary_checker_prompt(
+                    question=q_wo,
+                    answer=job.answer,
+                    reasoning=job.thinking_part,
+                    aux_evidence=aux_evidence,
+                    aux_mode=self._aux_evidence_mode,
+                    has_answer_flag=job.has_answer_flag,
+                )
             requests.append(
                 TeacherGenerateRequest(
                     prompt_text=eval_prompt,
@@ -228,7 +382,12 @@ class TeacherVisualChecker(RewardCalculatorLocal):
             )
             job_meta.append(job)
             ic_texts.append(ic_text)
+            job.aux_used = aux_used  # type: ignore[attr-defined]
             self._teacher_budget_used += 1
+
+        if not requests:
+            self._thinking_score_cache.update(scores)
+            return scores
 
         raw_outputs, _ = teacher_generate_batched_chunks(
             self._teacher_model,
@@ -239,10 +398,16 @@ class TeacherVisualChecker(RewardCalculatorLocal):
             timing_kind="checker",
         )
 
-        scores: dict[int, float] = {}
         for job, raw_out, ic_text in zip(job_meta, raw_outputs, ic_texts):
             try:
                 score, label = _score_from_label(raw_out)
+                parse_failure = label == "unknown"
+                score, label, postprocess_reason = _postprocess_checker_label(
+                    score=score,
+                    label=label,
+                    reasoning=job.thinking_part,
+                    has_answer_flag=job.has_answer_flag,
+                )
                 template_extract_attempted = False
                 if score >= 1.0:
                     template_extract_attempted = True
@@ -281,7 +446,11 @@ class TeacherVisualChecker(RewardCalculatorLocal):
                         has_answer_flag=job.has_answer_flag,
                         thinking_preview=job.thinking_part[:400],
                         ic_chars=len(ic_text),
+                        grounding=self._grounding,
+                        aux_evidence_used=bool(getattr(job, "aux_used", False)),
+                        parse_failure=parse_failure,
                         raw_teacher_output=raw_out,
+                        postprocess_reason=postprocess_reason,
                         template_extract_attempted=template_extract_attempted,
                     )
                 scores[job.sample_idx] = score

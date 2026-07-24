@@ -1,6 +1,18 @@
 import concurrent.futures
+import math
 from typing import List, Dict, Any, Optional
 from .checker import RewardCalculator
+
+
+def _safe_reward(value: Any, default: float = 0.0) -> float:
+    try:
+        reward = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(reward):
+        return default
+    return reward
+
 
 def split_initial_context(text: str):
     text = text.lower()
@@ -75,10 +87,18 @@ def calculate_rewards_in_parallel(
         # The '*' operator unpacks each tuple from task_args into positional arguments
         # for the get_acc_reward function.
 
-        format_rewards = list(executor.map(lambda r: checker.get_format_reward(r, task=task), responses))
-        answer_rewards = list(executor.map(lambda args: checker.get_answer_reward(*args), task_answer_args))
-        thinking_rewards = list(executor.map(
-            lambda args: checker.get_thinking_reward_prompt(*args), task_thinking_args))
+        format_rewards = [
+            _safe_reward(v)
+            for v in executor.map(lambda r: checker.get_format_reward(r, task=task), responses)
+        ]
+        answer_rewards = [
+            _safe_reward(v)
+            for v in executor.map(lambda args: checker.get_answer_reward(*args), task_answer_args)
+        ]
+        thinking_rewards = [
+            _safe_reward(v)
+            for v in executor.map(lambda args: checker.get_thinking_reward_prompt(*args), task_thinking_args)
+        ]
 
         rewards = [0 if f == 0 else f + a + t for f, a, t in zip(format_rewards, answer_rewards, thinking_rewards)]
 
@@ -116,17 +136,19 @@ def calculate_rewards_sequential(
 
     for i in range(num_samples):
         checker._current_sample_idx = i  # noqa: SLF001 — teacher checker batch context
-        format_rewards.append(checker.get_format_reward(responses[i], task=task))
+        format_rewards.append(_safe_reward(checker.get_format_reward(responses[i], task=task)))
         answer_rewards.append(
-            checker.get_answer_reward(predictions[i], in_answers[i], task)
+            _safe_reward(checker.get_answer_reward(predictions[i], in_answers[i], task))
         )
         cache = getattr(checker, "_thinking_score_cache", None)
         if cache is not None and i in cache:
-            thinking_rewards.append(cache[i])
+            thinking_rewards.append(_safe_reward(cache[i]))
         else:
             thinking_rewards.append(
-                checker.get_thinking_reward_prompt(
-                    responses[i], prompts[i], answers[i], hints[i], task
+                _safe_reward(
+                    checker.get_thinking_reward_prompt(
+                        responses[i], prompts[i], answers[i], hints[i], task
+                    )
                 )
             )
 

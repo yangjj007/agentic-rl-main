@@ -86,7 +86,7 @@ class ContextRefiner:
                 raise ValueError(f"Task '{task}' not supported for thinking reward.")
         except Exception as e:
             print(f"An error occurred during thinking reward prompt generation: {e}")
-            return None
+            return hint
 
 
 class ContextRefinerLocal:

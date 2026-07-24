@@ -23,6 +23,8 @@ def build_visual_supervision_config() -> dict:
         "checker": {
             "enabled": VISUAL_CHECKER_ENABLED,
             "model_source": "loaded_teacher",
+            "grounding": env_str("DYME_VISUAL_CHECKER_GROUNDING", "image_primary"),
+            "aux_evidence": env_str("DYME_VISUAL_CHECKER_AUX", "none"),
             "max_per_batch": env_int("DYME_VISUAL_CHECKER_MAX_PER_BATCH", 0),
             "max_ic_tokens": max_ic_tokens,
             "fallback": "local",

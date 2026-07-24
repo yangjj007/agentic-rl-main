@@ -3251,7 +3251,6 @@ class DyMETrainer(Trainer):
             (h or "").strip() != (o or "").strip()
             for h, o in zip(hints, hints_before_refine)
         ]
-        visual_batch_stats = self._finish_visual_supervision_batch(global_step)
         opsd_debug.log("refine", "context refinement finished", num_hints=len(hints))
 
         sft_gt = self._build_online_sft_targets(hints, answers, inputs)
@@ -3407,9 +3406,13 @@ class DyMETrainer(Trainer):
                     sample_idx=i,
                     route=route_name,
                     checker_score=float(context_rewards_flat[i].item()),
+                    answer_reward=float(acc_rewards_flat[i].item()),
+                    format_reward=float(format_rewards_flat[i].item()),
                     refiner_changed=hint_changed[i] if i < len(hint_changed) else False,
                     consumed_refined_hint=bool(sft_replaced and i < len(hint_changed) and hint_changed[i]),
                 )
+
+        self._finish_visual_supervision_batch(global_step)
 
         opsd_debug.log(
             "opsd_mask",

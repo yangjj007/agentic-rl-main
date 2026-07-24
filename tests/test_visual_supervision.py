@@ -10,7 +10,12 @@ import pytest
 
 from opsd_utils.visual_supervision_log import VisualBatchRecorder
 from reward_utils.template_pool import TemplatePool
-from reward_utils.visual_checker_teacher import TeacherVisualChecker, _score_from_label
+from reward_utils.visual_checker_teacher import (
+    TeacherVisualChecker,
+    _postprocess_checker_label,
+    _score_from_label,
+    build_image_primary_checker_prompt,
+)
 from reward_utils.visual_ic import (
     _parse_ic_json,
     build_prompt_s1,
@@ -24,6 +29,54 @@ def test_score_from_label():
     assert _score_from_label("medium")[0] == 0.5
     assert _score_from_label("low")[0] == 0.0
     assert _score_from_label("unknown")[0] == 0.0
+
+
+def test_image_primary_checker_prompt_excludes_aux_by_default():
+    prompt = build_image_primary_checker_prompt(
+        question="What is the 2020 value?",
+        answer="10",
+        reasoning="The chart shows 2020 is 10.",
+        aux_evidence="WRONG DEPLOT: 2020 is 99",
+        aux_mode="none",
+    )
+    low = prompt.lower()
+    assert "attached chart image is the only authoritative visual source" in low
+    assert "return exactly one token" in low
+    assert "WRONG DEPLOT" not in prompt
+    assert "2020 is 99" not in prompt
+
+
+def test_image_primary_checker_prompt_marks_deplot_as_noisy_aux():
+    prompt = build_image_primary_checker_prompt(
+        question="What is the 2020 value?",
+        answer="10",
+        reasoning="The chart shows 2020 is 10.",
+        aux_evidence="DePlot says 2020 is 99",
+        aux_mode="deplot_noisy",
+    )
+    low = prompt.lower()
+    assert "optional noisy extracted text" in low
+    assert "may be incomplete or wrong" in low
+    assert "conflicts with the image" in low
+    assert "DePlot says 2020 is 99" in prompt
+
+
+def test_checker_postprocess_caps_fragments_and_missing_answer_marker():
+    score, label, reason = _postprocess_checker_label(
+        score=1.0,
+        label="high",
+        reasoning="46%",
+        has_answer_flag=False,
+    )
+    assert (score, label, reason) == (0.0, "low", "answer_fragment")
+
+    score, label, reason = _postprocess_checker_label(
+        score=1.0,
+        label="high",
+        reasoning="The chart shows Q3 is higher than Q2 because the bar is taller.",
+        has_answer_flag=False,
+    )
+    assert (score, label, reason) == (0.5, "medium", "missing_answer_flag_high_cap")
 
 
 def test_build_prompt_s1_with_json_braces():
@@ -203,6 +256,38 @@ def test_calculate_rewards_sequential_uses_batch_checker():
     assert rewards[0] == 1.0 + 0.5 + 0.75
 
 
+def test_calculate_rewards_sanitizes_non_finite_parallel_and_sequential():
+    from reward_utils.compute_rewards import calculate_rewards_in_parallel, calculate_rewards_sequential
+
+    class UnsafeChecker:
+        requires_sequential = False
+        answer_flag = "answer:"
+
+        def get_format_reward(self, response, task="chart"):
+            if "bad-format" in response:
+                return float("nan")
+            return 1.0
+
+        def get_answer_reward(self, prediction, answer, task):
+            return float("inf")
+
+        def get_thinking_reward_prompt(self, response, prompt, answer, hint, task):
+            return None
+
+    batch = {
+        "response": ["think\nanswer: 3", "bad-format\nanswer: 4"],
+        "prompt": ["p1", "p2"],
+        "answer": ["3", "4"],
+        "hints": ["h1", "h2"],
+    }
+    for fn in (calculate_rewards_in_parallel, calculate_rewards_sequential):
+        rewards, fmt, ans, think = fn(UnsafeChecker(), batch, 0, task="chart")
+        assert rewards == [1.0, 0.0]
+        assert fmt == [1.0, 0.0]
+        assert ans == [0.0, 0.0]
+        assert think == [0.0, 0.0]
+
+
 def test_teacher_generate_one_delegates_batch():
     from reward_utils.teacher_generate import teacher_generate_one
 
@@ -241,6 +326,39 @@ def test_visual_batch_recorder_log_format(capsys):
     assert summary["visual/checker_mean"] == 1.0
 
 
+def test_visual_batch_recorder_saves_route_artifacts(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        recorder = VisualBatchRecorder(
+            global_step=3,
+            output_dir=tmp,
+            log_cfg={"enabled": True, "save_artifacts": True},
+        )
+        recorder.record_route(
+            sample_idx=0,
+            route="opd",
+            checker_score=0.0,
+            answer_reward=1.0,
+            format_reward=0.0,
+        )
+        recorder.finish()
+        captured = capsys.readouterr().out
+        assert "visual/checker_mean=0.0" in captured
+
+        path = os.path.join(tmp, "visual_supervision", "step_3", "rank0.jsonl")
+        with open(path, "r", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f]
+        assert rows == [
+            {
+                "kind": "route",
+                "sample_idx": 0,
+                "route": "opd",
+                "checker_score": 0.0,
+                "answer_reward": 1.0,
+                "format_reward": 0.0,
+            }
+        ]
+
+
 @patch("reward_utils.spacy_model.load_spacy_english")
 @patch("reward_utils.visual_checker_teacher.teacher_generate_batched_chunks")
 @patch("reward_utils.visual_checker_teacher.teacher_generate_one")
@@ -270,7 +388,7 @@ def test_teacher_checker_high_triggers_pool(mock_ic, mock_gen_one, mock_gen_batc
     )
     checker._current_sample_idx = 0
     score = checker.get_thinking_reward_prompt(
-        "Goal: find max\nAnswer: 3",
+        "Goal: find max\nObservation: the chart shows category A has the highest value.\nAnswer: 3",
         "prompt",
         "3",
         "hint",
@@ -279,6 +397,174 @@ def test_teacher_checker_high_triggers_pool(mock_ic, mock_gen_one, mock_gen_batc
     assert score == 1.0
     stats = checker.end_generate_batch()
     assert stats["visual/checker_high"] == 1.0
+
+
+@patch("reward_utils.spacy_model.load_spacy_english")
+@patch("reward_utils.visual_checker_teacher.teacher_generate_batched_chunks")
+@patch("reward_utils.visual_checker_teacher.extract_visual_facts_teacher")
+def test_teacher_checker_default_uses_image_prompt_without_deplot(
+    mock_ic,
+    mock_gen_batch,
+    _mock_spacy,
+):
+    _mock_spacy.return_value = MagicMock()
+    mock_gen_batch.return_value = (["medium"], 1.0)
+    rl_cfg = {"answer_flag": "Answer:"}
+    checker = TeacherVisualChecker(
+        rl_cfg,
+        {},
+        gpu_id=0,
+        visual_config={
+            "checker": {"enabled": True},
+            "prefetch_ic": False,
+            "logging": {"enabled": True, "save_artifacts": False},
+        },
+    )
+    checker.bind_teacher(MagicMock(), MagicMock())
+    checker.begin_generate_batch(
+        samples=[{"visual_fact_deplot": "WRONG DEPLOT TABLE 2020 | 99"}],
+        images=["chart.png"],
+        questions=["What is the 2020 value?"],
+        global_step=1,
+        output_dir=tempfile.gettempdir(),
+    )
+    checker._current_sample_idx = 0
+    score = checker.get_thinking_reward_prompt(
+        "The chart shows the 2020 value.\nAnswer: 10",
+        "prompt",
+        "10",
+        "hint",
+        "chart",
+    )
+    assert score == 0.5
+    mock_ic.assert_not_called()
+    request = mock_gen_batch.call_args.args[2][0]
+    assert request.images == ["chart.png"]
+    assert "WRONG DEPLOT" not in request.prompt_text
+    assert "attached chart image is the only authoritative visual source" in request.prompt_text.lower()
+
+
+@patch("reward_utils.spacy_model.load_spacy_english")
+@patch("reward_utils.visual_checker_teacher.teacher_generate_batched_chunks")
+def test_teacher_checker_missing_image_records_low_without_deplot_fallback(mock_gen_batch, _mock_spacy):
+    _mock_spacy.return_value = MagicMock()
+    rl_cfg = {"answer_flag": "Answer:"}
+    checker = TeacherVisualChecker(
+        rl_cfg,
+        {},
+        gpu_id=0,
+        visual_config={
+            "checker": {"enabled": True},
+            "prefetch_ic": False,
+            "logging": {"enabled": True, "save_artifacts": False},
+        },
+    )
+    checker.bind_teacher(MagicMock(), MagicMock())
+    checker.begin_generate_batch(
+        samples=[{"visual_fact_deplot": "DePlot table exists but image is missing"}],
+        images=[None],
+        questions=["What is shown?"],
+        global_step=1,
+        output_dir=tempfile.gettempdir(),
+    )
+    checker._current_sample_idx = 0
+    score = checker.get_thinking_reward_prompt(
+        "The chart shows the value.\nAnswer: 10",
+        "prompt",
+        "10",
+        "hint",
+        "chart",
+    )
+    stats = checker.end_generate_batch()
+    assert score == 0.0
+    mock_gen_batch.assert_not_called()
+    assert stats["visual/checker_low"] == 1.0
+    assert stats["visual/checker_image_missing"] == 1.0
+
+
+@patch("reward_utils.spacy_model.load_spacy_english")
+@patch("reward_utils.visual_checker_teacher.teacher_generate_batched_chunks")
+def test_teacher_checker_deplot_noisy_aux_includes_warning(mock_gen_batch, _mock_spacy):
+    _mock_spacy.return_value = MagicMock()
+    mock_gen_batch.return_value = (["low"], 1.0)
+    rl_cfg = {"answer_flag": "Answer:"}
+    checker = TeacherVisualChecker(
+        rl_cfg,
+        {},
+        gpu_id=0,
+        visual_config={
+            "checker": {
+                "enabled": True,
+                "aux_evidence": "deplot_noisy",
+            },
+            "prefetch_ic": False,
+            "logging": {"enabled": True, "save_artifacts": False},
+        },
+    )
+    checker.bind_teacher(MagicMock(), MagicMock())
+    checker.begin_generate_batch(
+        samples=[{"visual_fact_hint": "Noisy extracted text: 2020 | 99"}],
+        images=["chart.png"],
+        questions=["What is shown?"],
+        global_step=1,
+        output_dir=tempfile.gettempdir(),
+    )
+    checker._current_sample_idx = 0
+    checker.get_thinking_reward_prompt(
+        "The chart shows the value.\nAnswer: 10",
+        "prompt",
+        "10",
+        "hint",
+        "chart",
+    )
+    request = mock_gen_batch.call_args.args[2][0]
+    assert "Noisy extracted text: 2020 | 99" in request.prompt_text
+    assert "may be incomplete or wrong" in request.prompt_text.lower()
+    assert "conflicts with the image" in request.prompt_text.lower()
+
+
+@patch("reward_utils.spacy_model.load_spacy_english")
+@patch("reward_utils.visual_checker_teacher.teacher_generate_one")
+@patch("reward_utils.visual_checker_teacher.teacher_generate_batched_chunks")
+def test_teacher_checker_caps_teacher_high_for_answer_fragment(
+    mock_gen_batch,
+    mock_gen_one,
+    _mock_spacy,
+):
+    _mock_spacy.return_value = MagicMock()
+    mock_gen_batch.return_value = (["high"], 1.0)
+    rl_cfg = {"answer_flag": "Answer:"}
+    checker = TeacherVisualChecker(
+        rl_cfg,
+        {},
+        gpu_id=0,
+        visual_config={
+            "checker": {"enabled": True},
+            "prefetch_ic": False,
+            "logging": {"enabled": True, "save_artifacts": False},
+        },
+    )
+    checker.bind_teacher(MagicMock(), MagicMock())
+    checker.begin_generate_batch(
+        samples=[{}],
+        images=["chart.png"],
+        questions=["What is the value?"],
+        global_step=1,
+        output_dir=tempfile.gettempdir(),
+    )
+    checker._current_sample_idx = 0
+    score = checker.get_thinking_reward_prompt(
+        "46%",
+        "prompt",
+        "46%",
+        "hint",
+        "chart",
+    )
+    stats = checker.end_generate_batch()
+    assert score == 0.0
+    assert stats["visual/checker_high"] == 0.0
+    assert stats["visual/checker_low"] == 1.0
+    mock_gen_one.assert_not_called()
 
 
 def test_ic_text_from_offline_prefers_deplot():
@@ -313,6 +599,33 @@ def test_extract_visual_facts_uses_offline_deplot_without_teacher():
     )
     assert "Col | Val" in ic_text
     assert meta.get("ic_source") == "offline_deplot"
+
+
+@patch("reward_utils.visual_ic.teacher_generate_one")
+def test_extract_visual_facts_teacher_image_prefers_image_over_offline(mock_teacher_one):
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
+    mock_teacher_one.return_value = (
+        '{"description":"image says 2020 is 10","objects":[]}',
+        2.0,
+    )
+    sample = {
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Year | Value\n2020 | 99"
+        ),
+    }
+    ic_text, meta = extract_visual_facts_teacher(
+        teacher_model=MagicMock(),
+        processor=MagicMock(),
+        sample=sample,
+        question="What is the 2020 value?",
+        image="chart.png",
+        ic_source="teacher_image",
+    )
+    assert "image says 2020 is 10" in ic_text
+    assert "2020 | 99" not in ic_text
+    assert meta.get("ic_source") == "teacher_image"
+    mock_teacher_one.assert_called_once()
 
 
 def test_extract_visual_facts_fallback_without_teacher():
