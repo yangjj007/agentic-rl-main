@@ -104,6 +104,7 @@ data/chartqa/train_medium_vf_full.json
 data/chartqa/*.json.before_*
 data/chartqa/deplot_cache.json
 data/chartqa/deplot_cache.json.tmp
+data/**/*.cache.jsonl
 aokvqa_output/
 
 # HuggingFace / model caches

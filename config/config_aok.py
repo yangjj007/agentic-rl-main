@@ -1,7 +1,6 @@
 import os
-import torch
 
-from data_utils.paths import project_path
+from data_utils.paths import OUTPUTS_DIR, project_path
 
 
 MODEL_CONFIG = {
@@ -16,7 +15,7 @@ TRAINING_CONFIG = {
     "num_gpus": 8,  
     "num_client": 8,  
     "dyme_args": {
-        "output_dir": '/path/to/dyme-aok-online',
+        "output_dir": os.path.join(OUTPUTS_DIR, "dyme-aok-online"),
         "logging_steps": 1,
         "num_generations": 4,
         "max_completion_length": 300,
@@ -36,7 +35,7 @@ TRAINING_CONFIG = {
         "seed": 42,
     },
     "sft_args": {
-        "output_dir": '/path/to/sft-aok',
+        "output_dir": os.path.join(OUTPUTS_DIR, "sft-aok"),
         "logging_steps": 1,
         "per_device_train_batch_size": 2,
         "gradient_accumulation_steps": 4,
@@ -53,7 +52,7 @@ TRAINING_CONFIG = {
         "remove_unused_columns": False
     },
     "grpo_args":{
-        "output_dir": '/path/to/grpo-aok',
+        "output_dir": os.path.join(OUTPUTS_DIR, "grpo-aok"),
         "logging_steps": 1,
         "num_generations": 4,  
         "max_completion_length": 576,
@@ -94,7 +93,7 @@ CLIENT_CONFIG = {
 
 # ====== Dataset Configuration ======
 DATASET_CONFIG = {
-    "train_dataset": project_path("data/aokvqa/train.json"),
+    "train_dataset": project_path("data/aokvqa/train_qwen25_refine.json"),
     "eval_dataset": "HuggingFaceM4/A-OKVQA", 
 }
 
@@ -116,4 +115,3 @@ def save_config(config, config_path="./config.json"):
 # Example usage to save config
 if __name__ == "__main__":
     save_config(CONFIG)
-

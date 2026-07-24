@@ -1,5 +1,6 @@
 import os
-import torch
+
+from data_utils.paths import OUTPUTS_DIR, project_path
 
 # ====== Model Configuration ======
 MODEL_CONFIG = {
@@ -15,7 +16,7 @@ TRAINING_CONFIG = {
     "num_client": 8,  
 
     "dyme_args": {
-        "output_dir": '/path/to/dyme-llavaov-chart-change3',
+        "output_dir": os.path.join(OUTPUTS_DIR, "dyme-llavaov-chart-prerefine"),
         "logging_steps": 1,
         "num_generations": 4,  
         "max_completion_length": 200,
@@ -54,7 +55,7 @@ CLIENT_CONFIG = {
 
 # ====== Dataset Configuration ======
 DATASET_CONFIG = {
-    "train_dataset": "/path/to/data/chartqa_output/json/train_new_prerefine.json",
+    "train_dataset": project_path("data/chartqa/train_new_prerefine.json"),
     "eval_dataset": "HuggingFaceM4/ChartQA",  
 }
 
@@ -76,4 +77,3 @@ def save_config(config, config_path="./config.json"):
 # Example usage to save config
 if __name__ == "__main__":
     save_config(CONFIG)
-

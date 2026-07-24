@@ -1,5 +1,6 @@
 import os
-import torch
+
+from data_utils.paths import OUTPUTS_DIR, project_path
 
 # ====== Model Configuration ======
 MODEL_CONFIG = {
@@ -14,7 +15,7 @@ TRAINING_CONFIG = {
     "num_gpus": 8, 
     "num_client": 8,  
     "dyme_args": {
-        "output_dir": '/path/to/dyme-qwen25-GSM8K-new',
+        "output_dir": os.path.join(OUTPUTS_DIR, "dyme-qwen25-gsm8k"),
         "logging_steps": 1,
         "num_generations": 16,
         "max_completion_length": 1024,
@@ -54,7 +55,7 @@ CLIENT_CONFIG = {
 
 # ====== Dataset Configuration ======
 DATASET_CONFIG = {
-    "train_dataset": "/path/to/data/lm_math/json/train.json",
+    "train_dataset": project_path("data/gsm8k/train_qwen25_refine.json"),
     "eval_dataset": "openai/gsm8k",
 }
 
@@ -76,4 +77,3 @@ def save_config(config, config_path="./config.json"):
 # Example usage to save config
 if __name__ == "__main__":
     save_config(CONFIG)
-

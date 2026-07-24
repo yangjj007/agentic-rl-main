@@ -140,10 +140,11 @@ def collate_fn_woI(examples, processor, label_id=151646):
     return batch
 
 def define_task_data_func(task, mode='rl'):
+    rl_modes = {"rl", "grpo", "opd"}
     if 'medical' in task:
         return None
     elif 'chart' in task:
-        if mode == 'rl':
+        if mode in rl_modes:
             return prepare_chart_rl_data
         return prepare_chart_sft_data
     elif 'math' == task:
@@ -151,7 +152,7 @@ def define_task_data_func(task, mode='rl'):
     elif 'math_lm' in task:
         return prepare_math_lm_rl_data
     elif 'world' in task:
-        if mode == 'rl':
+        if mode in rl_modes:
             return prepare_world_rl_data
         elif mode == 'sft':
             return prepare_world_sft_data
