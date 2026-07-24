@@ -13,6 +13,8 @@ _CONFIG_ALIASES: dict[str, str] = {
     "opd_7b_chartqa": "config.config_opd_7b_chartqa",
     "opd_7b_dyme_probe": "config.config_opd_7b_dyme_probe",
     "opd_7b_probe": "config.config_opd_7b_dyme_probe",
+    "opd_7b_dyme_probe_image_checker": "config.config_opd_7b_dyme_probe_image_checker",
+    "opd_7b_probe_image_checker": "config.config_opd_7b_dyme_probe_image_checker",
     "opd_7b_dyme_probe_smoke": "config.config_opd_7b_dyme_probe_smoke",
     "dyme_probe_smoke": "config.config_opd_7b_dyme_probe_smoke",
     "opd_7b_deepspeed": "config.config_opd_7b_chartqa_deepspeed",
