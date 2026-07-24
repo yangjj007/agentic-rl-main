@@ -60,3 +60,15 @@ def test_image_checker_training_script_selects_explicit_variant():
     assert 'DYME_VISUAL_PREFETCH_IC=' not in text
     assert 'DYME_VISUAL_CHECKER_GROUNDING="${DYME_VISUAL_CHECKER_GROUNDING:-image_primary}"' in text
     assert 'DYME_VISUAL_CHECKER_AUX="${DYME_VISUAL_CHECKER_AUX:-none}"' in text
+
+
+def test_visual_supervision_checker_efficiency_env_overrides(monkeypatch):
+    monkeypatch.setenv("DYME_VISUAL_TEACHER_BATCH_SIZE", "8")
+    monkeypatch.setenv("DYME_VISUAL_CHECKER_MAX_SCORE_TOKENS", "4")
+
+    from config.visual_supervision_defaults import build_visual_supervision_config
+
+    visual = build_visual_supervision_config()
+
+    assert visual["teacher_batch_size"] == 8
+    assert visual["checker"]["max_score_tokens"] == 4

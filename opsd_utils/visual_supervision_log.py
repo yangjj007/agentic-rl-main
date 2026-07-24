@@ -108,6 +108,9 @@ class VisualBatchRecorder:
     checker_calls: int = 0
     refiner_calls: int = 0
     teacher_batch_calls: int = 0
+    ic_batch_calls: int = 0
+    checker_batch_calls: int = 0
+    refiner_batch_calls: int = 0
 
     def record_teacher_timing(
         self,
@@ -121,15 +124,19 @@ class VisualBatchRecorder:
         if kind == "ic":
             self.ic_latency_ms += float(latency_ms)
             self.ic_calls += int(n_calls)
+            self.ic_batch_calls += 1
         elif kind == "checker":
             self.checker_latency_ms += float(latency_ms)
             self.checker_calls += int(n_calls)
+            self.checker_batch_calls += 1
         elif kind == "refiner":
             self.refiner_latency_ms += float(latency_ms)
             self.refiner_calls += int(n_calls)
+            self.refiner_batch_calls += 1
         else:
             self.checker_latency_ms += float(latency_ms)
             self.checker_calls += int(n_calls)
+            self.checker_batch_calls += 1
 
     def record_ic(self, **fields: Any) -> None:
         if fields.get("cache_hit"):
@@ -278,6 +285,9 @@ class VisualBatchRecorder:
             "visual/checker_calls": float(self.checker_calls),
             "visual/refiner_calls": float(self.refiner_calls),
             "visual/teacher_batch_calls": float(self.teacher_batch_calls),
+            "visual/ic_batch_calls": float(self.ic_batch_calls),
+            "visual/checker_batch_calls": float(self.checker_batch_calls),
+            "visual/refiner_batch_calls": float(self.refiner_batch_calls),
         }
         log_visual("VISUAL-BATCH", "generate_summary", cfg=self.log_cfg, **summary)
 

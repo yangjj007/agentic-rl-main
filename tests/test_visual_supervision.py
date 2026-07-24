@@ -162,6 +162,9 @@ def test_visual_batch_recorder_teacher_timing():
     assert summary["visual/refiner_latency_ms"] == 30.0
     assert summary["visual/ic_calls"] == 2.0
     assert summary["visual/teacher_batch_calls"] == 3.0
+    assert summary["visual/ic_batch_calls"] == 1.0
+    assert summary["visual/checker_batch_calls"] == 1.0
+    assert summary["visual/refiner_batch_calls"] == 1.0
 
 
 def test_refiner_skip_cold_start_only_when_active():

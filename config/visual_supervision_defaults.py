@@ -19,7 +19,7 @@ def build_visual_supervision_config() -> dict:
         "ic_source": env_str("DYME_VISUAL_IC_SOURCE", "auto"),
         "prefetch_ic": env_bool("DYME_VISUAL_PREFETCH_IC", True),
         "dedupe_per_batch": env_bool("DYME_VISUAL_DEDUPE", True),
-        "teacher_batch_size": 4,
+        "teacher_batch_size": env_int("DYME_VISUAL_TEACHER_BATCH_SIZE", 4),
         "checker": {
             "enabled": VISUAL_CHECKER_ENABLED,
             "model_source": "loaded_teacher",
@@ -27,6 +27,7 @@ def build_visual_supervision_config() -> dict:
             "aux_evidence": env_str("DYME_VISUAL_CHECKER_AUX", "none"),
             "max_per_batch": env_int("DYME_VISUAL_CHECKER_MAX_PER_BATCH", 0),
             "max_ic_tokens": max_ic_tokens,
+            "max_score_tokens": env_int("DYME_VISUAL_CHECKER_MAX_SCORE_TOKENS", 16),
             "fallback": "local",
         },
         "refiner": {
