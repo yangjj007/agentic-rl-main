@@ -23,6 +23,7 @@ def build_image_primary_checker_prompt(
     question: str,
     answer: str,
     reasoning: str,
+    student_answer: str = "",
     aux_evidence: str = "",
     aux_mode: str = "none",
     has_answer_flag: Optional[bool] = None,
@@ -42,6 +43,9 @@ Question:
 Reference answer:
 {answer}
 
+Student final answer:
+{student_answer or "[missing]"}
+
 Required final answer marker present:
 {"unknown" if has_answer_flag is None else ("yes" if has_answer_flag else "no")}
 
@@ -57,9 +61,9 @@ This text may be incomplete or wrong. Ignore it whenever it conflicts with the i
 """
     prompt += """
 Rubric:
-high = A complete reasoning chain uses visible chart evidence, cites or compares the relevant values/categories correctly, and explicitly supports the reference answer. Do not use high for terse answer fragments.
-medium = The reasoning is mostly grounded in the image and supports the answer, but evidence is incomplete, vague, partially checked, or missing the required final answer marker.
-low = The reasoning does not use visible chart evidence, fabricates or misreads chart data, is logically inconsistent with the answer, is empty, lacks a clear reasoning chain, or only repeats/guesses an answer fragment.
+high = A complete reasoning chain uses visible chart evidence, cites or compares the relevant values/categories correctly, and explicitly supports both the student's final answer and the reference answer. Do not use high for terse answer fragments.
+medium = The reasoning is mostly grounded in the image and supports the answer, but evidence is incomplete, vague, partially checked, the student's final answer is only partially supported, or the required final answer marker is missing.
+low = The reasoning does not use visible chart evidence, fabricates or misreads chart data, is logically inconsistent with the answer, the student's final answer conflicts with the image/reference answer, is empty, lacks a clear reasoning chain, or only repeats/guesses an answer fragment.
 
 Return one token only.
 """
@@ -106,17 +110,28 @@ def _looks_like_answer_fragment(text: str) -> bool:
     return True
 
 
+def _split_response_parts(response: str, answer_flag: str) -> tuple[str, str, bool]:
+    text = response or ""
+    parts = re.split(f"(?i){re.escape(answer_flag)}", text, maxsplit=1)
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip(), True
+    return text.strip(), "", False
+
+
 def _postprocess_checker_label(
     *,
     score: float,
     label: str,
     reasoning: str,
     has_answer_flag: bool,
+    student_answer_correct: Optional[bool] = None,
 ) -> tuple[float, str, str]:
     if _looks_like_answer_fragment(reasoning):
         if score > 0.0 or label != "low":
             return 0.0, "low", "answer_fragment"
         return score, label, ""
+    if student_answer_correct is False and score > 0.5:
+        return 0.5, "medium", "answer_incorrect_high_cap"
     if not has_answer_flag and score > 0.5:
         return 0.5, "medium", "missing_answer_flag_high_cap"
     return score, label, ""
@@ -157,7 +172,9 @@ class _CheckerJob:
     answer: str
     hint: str
     thinking_part: str
+    student_answer: str
     has_answer_flag: bool
+    student_answer_correct: Optional[bool]
 
 
 class TeacherVisualChecker(RewardCalculatorLocal):
@@ -277,8 +294,10 @@ class TeacherVisualChecker(RewardCalculatorLocal):
         hint: str,
         task: str,
     ) -> Optional[_CheckerJob]:
-        thinking_part = response.lower().split(self.answer_flag)[0].strip()
-        has_answer_flag = self.answer_flag in response.lower()
+        thinking_part, student_answer, has_answer_flag = _split_response_parts(response, self.answer_flag)
+        student_answer_correct: Optional[bool] = None
+        if has_answer_flag and "chart" in task:
+            student_answer_correct = self.get_answer_reward(response, answer, task) > 0.0
         if not thinking_part:
             if self._recorder is not None:
                 self._recorder.record_checker(
@@ -286,6 +305,8 @@ class TeacherVisualChecker(RewardCalculatorLocal):
                     score=0.0,
                     label="low",
                     thinking_len=0,
+                    student_answer_preview=student_answer[:120],
+                    student_answer_correct=student_answer_correct,
                     has_answer_flag=has_answer_flag,
                     skipped_no_thinking=True,
                 )
@@ -299,6 +320,8 @@ class TeacherVisualChecker(RewardCalculatorLocal):
                     score=float(score or 0.0),
                     label="local",
                     thinking_len=len(thinking_part),
+                    student_answer_preview=student_answer[:120],
+                    student_answer_correct=student_answer_correct,
                     has_answer_flag=has_answer_flag,
                     local_fallback=True,
                 )
@@ -311,7 +334,9 @@ class TeacherVisualChecker(RewardCalculatorLocal):
             answer=answer,
             hint=hint,
             thinking_part=thinking_part,
+            student_answer=student_answer,
             has_answer_flag=has_answer_flag,
+            student_answer_correct=student_answer_correct,
         )
 
     def batch_score_thinking(
@@ -368,6 +393,7 @@ class TeacherVisualChecker(RewardCalculatorLocal):
                     question=q_wo,
                     answer=job.answer,
                     reasoning=job.thinking_part,
+                    student_answer=job.student_answer,
                     aux_evidence=aux_evidence,
                     aux_mode=self._aux_evidence_mode,
                     has_answer_flag=job.has_answer_flag,
@@ -407,6 +433,7 @@ class TeacherVisualChecker(RewardCalculatorLocal):
                     label=label,
                     reasoning=job.thinking_part,
                     has_answer_flag=job.has_answer_flag,
+                    student_answer_correct=job.student_answer_correct,
                 )
                 template_extract_attempted = False
                 if score >= 1.0:
@@ -443,6 +470,8 @@ class TeacherVisualChecker(RewardCalculatorLocal):
                         score=score,
                         label=label,
                         thinking_len=len(job.thinking_part),
+                        student_answer_preview=job.student_answer[:120],
+                        student_answer_correct=job.student_answer_correct,
                         has_answer_flag=job.has_answer_flag,
                         thinking_preview=job.thinking_part[:400],
                         ic_chars=len(ic_text),

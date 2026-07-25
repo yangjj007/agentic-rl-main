@@ -14,6 +14,7 @@ from reward_utils.visual_checker_teacher import (
     TeacherVisualChecker,
     _postprocess_checker_label,
     _score_from_label,
+    _split_response_parts,
     build_image_primary_checker_prompt,
 )
 from reward_utils.visual_ic import (
@@ -36,6 +37,7 @@ def test_image_primary_checker_prompt_excludes_aux_by_default():
         question="What is the 2020 value?",
         answer="10",
         reasoning="The chart shows 2020 is 10.",
+        student_answer="10",
         aux_evidence="WRONG DEPLOT: 2020 is 99",
         aux_mode="none",
     )
@@ -51,6 +53,7 @@ def test_image_primary_checker_prompt_marks_deplot_as_noisy_aux():
         question="What is the 2020 value?",
         answer="10",
         reasoning="The chart shows 2020 is 10.",
+        student_answer="10",
         aux_evidence="DePlot says 2020 is 99",
         aux_mode="deplot_noisy",
     )
@@ -59,6 +62,19 @@ def test_image_primary_checker_prompt_marks_deplot_as_noisy_aux():
     assert "may be incomplete or wrong" in low
     assert "conflicts with the image" in low
     assert "DePlot says 2020 is 99" in prompt
+
+
+def test_image_primary_checker_prompt_includes_student_final_answer():
+    prompt = build_image_primary_checker_prompt(
+        question="Which group is highest?",
+        answer="18-24 years old",
+        reasoning="The tallest bar is the 18-24 group at 40%.",
+        student_answer="40%",
+        aux_mode="none",
+    )
+    assert "Student final answer:" in prompt
+    assert "\n40%\n" in prompt
+    assert "supports both the student's final answer and the reference answer" in prompt
 
 
 def test_checker_postprocess_caps_fragments_and_missing_answer_marker():
@@ -75,8 +91,30 @@ def test_checker_postprocess_caps_fragments_and_missing_answer_marker():
         label="high",
         reasoning="The chart shows Q3 is higher than Q2 because the bar is taller.",
         has_answer_flag=False,
+        student_answer_correct=True,
     )
     assert (score, label, reason) == (0.5, "medium", "missing_answer_flag_high_cap")
+
+
+def test_checker_postprocess_caps_teacher_high_when_student_answer_is_wrong():
+    score, label, reason = _postprocess_checker_label(
+        score=1.0,
+        label="high",
+        reasoning="The chart shows Q3 is higher than Q2 because the bar is taller.",
+        has_answer_flag=True,
+        student_answer_correct=False,
+    )
+    assert (score, label, reason) == (0.5, "medium", "answer_incorrect_high_cap")
+
+
+def test_split_response_parts_preserves_original_case():
+    thinking, answer, has_flag = _split_response_parts(
+        "The chart shows DDT exposure was highest for Ages 18-24.\nAnSwEr: 40%",
+        "answer:",
+    )
+    assert has_flag is True
+    assert thinking == "The chart shows DDT exposure was highest for Ages 18-24."
+    assert answer == "40%"
 
 
 def test_build_prompt_s1_with_json_braces():

@@ -341,8 +341,18 @@ def load_teacher_model(model_config: Dict[str, Any], *, local_rank: int = 0, num
     load_kwargs: Dict[str, Any] = {
         "torch_dtype": torch_dtype,
         "low_cpu_mem_usage": True,
-        "device_map": device_map,
     }
+    manual_teacher_device = None
+    if (deepspeed_zero_stage() or 0) >= 3:
+        manual_teacher_device = device_map
+        if os.environ.get("RANK", "0") == "0":
+            print(
+                "[DyME] ZeRO-3 teacher load: skip device_map kw and move teacher after load "
+                f"(target={device_map})",
+                flush=True,
+            )
+    else:
+        load_kwargs["device_map"] = device_map
 
     teacher = LlavaOnevisionForConditionalGeneration.from_pretrained(
         teacher_path,
@@ -350,6 +360,8 @@ def load_teacher_model(model_config: Dict[str, Any], *, local_rank: int = 0, num
         **load_kwargs,
         **teacher_local_kw,
     )
+    if manual_teacher_device:
+        teacher.to(manual_teacher_device)
     teacher.eval()
     teacher.requires_grad_(False)
     if hasattr(teacher, "base_model") and hasattr(teacher.base_model, "vision_tower"):

@@ -154,6 +154,39 @@ if is_wandb_available():
     import wandb
 
 
+def validate_grpo_batch_geometry(
+    *,
+    num_generations: int,
+    per_device_train_batch_size: int,
+    gradient_accumulation_steps: int,
+    num_processes: int,
+) -> None:
+    if num_generations < 2:
+        raise ValueError(
+            "GRPO requires at least 2 generations per prompt to calculate the advantages. You provided "
+            f"{num_generations}, which is less than the minimum required."
+        )
+    effective_batch_size = per_device_train_batch_size * num_processes * gradient_accumulation_steps
+    possible_values = [
+        n_gen for n_gen in range(2, effective_batch_size + 1) if effective_batch_size % n_gen == 0
+    ]
+    if num_generations not in possible_values:
+        raise ValueError(
+            f"The effective train batch size ({num_processes} x {per_device_train_batch_size} x "
+            f"{gradient_accumulation_steps}) must be evenly divisible by the number of generations per "
+            f"prompt ({num_generations}). Given the current effective train batch size, the valid values for "
+            f"the number of generations are: {possible_values}."
+        )
+    local_effective_batch_size = per_device_train_batch_size * gradient_accumulation_steps
+    if local_effective_batch_size % num_generations != 0:
+        raise ValueError(
+            f"The local effective batch size ({per_device_train_batch_size} x {gradient_accumulation_steps} = "
+            f"{local_effective_batch_size}) must also be evenly divisible by the number of generations per prompt "
+            f"({num_generations}) on each rank. Increase per-device batch size or gradient accumulation steps, or "
+            f"use a smaller num_generations."
+        )
+
+
 
 # What we call a reward function is a callable that takes a list of prompts and completions and returns a list of
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
@@ -638,24 +671,13 @@ class DyMETrainer(Trainer):
             "rewards": defaultdict(lambda: deque(maxlen=maxlen)),
         }
 
-        # Check if the effective batch size can be divided by the number of generations
-        if self.num_generations < 2:
-            raise ValueError(
-                "GRPO requires at least 2 generations per prompt to calculate the advantages. You provided "
-                f"{self.num_generations}, which is less than the minimum required."
-            )
         num_processes = self.accelerator.num_processes
-        effective_batch_size = args.per_device_train_batch_size * num_processes * args.gradient_accumulation_steps
-        possible_values = [
-            n_gen for n_gen in range(2, effective_batch_size + 1) if (effective_batch_size) % n_gen == 0
-        ]
-        if self.num_generations not in possible_values:
-            raise ValueError(
-                f"The effective train batch size ({num_processes} x {args.per_device_train_batch_size} x "
-                f"{args.gradient_accumulation_steps}) must be evenly divisible by the number of generations per "
-                f"prompt ({self.num_generations}). Given the current effective train batch size, the valid values for "
-                f"the number of generations are: {possible_values}."
-            )
+        validate_grpo_batch_geometry(
+            num_generations=self.num_generations,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            num_processes=num_processes,
+        )
         set_seed(args.seed, device_specific=True)
 
 

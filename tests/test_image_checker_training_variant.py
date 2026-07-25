@@ -1,6 +1,7 @@
 """Tests for the explicit OPD image-primary visual-checker training variant."""
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 from config.loader import load_config
@@ -72,3 +73,22 @@ def test_visual_supervision_checker_efficiency_env_overrides(monkeypatch):
 
     assert visual["teacher_batch_size"] == 8
     assert visual["checker"]["max_score_tokens"] == 4
+
+
+def test_image_checker_variant_inherits_runtime_smoke_tuning_env(monkeypatch):
+    import config.config_opd_7b_dyme_probe as base_mod
+    import config.config_opd_7b_dyme_probe_image_checker as checker_mod
+
+    monkeypatch.setenv("DYME_NUM_GENERATIONS", "2")
+    monkeypatch.setenv("DYME_PER_DEVICE_TRAIN_BATCH_SIZE", "1")
+    monkeypatch.setenv("DYME_GRADIENT_ACCUMULATION_STEPS", "1")
+    monkeypatch.setenv("DYME_GRADIENT_CHECKPOINTING", "1")
+    importlib.reload(base_mod)
+    mod = importlib.reload(checker_mod)
+
+    dyme_args = mod.CONFIG["training"]["dyme_args"]
+    assert dyme_args["num_generations"] == 2
+    assert dyme_args["per_device_train_batch_size"] == 1
+    assert dyme_args["gradient_accumulation_steps"] == 1
+    assert dyme_args["gradient_checkpointing"] is True
+    assert mod.CONFIG["launch"]["gradient_checkpointing_enable"] is True

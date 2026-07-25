@@ -185,6 +185,39 @@ def test_probe_config_signal_utility_routing_env(monkeypatch):
     assert cfg["skip_clipped_without_teacher"] is True
 
 
+def test_probe_config_student_rollout_generation_env(monkeypatch):
+    import config.config_opd_7b_dyme_probe as probe_mod
+
+    monkeypatch.setenv("DYME_MAX_COMPLETION_LENGTH", "64")
+    monkeypatch.setenv("DYME_TEMPERATURE", "0.35")
+    monkeypatch.setenv("DYME_TOP_P", "0.9")
+    monkeypatch.setenv("DYME_REPETITION_PENALTY", "1.7")
+    mod = importlib.reload(probe_mod)
+
+    dyme_args = mod.CONFIG["training"]["dyme_args"]
+    assert dyme_args["max_completion_length"] == 64
+    assert dyme_args["temperature"] == 0.35
+    assert dyme_args["top_p"] == 0.9
+    assert dyme_args["repetition_penalty"] == 1.7
+
+
+def test_probe_config_runtime_smoke_tuning_env(monkeypatch):
+    import config.config_opd_7b_dyme_probe as probe_mod
+
+    monkeypatch.setenv("DYME_NUM_GENERATIONS", "2")
+    monkeypatch.setenv("DYME_PER_DEVICE_TRAIN_BATCH_SIZE", "1")
+    monkeypatch.setenv("DYME_GRADIENT_ACCUMULATION_STEPS", "1")
+    monkeypatch.setenv("DYME_GRADIENT_CHECKPOINTING", "1")
+    mod = importlib.reload(probe_mod)
+
+    dyme_args = mod.CONFIG["training"]["dyme_args"]
+    assert dyme_args["num_generations"] == 2
+    assert dyme_args["per_device_train_batch_size"] == 1
+    assert dyme_args["gradient_accumulation_steps"] == 1
+    assert dyme_args["gradient_checkpointing"] is True
+    assert mod.CONFIG["launch"]["gradient_checkpointing_enable"] is True
+
+
 def test_probe_config_chart_cot_quality_gate_env(monkeypatch):
     import config.config_opd_7b_dyme_probe as probe_mod
 

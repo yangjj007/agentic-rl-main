@@ -13,7 +13,15 @@ Teacher context is no-gold by default: format instructions + visual facts.
 import os
 
 import config.config_opd_7b_chartqa as base
-from config.env_overrides import env_bool, env_float, env_int, env_list, env_optional_int, env_str
+from config.env_overrides import (
+    env_bool,
+    env_float,
+    env_int,
+    env_list,
+    env_optional_float,
+    env_optional_int,
+    env_str,
+)
 from config.config import DEPLOT_CONFIG as _BASE_DEPLOT_CONFIG
 from config.visual_supervision_defaults import build_visual_supervision_config
 from data_utils.paths import OUTPUTS_DIR
@@ -319,6 +327,32 @@ if _max_steps is not None:
 _save_total_limit = env_optional_int("DYME_SAVE_TOTAL_LIMIT")
 if _save_total_limit is not None:
     _dyme_args["save_total_limit"] = _save_total_limit
+_max_completion_length = env_optional_int("DYME_MAX_COMPLETION_LENGTH")
+if _max_completion_length is not None:
+    _dyme_args["max_completion_length"] = _max_completion_length
+_temperature = env_optional_float("DYME_TEMPERATURE")
+if _temperature is not None:
+    _dyme_args["temperature"] = _temperature
+_top_p = env_optional_float("DYME_TOP_P")
+if _top_p is not None:
+    _dyme_args["top_p"] = _top_p
+_repetition_penalty = env_optional_float("DYME_REPETITION_PENALTY")
+if _repetition_penalty is not None:
+    _dyme_args["repetition_penalty"] = _repetition_penalty
+_num_generations = env_optional_int("DYME_NUM_GENERATIONS")
+if _num_generations is not None:
+    _dyme_args["num_generations"] = _num_generations
+_per_device_train_batch_size = env_optional_int("DYME_PER_DEVICE_TRAIN_BATCH_SIZE")
+if _per_device_train_batch_size is not None:
+    _dyme_args["per_device_train_batch_size"] = _per_device_train_batch_size
+_gradient_accumulation_steps = env_optional_int("DYME_GRADIENT_ACCUMULATION_STEPS")
+if _gradient_accumulation_steps is not None:
+    _dyme_args["gradient_accumulation_steps"] = _gradient_accumulation_steps
+if os.environ.get("DYME_GRADIENT_CHECKPOINTING", "").strip():
+    _dyme_args["gradient_checkpointing"] = env_bool(
+        "DYME_GRADIENT_CHECKPOINTING",
+        bool(_dyme_args.get("gradient_checkpointing", False)),
+    )
 
 
 def _default_format_hint(prompt_profile: str) -> str:
@@ -540,7 +574,10 @@ DYME_OPSD_CONFIG = {
 }
 
 LAUNCH_CONFIG = {
-    "gradient_checkpointing_enable": env_bool("DYME_GRADIENT_CHECKPOINTING", False),
+    "gradient_checkpointing_enable": env_bool(
+        "DYME_GRADIENT_CHECKPOINTING",
+        bool(_dyme_args.get("gradient_checkpointing", False)),
+    ),
     "opsd_detail_every": DYME_OPSD_CONFIG["debug"]["detail_every"],
     "opsd_detail_min_free_gb": env_float("DYME_OPSD_DETAIL_MIN_FREE_GB", 4.0),
     "teacher_device_map": env_str("DYME_TEACHER_DEVICE_MAP", "auto"),
