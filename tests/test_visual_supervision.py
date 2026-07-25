@@ -107,6 +107,17 @@ def test_checker_postprocess_caps_teacher_high_when_student_answer_is_wrong():
     assert (score, label, reason) == (0.5, "medium", "answer_incorrect_high_cap")
 
 
+def test_checker_postprocess_promotes_correct_answer_fragment_to_medium():
+    score, label, reason = _postprocess_checker_label(
+        score=1.0,
+        label="high",
+        reasoning="37.8",
+        has_answer_flag=False,
+        student_answer_correct=True,
+    )
+    assert (score, label, reason) == (0.5, "medium", "correct_answer_fragment")
+
+
 def test_split_response_parts_preserves_original_case():
     thinking, answer, has_flag = _split_response_parts(
         "The chart shows DDT exposure was highest for Ages 18-24.\nAnSwEr: 40%",
@@ -595,7 +606,7 @@ def test_teacher_checker_caps_teacher_high_for_answer_fragment(
     )
     checker._current_sample_idx = 0
     score = checker.get_thinking_reward_prompt(
-        "46%",
+        "47%",
         "prompt",
         "46%",
         "hint",
@@ -606,6 +617,85 @@ def test_teacher_checker_caps_teacher_high_for_answer_fragment(
     assert stats["visual/checker_high"] == 0.0
     assert stats["visual/checker_low"] == 1.0
     mock_gen_one.assert_not_called()
+
+
+@patch("reward_utils.spacy_model.load_spacy_english")
+def test_teacher_checker_promotes_correct_answer_only_to_medium(_mock_spacy):
+    _mock_spacy.return_value = MagicMock()
+    rl_cfg = {"answer_flag": "Answer:"}
+    checker = TeacherVisualChecker(
+        rl_cfg,
+        {},
+        gpu_id=0,
+        visual_config={
+            "checker": {"enabled": True},
+            "prefetch_ic": False,
+            "logging": {"enabled": True, "save_artifacts": False},
+        },
+    )
+    checker.get_answer_reward = MagicMock(return_value=1.0)
+    checker.bind_teacher(MagicMock(), MagicMock())
+    checker.begin_generate_batch(
+        samples=[{}],
+        images=["chart.png"],
+        questions=["What is the value?"],
+        global_step=1,
+        output_dir=tempfile.gettempdir(),
+    )
+    checker._current_sample_idx = 0
+    score = checker.get_thinking_reward_prompt(
+        "Answer: 37.8",
+        "prompt",
+        "37.8",
+        "hint",
+        "chart",
+    )
+    stats = checker.end_generate_batch()
+    assert score == 0.5
+    assert stats["visual/checker_medium"] == 1.0
+    assert stats["visual/checker_low"] == 0.0
+
+
+@patch("reward_utils.spacy_model.load_spacy_english")
+@patch("reward_utils.visual_checker_teacher.teacher_generate_batched_chunks")
+def test_teacher_checker_promotes_correct_bare_answer_fragment_without_answer_flag(
+    mock_gen_batch,
+    _mock_spacy,
+):
+    _mock_spacy.return_value = MagicMock()
+    mock_gen_batch.return_value = (["high"], 1.0)
+    rl_cfg = {"answer_flag": "Answer:"}
+    checker = TeacherVisualChecker(
+        rl_cfg,
+        {},
+        gpu_id=0,
+        visual_config={
+            "checker": {"enabled": True},
+            "prefetch_ic": False,
+            "logging": {"enabled": True, "save_artifacts": False},
+        },
+    )
+    checker.get_answer_reward = MagicMock(return_value=1.0)
+    checker.bind_teacher(MagicMock(), MagicMock())
+    checker.begin_generate_batch(
+        samples=[{}],
+        images=["chart.png"],
+        questions=["What is the value?"],
+        global_step=1,
+        output_dir=tempfile.gettempdir(),
+    )
+    checker._current_sample_idx = 0
+    score = checker.get_thinking_reward_prompt(
+        "37.8",
+        "prompt",
+        "37.8",
+        "hint",
+        "chart",
+    )
+    stats = checker.end_generate_batch()
+    assert score == 0.5
+    assert stats["visual/checker_medium"] == 1.0
+    assert stats["visual/checker_low"] == 0.0
 
 
 def test_ic_text_from_offline_prefers_deplot():

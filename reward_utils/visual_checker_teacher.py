@@ -127,6 +127,8 @@ def _postprocess_checker_label(
     student_answer_correct: Optional[bool] = None,
 ) -> tuple[float, str, str]:
     if _looks_like_answer_fragment(reasoning):
+        if student_answer_correct is True:
+            return 0.5, "medium", "correct_answer_fragment"
         if score > 0.0 or label != "low":
             return 0.0, "low", "answer_fragment"
         return score, label, ""
@@ -296,21 +298,24 @@ class TeacherVisualChecker(RewardCalculatorLocal):
     ) -> Optional[_CheckerJob]:
         thinking_part, student_answer, has_answer_flag = _split_response_parts(response, self.answer_flag)
         student_answer_correct: Optional[bool] = None
-        if has_answer_flag and "chart" in task:
+        if "chart" in task:
             student_answer_correct = self.get_answer_reward(response, answer, task) > 0.0
         if not thinking_part:
+            score = 0.5 if student_answer_correct is True else 0.0
+            label = "medium" if student_answer_correct is True else "low"
             if self._recorder is not None:
                 self._recorder.record_checker(
                     sample_idx=sample_idx,
-                    score=0.0,
-                    label="low",
+                    score=score,
+                    label=label,
                     thinking_len=0,
                     student_answer_preview=student_answer[:120],
                     student_answer_correct=student_answer_correct,
                     has_answer_flag=has_answer_flag,
                     skipped_no_thinking=True,
+                    postprocess_reason="correct_answer_only" if student_answer_correct is True else "",
                 )
-            self._thinking_score_cache[sample_idx] = 0.0
+            self._thinking_score_cache[sample_idx] = score
             return None
         if not self._use_teacher_for_idx(sample_idx) or "chart" not in task:
             score = self._local_fallback.get_thinking_reward_prompt(response, question, answer, hint, task)

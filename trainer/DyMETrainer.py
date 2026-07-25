@@ -672,6 +672,9 @@ class DyMETrainer(Trainer):
         }
 
         num_processes = self.accelerator.num_processes
+        effective_batch_size = (
+            args.per_device_train_batch_size * num_processes * args.gradient_accumulation_steps
+        )
         validate_grpo_batch_geometry(
             num_generations=self.num_generations,
             per_device_train_batch_size=args.per_device_train_batch_size,
