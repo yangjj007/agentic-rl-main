@@ -21,7 +21,7 @@ OUTPUT_DIR = env_str(
 
 CONFIG = copy.deepcopy(base.CONFIG)
 CONFIG["training"]["dyme_args"]["output_dir"] = OUTPUT_DIR
-CONFIG["dataset"]["train_dataset"] = project_path("data", "chartqa", "train_new_prerefine.json")
+CONFIG["dataset"]["train_dataset"] = project_path("data", "chartqa", "train_new_prerefine_vf_full.json")
 
 _visual = CONFIG["opsd"].setdefault("visual_supervision", {})
 _checker = _visual.setdefault("checker", {})
