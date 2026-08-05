@@ -53,6 +53,7 @@ CONFIG = {
         "dyme_args": _dyme_args,
     },
     "opsd": DYME_OPSD_CONFIG,
+    "checkpoint_eval": dict(base.CONFIG.get("checkpoint_eval", {})),
     "launch": LAUNCH_CONFIG,
     "deplot": DEPLOT_CONFIG,
 }

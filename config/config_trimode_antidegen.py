@@ -58,4 +58,5 @@ CONFIG = {
     "opsd": DYME_OPSD_CONFIG,
     "client": trimode.CLIENT_CONFIG,
     "dataset": trimode.DATASET_CONFIG,
+    "checkpoint_eval": dict(trimode.CHECKPOINT_EVAL_CONFIG),
 }

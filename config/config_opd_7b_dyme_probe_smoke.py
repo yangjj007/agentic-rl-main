@@ -29,4 +29,8 @@ CONFIG = {
         "dyme_args": _dyme_args,
     },
     "dataset": _dataset,
+    "checkpoint_eval": {
+        **base.CONFIG.get("checkpoint_eval", {}),
+        "enabled": False,
+    },
 }

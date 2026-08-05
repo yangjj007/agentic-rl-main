@@ -6,7 +6,7 @@ import textwrap
 import warnings
 from collections import defaultdict, deque
 from collections.abc import Sized
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Optional, Union
 
 from torch.nn.utils.rnn import pad_sequence
@@ -33,7 +33,7 @@ from transformers import (
     is_wandb_available,
 )
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-from transformers.trainer_utils import seed_worker
+from transformers.trainer_utils import TrainOutput, seed_worker
 from transformers.utils import is_datasets_available, is_peft_available
 
 from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
@@ -73,6 +73,12 @@ from reward_utils.perception_reward import (
     score_perception_rewards,
 )
 from data_utils.chart.evaluator import eval_one_chart, eval_teacher_probe_chart
+from eval.chartqa_core import ChartQAEvaluationConfig, evaluate_chartqa_in_memory
+from opsd_utils.checkpoint_eval import (
+    CheckpointEvaluationPolicy,
+    CheckpointEvaluationTriggerCallback,
+    apply_checkpoint_evaluation_decision,
+)
 
 from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, MODE_SKIP, DEFAULT_OPSD_CONFIG
 from opsd_utils.chart_cot_quality_gate import (
@@ -530,11 +536,13 @@ class DyMETrainer(Trainer):
         teacher_model: Optional[PreTrainedModel] = None,
         teacher_model_config: Optional[dict] = None,
         visual_supervision_meta: Optional[dict] = None,
+        checkpoint_eval_config: Optional[dict] = None,
     ):
         self.opsd_config = opsd_config if opsd_config is not None else dict(DEFAULT_OPSD_CONFIG)
         self.teacher_model = teacher_model
         self._teacher_model_config = teacher_model_config
         self.visual_supervision_meta = visual_supervision_meta or {}
+        self.checkpoint_eval_config = dict(checkpoint_eval_config or {})
         self._last_visual_batch_stats: dict[str, Any] = {}
         self._teacher_vocab_checked = False
         self._teacher_probe_preview_logged = False
@@ -646,6 +654,37 @@ class DyMETrainer(Trainer):
             processing_class=processing_class,
             callbacks=callbacks,
             optimizers=optimizers,
+        )
+
+        # This is intentionally separate from Trainer's generic evaluation
+        # loop.  ChartQA checkpoint selection must run greedy inference on the
+        # resident student, rather than GRPO's reward/evaluation path or a
+        # freshly loaded checkpoint.
+        self.checkpoint_eval_policy = None
+        if self.checkpoint_eval_config.get("enabled", False):
+            # The callback is an ExportableState, so use its policy instance.
+            # This preserves best-score/patience state when Trainer restores
+            # callback state during resume.
+            checkpoint_callback = next(
+                (
+                    callback
+                    for callback in self.callback_handler.callbacks
+                    if isinstance(callback, CheckpointEvaluationTriggerCallback)
+                ),
+                None,
+            )
+            if checkpoint_callback is None:
+                self.checkpoint_eval_policy = CheckpointEvaluationPolicy(
+                    patience=int(self.checkpoint_eval_config.get("patience", 3)),
+                    tie_policy=str(self.checkpoint_eval_config.get("tie_policy", "reset")),
+                )
+            else:
+                self.checkpoint_eval_policy = checkpoint_callback.policy
+        self.best_checkpoint_score: Optional[float] = None
+        self.best_checkpoint_step: Optional[int] = None
+        self.best_checkpoint_path: Optional[str] = None
+        self.checkpoint_eval_state = (
+            self.checkpoint_eval_policy.state if self.checkpoint_eval_policy is not None else None
         )
 
         # Reference model
@@ -4667,6 +4706,347 @@ class DyMETrainer(Trainer):
                 loss = self.compute_loss(model, inputs)
             loss = loss.mean().detach()
         return loss, None, None
+
+    def _checkpoint_evaluation_preflight_should_stop(
+        self, resume_from_checkpoint: Optional[Union[str, bool]]
+    ) -> bool:
+        """Restore a terminal checkpoint-eval sidecar before HF enters its loop.
+
+        Transformers restores callback state and calls ``on_train_begin`` from
+        inside ``Trainer.train``.  In the current HF lifecycle that is not an
+        early enough point to guarantee that a resumed terminal run will not
+        reach an optimizer step.  The checkpoint-eval sidecar is the durable
+        source for terminal decisions (the terminal comparison intentionally
+        creates no native checkpoint), so inspect it before delegating to the
+        parent training loop.
+
+        Every distributed rank performs the same call.  Only rank zero reads
+        the sidecar; the callback broadcasts either the restored policy or its
+        rank-zero load error, so corrupted metadata cannot strand workers in a
+        later collective.
+        """
+        if not resume_from_checkpoint or not self.checkpoint_eval_config.get("enabled", False):
+            return False
+
+        callback = next(
+            (
+                candidate
+                for candidate in getattr(getattr(self, "callback_handler", None), "callbacks", ())
+                if isinstance(candidate, CheckpointEvaluationTriggerCallback)
+            ),
+            None,
+        )
+        if callback is None:
+            return False
+
+        # ``on_train_begin`` normally initializes these callback fields, but
+        # this preflight deliberately runs before that HF hook.  Use the live
+        # Trainer rank rather than the stale/default TrainerState value.
+        callback._set_output_dir_from_training_args(self.args)
+        callback._is_world_process_zero = bool(self.is_world_process_zero())
+        callback._load_and_broadcast_policy_state_from_world_zero()
+        callback._policy_stop_requested = bool(callback.policy.state.stop_requested)
+
+        # HF can replace callback instances during a normal resume.  Bind the
+        # active instance now as well, so terminal reporting and the main
+        # entrypoint see the recovered best score even though no later save
+        # event will occur to rebind it.
+        self.checkpoint_eval_policy = callback.policy
+        self.checkpoint_eval_state = callback.policy.state
+        policy_state = callback.policy.state
+        self.best_checkpoint_score = policy_state.best_score
+        self.best_checkpoint_step = policy_state.best_step
+        self.best_checkpoint_path = (
+            os.path.join(self.args.output_dir, f"checkpoint-{policy_state.best_step}")
+            if policy_state.best_step is not None
+            else None
+        )
+        return bool(policy_state.stop_requested)
+
+    def train(
+        self,
+        resume_from_checkpoint: Optional[Union[str, bool]] = None,
+        trial: Any = None,
+        ignore_keys_for_eval: Optional[list[str]] = None,
+        **kwargs: Any,
+    ) -> TrainOutput:
+        """Train normally, unless a resumed checkpoint already exhausted patience."""
+        normalized_resume_checkpoint = resume_from_checkpoint
+        if normalized_resume_checkpoint is True:
+            # Match Trainer.train(resume_from_checkpoint=True): resolve the
+            # retained native checkpoint before reading its output sidecar.
+            # Import locally so the surrounding trainer module stays aligned
+            # with the project's existing lightweight import surface.
+            from transformers.trainer_utils import get_last_checkpoint
+
+            normalized_resume_checkpoint = get_last_checkpoint(self.args.output_dir)
+            if normalized_resume_checkpoint is None:
+                raise ValueError(
+                    f"No valid checkpoint found in output directory ({self.args.output_dir})"
+                )
+        elif normalized_resume_checkpoint is False:
+            normalized_resume_checkpoint = None
+
+        if self._checkpoint_evaluation_preflight_should_stop(normalized_resume_checkpoint):
+            policy_state = self.checkpoint_eval_policy.state
+            # The retained checkpoint is the last native checkpoint for this
+            # policy.  Returning its step gives callers a meaningful, stable
+            # TrainOutput without entering HF's model/optimizer lifecycle.
+            global_step = int(
+                policy_state.best_step
+                if policy_state.best_step is not None
+                else getattr(self.state, "global_step", 0)
+            )
+            metrics = {
+                "train_loss": 0.0,
+                "checkpoint_eval_terminal_resume": 1.0,
+                "checkpoint_eval_best_score": float(policy_state.best_score),
+                "checkpoint_eval_best_step": float(policy_state.best_step),
+                "checkpoint_eval_lower_score_streak": float(policy_state.lower_score_streak),
+                "checkpoint_eval_evaluation_count": float(policy_state.evaluation_count),
+            }
+            return TrainOutput(global_step, 0.0, metrics)
+        return super().train(
+            resume_from_checkpoint=normalized_resume_checkpoint,
+            trial=trial,
+            ignore_keys_for_eval=ignore_keys_for_eval,
+            **kwargs,
+        )
+
+    def _consume_checkpoint_evaluation_request(self) -> bool:
+        """Consume the save-trigger flag installed by the checkpoint callback."""
+        callback_handler = getattr(self, "callback_handler", None)
+        for callback in getattr(callback_handler, "callbacks", ()):
+            if isinstance(callback, CheckpointEvaluationTriggerCallback):
+                if callback.consume_checkpoint_evaluation():
+                    # HF can replace exportable callback instances while
+                    # restoring a checkpoint.  Rebind on consumption so the
+                    # resumed policy state, not the constructor's empty one,
+                    # governs the next comparison.
+                    self.checkpoint_eval_policy = callback.policy
+                    self.checkpoint_eval_state = callback.policy.state
+                    return True
+        return False
+
+    def _refresh_checkpoint_evaluation_callback_state(self, *, persist_sidecar: bool) -> None:
+        """Refresh callback state; persist only decisions with no native save.
+
+        A new-best result is included in native Trainer checkpoint state during
+        ``_save_checkpoint``.  Writing its sidecar before that point can make
+        a crash recover an unwritten best step.  Lower/tied results veto
+        native saving, so their streak must instead be persisted now.
+        """
+        stateful_callbacks = getattr(self.state, "stateful_callbacks", None)
+        for callback in getattr(getattr(self, "callback_handler", None), "callbacks", ()):
+            if isinstance(callback, CheckpointEvaluationTriggerCallback):
+                if isinstance(stateful_callbacks, dict):
+                    stateful_callbacks[callback.__class__.__name__] = callback.state()
+                if persist_sidecar:
+                    # Lower-scoring evaluations do not create a native Trainer
+                    # checkpoint, so persist the updated streak/best state to
+                    # the callback sidecar as well.  All ranks enter this
+                    # branch, but only global rank zero may write it.  The
+                    # callback broadcasts a write failure before raising, so
+                    # a filesystem error cannot leave workers advancing toward
+                    # a later collective while rank zero exits.
+                    # ``on_train_begin`` normally initializes this cache. Set
+                    # it from the live accelerator here too so this helper
+                    # remains correct for direct/atypical Trainer lifecycles.
+                    callback._is_world_process_zero = bool(
+                        getattr(self.accelerator, "is_main_process", True)
+                    )
+                    callback._run_on_rank_zero_and_broadcast_failure(
+                        operation="non-saving checkpoint evaluation sidecar persistence",
+                        action=lambda: callback.persist(is_world_process_zero=True),
+                    )
+                return
+
+    @contextmanager
+    def _checkpoint_evaluation_generation_context(self):
+        """Expose the live, distributed student safely for ChartQA generation."""
+        with unwrap_model_for_generation(
+            self.model_wrapped,
+            self.accelerator,
+            gather_deepspeed3_params=self.args.ds3_gather_for_generation,
+        ) as unwrapped_model:
+            with (
+                FSDP.summon_full_params(self.model_wrapped, recurse=False)
+                if self.is_fsdp_enabled
+                else nullcontext()
+            ):
+                yield unwrapped_model
+
+    def _broadcast_checkpoint_evaluation_payload(
+        self,
+        payload: Optional[dict[str, Any]],
+        *,
+        rank_zero_error: Exception | None = None,
+    ) -> dict[str, Any]:
+        """Share a rank-zero policy result, including an observation failure.
+
+        The policy is intentionally mutated only on global rank zero.  A
+        malformed score or terminal-state mismatch can make ``observe`` raise;
+        it must still enter the one evaluation-result broadcast so workers do
+        not hang waiting for a payload that rank zero never sends.
+        """
+        is_main = bool(getattr(self.accelerator, "is_main_process", True))
+        objects: list[Optional[dict[str, Any]]] = [None]
+        if is_main:
+            if rank_zero_error is None:
+                objects[0] = {"ok": True, "payload": payload}
+            else:
+                objects[0] = {
+                    "ok": False,
+                    "error_type": type(rank_zero_error).__name__,
+                    "error": str(rank_zero_error),
+                }
+        if int(getattr(self.accelerator, "num_processes", 1)) > 1:
+            broadcast_object_list(objects, from_process=0)
+        outcome = objects[0]
+        if not isinstance(outcome, dict) or not isinstance(outcome.get("ok"), bool):
+            raise RuntimeError("checkpoint evaluation did not receive a valid rank-zero outcome")
+        if not outcome["ok"]:
+            error_type = outcome.get("error_type", "RuntimeError")
+            detail = outcome.get("error", "unknown policy observation error")
+            message = (
+                "checkpoint evaluation policy observation failed on global rank zero "
+                f"({error_type}): {detail}"
+            )
+            if rank_zero_error is not None:
+                raise RuntimeError(message) from rank_zero_error
+            raise RuntimeError(message)
+        result = outcome.get("payload")
+        if not isinstance(result, dict):
+            raise RuntimeError("checkpoint evaluation did not receive a valid rank-zero decision")
+        return result
+
+    def evaluate(
+        self,
+        eval_dataset: Optional[Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]] = None,
+        ignore_keys: Optional[list[str]] = None,
+        metric_key_prefix: str = "eval",
+        **kwargs: Any,
+    ) -> dict[str, float]:
+        """Evaluate the resident student for checkpoint selection on ChartQA.
+
+        The normal GRPO ``prediction_step`` computes rewards and may invoke the
+        teacher/refiner.  It is therefore deliberately bypassed here: this path
+        runs greedy ChartQA inference through the existing GPU model, on every
+        rank, and evaluates the exact global accuracy only once per save event.
+        """
+        if self.checkpoint_eval_policy is None:
+            return super().evaluate(
+                eval_dataset=eval_dataset,
+                ignore_keys=ignore_keys,
+                metric_key_prefix=metric_key_prefix,
+                **kwargs,
+            )
+
+        # Only the callback-transformed native save event participates in
+        # best-checkpoint selection.  A separately configured Trainer eval
+        # cadence must neither consume patience nor overwrite the score state.
+        save_time_evaluation = self._consume_checkpoint_evaluation_request()
+        if not save_time_evaluation:
+            return super().evaluate(
+                eval_dataset=eval_dataset,
+                ignore_keys=ignore_keys,
+                metric_key_prefix=metric_key_prefix,
+                **kwargs,
+            )
+
+        dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
+        if isinstance(dataset, dict):
+            if len(dataset) != 1:
+                raise ValueError(
+                    "checkpoint_eval requires one ChartQA evaluation dataset, not a split mapping"
+                )
+            dataset = next(iter(dataset.values()))
+        if dataset is None:
+            raise ValueError("checkpoint_eval requires an evaluation dataset")
+
+        eval_config = ChartQAEvaluationConfig(
+            batch_size=int(self.checkpoint_eval_config.get("batch_size", 1)),
+            max_new_tokens=int(self.checkpoint_eval_config.get("max_new_tokens", 1024)),
+            do_sample=False,
+            temperature=0.0,
+            top_p=1.0,
+            repetition_penalty=float(self.checkpoint_eval_config.get("repetition_penalty", 1.0)),
+            device=getattr(self.accelerator, "device", None),
+            synced_gpus=self.checkpoint_eval_config.get("synced_gpus"),
+        )
+        result = evaluate_chartqa_in_memory(
+            model=self.model,
+            processor=self.processing_class,
+            accelerator=self.accelerator,
+            dataset=dataset,
+            generation_context=self._checkpoint_evaluation_generation_context,
+            config=eval_config,
+        )
+        score = float(result["checkpoint_score"])
+        step = int(self.state.global_step)
+
+        # The evaluator all-reduces accuracy, but only rank zero mutates the
+        # retention policy.  Broadcasting its complete state prevents a later
+        # save/early-stop branch from diverging across distributed workers.
+        payload: Optional[dict[str, Any]] = None
+        rank_zero_error: Exception | None = None
+        if getattr(self.accelerator, "is_main_process", True):
+            try:
+                decision = self.checkpoint_eval_policy.observe(score, step=step)
+                payload = {
+                    "decision": decision.to_dict(),
+                    "policy_state": self.checkpoint_eval_policy.state_dict(),
+                }
+            except Exception as exc:
+                # Do not re-raise before the collective below: all workers
+                # must consume this failure rather than wait for a decision.
+                rank_zero_error = exc
+        payload = self._broadcast_checkpoint_evaluation_payload(
+            payload,
+            rank_zero_error=rank_zero_error,
+        )
+        self.checkpoint_eval_policy.load_state_dict(payload["policy_state"])
+        self.checkpoint_eval_state = self.checkpoint_eval_policy.state
+        decision = payload["decision"]
+
+        # Let the callback distinguish a no-save result that must be made
+        # durable immediately from an improving score that must first pass
+        # native Trainer checkpoint writing and rotation.
+        for callback in getattr(getattr(self, "callback_handler", None), "callbacks", ()):
+            if isinstance(callback, CheckpointEvaluationTriggerCallback):
+                callback.record_checkpoint_evaluation_decision(decision)
+                break
+        self._refresh_checkpoint_evaluation_callback_state(
+            persist_sidecar=not bool(decision["should_save"])
+        )
+
+        self.best_checkpoint_score = float(decision["best_score"])
+        self.best_checkpoint_step = int(decision["best_step"])
+        if bool(decision["should_save"]):
+            self.best_checkpoint_path = os.path.join(
+                self.args.output_dir, f"checkpoint-{self.best_checkpoint_step}"
+            )
+
+        control = self.control
+        # The callback has converted the native save event into evaluation.
+        # Restore it only for the initial/improved result; all other scores
+        # retain the previously written checkpoint.
+        apply_checkpoint_evaluation_decision(control, decision)
+
+        prefix = f"{metric_key_prefix}_"
+        metrics: dict[str, float] = {
+            f"{prefix}checkpoint_score": score,
+            f"{prefix}chartqa_accuracy": float(result["chartqa_accuracy"]),
+            f"{prefix}checkpoint_best_score": self.best_checkpoint_score,
+            f"{prefix}checkpoint_lower_score_streak": float(decision["lower_score_streak"]),
+            f"{prefix}checkpoint_evaluation_count": float(decision["evaluation_count"]),
+            f"{prefix}checkpoint_sample_count": float(result["sample_count"]),
+        }
+        # Call the base implementation directly.  DyMETrainer.log aggregates
+        # and clears GRPO metric buffers, which is wrong for this independent
+        # checkpoint score event.
+        Trainer.log(self, metrics)
+        return metrics
 
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
         mode = "train" if self.model.training else "eval"

@@ -145,6 +145,11 @@ def apply_to_config(
         sft_out = os.path.join(OUTPUT_ROOT, "sft")
         training["sft_args"] = fast_sft_args(training["sft_args"], sft_out)
     cfg["dataset"] = fast_dataset_config(cfg.get("dataset", {}))
+    # These short smoke/baseline profiles are intended to exercise the
+    # training recipes, not run full validation inference at each save event.
+    # Production ChartQA configs retain their enabled checkpoint-eval policy.
+    if "checkpoint_eval" in cfg:
+        cfg["checkpoint_eval"] = {**cfg["checkpoint_eval"], "enabled": False}
     if disable_deplot and "deplot" in cfg:
         cfg["deplot"] = {**cfg["deplot"], "enabled": False}
     if opsd_enabled is not None:

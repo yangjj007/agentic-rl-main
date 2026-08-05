@@ -165,6 +165,9 @@ CONFIG = {
     "opsd": DYME_OPSD_CONFIG,
     "client": antidegen.CONFIG["client"],
     "dataset": antidegen.CONFIG["dataset"],
+    # Full ChartQA production profile: evaluate the in-memory student at save
+    # events and retain only the best checkpoint.
+    "checkpoint_eval": dict(antidegen.CONFIG.get("checkpoint_eval", {})),
     "launch": LAUNCH_CONFIG,
     "deplot": DEPLOT_CONFIG,
 }

@@ -86,4 +86,8 @@ CONFIG = {
     },
     "dataset": _dataset,
     "opsd": DYME_OPSD_CONFIG,
+    "checkpoint_eval": {
+        **base.CONFIG.get("checkpoint_eval", {}),
+        "enabled": False,
+    },
 }

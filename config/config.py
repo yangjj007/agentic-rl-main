@@ -1,6 +1,7 @@
 import os
 import torch
 
+from config.env_overrides import env_bool, env_int, env_str
 from data_utils.paths import OUTPUTS_DIR, project_path
 
 # ====== Model Configuration ======
@@ -160,6 +161,22 @@ DATASET_CONFIG = {
     "eval_dataset": "HuggingFaceM4/ChartQA",  # 验证数据路径
 }
 
+# ====== Save-time ChartQA evaluation / best-checkpoint policy ======
+#
+# The normal ChartQA DyME entrypoint evaluates the in-memory student model at
+# each native Trainer save event.  The callback/trainer owns the evaluation and
+# policy state; this configuration only describes the public knobs.  Smoke
+# profiles with no evaluation dataset explicitly override ``enabled=False``.
+CHECKPOINT_EVAL_CONFIG = {
+    "enabled": env_bool("DYME_CHECKPOINT_EVAL", True),
+    "split": env_str("DYME_CHECKPOINT_EVAL_SPLIT", "validation"),
+    "batch_size": env_int("DYME_CHECKPOINT_EVAL_BATCH_SIZE", 1),
+    "max_new_tokens": env_int("DYME_CHECKPOINT_EVAL_MAX_NEW_TOKENS", 1024),
+    "patience": env_int("DYME_CHECKPOINT_EVAL_PATIENCE", 3),
+    # Equal scores do not count as degradation and reset the low-score streak.
+    "tie_policy": env_str("DYME_CHECKPOINT_EVAL_TIE_POLICY", "reset"),
+}
+
 # ====== DePlot offline preprocessing (ChartQA F2) ======
 DEPLOT_CONFIG = {
     "enabled": True,
@@ -178,6 +195,7 @@ CONFIG = {
     "opsd": DYME_OPSD_CONFIG,
     "client": CLIENT_CONFIG,
     "dataset": DATASET_CONFIG,
+    "checkpoint_eval": CHECKPOINT_EVAL_CONFIG,
     "deplot": DEPLOT_CONFIG,
 }
 
@@ -190,4 +208,3 @@ def save_config(config, config_path="./config.json"):
 # Example usage to save config
 if __name__ == "__main__":
     save_config(CONFIG)
-

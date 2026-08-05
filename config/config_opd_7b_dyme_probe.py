@@ -603,6 +603,7 @@ CONFIG = {
     "opsd": DYME_OPSD_CONFIG,
     "client": base.CONFIG["client"],
     "dataset": base.CONFIG["dataset"],
+    "checkpoint_eval": dict(base.CONFIG.get("checkpoint_eval", {})),
     "launch": LAUNCH_CONFIG,
     "deplot": DEPLOT_CONFIG,
 }

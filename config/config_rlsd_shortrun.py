@@ -32,4 +32,8 @@ CONFIG = {
         "dyme_args": _dyme_args,
     },
     "opsd": DYME_OPSD_CONFIG,
+    "checkpoint_eval": {
+        **base.CONFIG.get("checkpoint_eval", {}),
+        "enabled": False,
+    },
 }

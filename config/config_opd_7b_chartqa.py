@@ -68,6 +68,7 @@ CONFIG = {
     "opsd": DYME_OPSD_CONFIG,
     "client": rlsd.CONFIG["client"],
     "dataset": rlsd.CONFIG["dataset"],
+    "checkpoint_eval": dict(rlsd.CONFIG.get("checkpoint_eval", {})),
     "launch": LAUNCH_CONFIG,
     "deplot": DEPLOT_CONFIG,
 }

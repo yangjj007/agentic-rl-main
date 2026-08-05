@@ -1,6 +1,14 @@
 import os
 
-from config import CLIENT_CONFIG, DATASET_CONFIG, DYME_OPSD_CONFIG, MODEL_CONFIG, RL_CONFIG, TRAINING_CONFIG
+from config import (
+    CHECKPOINT_EVAL_CONFIG,
+    CLIENT_CONFIG,
+    DATASET_CONFIG,
+    DYME_OPSD_CONFIG,
+    MODEL_CONFIG,
+    RL_CONFIG,
+    TRAINING_CONFIG,
+)
 from config.env_overrides import env_bool, env_str
 from data_utils.paths import OUTPUTS_DIR
 
@@ -89,4 +97,6 @@ CONFIG = {
     "opsd": DYME_OPSD_CONFIG,
     "client": CLIENT_CONFIG,
     "dataset": DATASET_CONFIG,
+    # Save-time in-memory ChartQA evaluation is enabled for production runs.
+    "checkpoint_eval": dict(CHECKPOINT_EVAL_CONFIG),
 }

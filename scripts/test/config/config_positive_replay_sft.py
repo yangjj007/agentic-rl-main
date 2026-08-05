@@ -43,6 +43,10 @@ CONFIG["dataset"] = {
     "train_dataset": REPLAY_TRAIN_DATASET,
     "eval_dataset": None,
 }
+CONFIG["checkpoint_eval"] = {
+    **CONFIG.get("checkpoint_eval", {}),
+    "enabled": False,
+}
 CONFIG["training"]["sft_args"] = {
     **CONFIG["training"]["sft_args"],
     "output_dir": REPLAY_OUTPUT_DIR,
