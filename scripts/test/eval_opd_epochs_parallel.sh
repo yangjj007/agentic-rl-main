@@ -46,7 +46,7 @@ run_eval() {
       HF_DATASETS_OFFLINE=1 \
       HF_HUB_OFFLINE=1 \
       DYME_EVAL_MAX_NEW_TOKENS="${DYME_EVAL_MAX_NEW_TOKENS:-1024}" \
-      /home/deepseek_VG/.conda/envs/dyme/bin/accelerate launch \
+      accelerate launch \
         --config_file scripts/test/accelerate_single_gpu_no_deepspeed.yaml \
         --num_processes 1 --main_process_port "$((29600 + gpu))" \
         -m eval.eval_chartqa \

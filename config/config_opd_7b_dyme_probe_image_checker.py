@@ -18,10 +18,16 @@ OUTPUT_DIR = env_str(
     "DYME_OUTPUT_DIR",
     os.path.join(OUTPUTS_DIR, "opd-7b-dyme-probe-image-checker"),
 )
+TRAIN_DATASET = env_str(
+    "DYME_CHARTQA_VF_FULL",
+    project_path("data", "chartqa", "train_new_prerefine_vf_full.json"),
+)
+if not os.path.isabs(TRAIN_DATASET):
+    TRAIN_DATASET = project_path(TRAIN_DATASET)
 
 CONFIG = copy.deepcopy(base.CONFIG)
 CONFIG["training"]["dyme_args"]["output_dir"] = OUTPUT_DIR
-CONFIG["dataset"]["train_dataset"] = project_path("data", "chartqa", "train_new_prerefine_vf_full.json")
+CONFIG["dataset"]["train_dataset"] = TRAIN_DATASET
 
 _visual = CONFIG["opsd"].setdefault("visual_supervision", {})
 _checker = _visual.setdefault("checker", {})

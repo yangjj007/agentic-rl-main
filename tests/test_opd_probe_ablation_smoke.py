@@ -187,8 +187,8 @@ def test_deplot_ablation_runner_dry_run_lists_six_aligned_variants() -> None:
         "deplot_no_vs_opd_va_pcd",
     ]
     assert "DYME_NUM_TRAIN_EPOCHS=4" in out
-    assert "DYME_STUDENT_MODEL=/home/deepseek_VG/deepseek/models/llava-0.5b-ov" in out
-    assert "DYME_TEACHER_MODEL=/home/deepseek_VG/deepseek/models/llava-7b-ov" in out
+    assert "DYME_STUDENT_MODEL=models/llava-0.5b-ov" in out
+    assert "DYME_TEACHER_MODEL=models/llava-7b-ov" in out
     assert "DYME_TEACHER_PROBE_MAX_NEW_TOKENS=96" in out
     assert "DYME_TEACHER_TRAJ_MAX_NEW_TOKENS=128" in out
     assert "DYME_TEACHER_PROBE_PROVIDERS=format_only,visual_facts_deplot" in out

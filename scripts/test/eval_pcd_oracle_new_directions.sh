@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 
 RUN_ID="${DYME_PCD_RUN_ID:-pcd_oracle_new_directions_4epoch}"
 DRY_RUN=1
-PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 EVAL_BATCH_SIZE="${DYME_EVAL_BATCH_SIZE:-1}"
 EVAL_NUM_PROCESSES="${DYME_EVAL_NUM_PROCESSES:-1}"
 PORT="${DYME_EVAL_PORT:-29610}"

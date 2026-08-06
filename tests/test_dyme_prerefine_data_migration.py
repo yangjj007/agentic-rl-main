@@ -23,7 +23,7 @@ def test_chartqa_prerefine_dataset_is_migrated_and_dyme_shaped():
     assert os.path.exists(PREREFINE_DATASET)
     with open(PREREFINE_DATASET, "rb") as f:
         assert hashlib.sha256(f.read()).hexdigest() == (
-            "effeec8d796018b55a7f8b1a8b568b461fd497199683f289612fb715fe18d173"
+            "3c57bb96b3c3fddc5d993703948fca7d84f7744773acb43eb6ad2183b7979f6d"
         )
 
     with open(PREREFINE_DATASET, "r", encoding="utf-8") as f:

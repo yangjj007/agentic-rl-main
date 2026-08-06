@@ -17,7 +17,7 @@
 - Create: `tests/test_global_training_signal.py`
 
 - [ ] **Step 1: Write failing tests** for rate denominators, task/total zero disagreement, empty-count fallback, and finite output.
-- [ ] **Step 2: Run RED:** `PYTHONPATH=. /home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest -q tests/test_global_training_signal.py` must fail because the module is missing.
+- [ ] **Step 2: Run RED:** `PYTHONPATH=. python -m pytest -q tests/test_global_training_signal.py` must fail because the module is missing.
 - [ ] **Step 3: Implement frozen count and snapshot dataclasses** plus `snapshot_from_counts` using additive counts only.
 - [ ] **Step 4: Run GREEN:** the Task 1 command must pass.
 
@@ -28,7 +28,7 @@
 - Create: `tests/test_global_training_signal_trainer.py`
 
 - [ ] **Step 1: Write failing tests** for one reduce call, identical global snapshots, task-zero semantics, and `global_signal/*` metric publication.
-- [ ] **Step 2: Run RED:** `PYTHONPATH=. /home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest -q tests/test_global_training_signal_trainer.py` must fail on missing trainer helpers.
+- [ ] **Step 2: Run RED:** `PYTHONPATH=. python -m pytest -q tests/test_global_training_signal_trainer.py` must fail on missing trainer helpers.
 - [ ] **Step 3: Collect pre-route task counts** from accuracy reward groups and total-reward advantages.
 - [ ] **Step 4: Collect post-route counts** from final route masks plus completion clipping, EOS, degeneration, and accuracy sums.
 - [ ] **Step 5: Reduce once and publish** the immutable `global_signal/*` snapshot.

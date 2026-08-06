@@ -55,7 +55,7 @@ export DYME_REPLAY_SFT_LOG_ROOT="${DYME_REPLAY_SFT_LOG_ROOT:-outputs/test-fast/l
 export DYME_REPLAY_SFT_RUN_ID="${DYME_REPLAY_SFT_RUN_ID:-replay_sft_warmup_$(date +%Y%m%d_%H%M%S)}"
 export DYME_SFT_OUTPUT_DIR="${DYME_SFT_OUTPUT_DIR:-${DYME_REPLAY_SFT_OUTPUT_ROOT}/${DYME_REPLAY_SFT_RUN_ID}}"
 export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_accelerate_config)}"
-STUDENT_MODEL="${DYME_STUDENT_MODEL:-/home/deepseek_VG/deepseek/models/llava-0.5b-ov}"
+STUDENT_MODEL="${DYME_STUDENT_MODEL:-models/llava-0.5b-ov}"
 
 if [[ ! -f "${DYME_REPLAY_TRAIN_DATASET}" ]]; then
   echo "Replay train dataset not found: ${DYME_REPLAY_TRAIN_DATASET}" >&2

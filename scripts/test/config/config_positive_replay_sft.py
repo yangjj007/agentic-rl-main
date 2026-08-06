@@ -31,7 +31,7 @@ REPLAY_OUTPUT_DIR = env_str(
     "DYME_SFT_OUTPUT_DIR",
     os.path.join(OUTPUT_ROOT, "positive-replay-sft", "warmup"),
 )
-DEFAULT_STUDENT_MODEL = "/home/deepseek_VG/deepseek/models/llava-0.5b-ov"
+DEFAULT_STUDENT_MODEL = "models/llava-0.5b-ov"
 
 CONFIG = copy.deepcopy(base.CONFIG)
 CONFIG["model"] = {

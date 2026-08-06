@@ -71,7 +71,7 @@ def test_gold_hidden_clrc_sft_repair_uses_short_repair_without_oracle(tmp_path: 
 Run:
 
 ```bash
-/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest \
+python -m pytest \
   tests/test_pcd_no_visual_runner.py::test_gold_hidden_clrc_restores_grpo_recovery_defaults \
   tests/test_pcd_no_visual_runner.py::test_gold_hidden_clrc_sft_repair_uses_short_repair_without_oracle \
   -q
@@ -187,7 +187,7 @@ Allow `TeacherSftRepairConfig.enabled` for `refiner_sft`, accept `teacher_correc
 Run:
 
 ```bash
-/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest -q tests/test_teacher_sft_repair.py
+python -m pytest -q tests/test_teacher_sft_repair.py
 ```
 
 Expected: pass.
@@ -215,7 +215,7 @@ Keep the campaign variant list ordered with `deplot_no_vs_opd_pcd_gold_hidden_op
 Run:
 
 ```bash
-/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest -q tests/test_main5_campaign_runner.py
+python -m pytest -q tests/test_main5_campaign_runner.py
 ```
 
 Expected: pass.
@@ -228,8 +228,8 @@ Expected: pass.
 - [x] **Step 1: Run broader checks**
 
 ```bash
-/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest tests/test_pcd_no_visual_runner.py -q
-/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest tests/test_main5_campaign_runner.py tests/test_teacher_sft_repair.py tests/test_opd_probe_ablation_smoke.py -q
+python -m pytest tests/test_pcd_no_visual_runner.py -q
+python -m pytest tests/test_main5_campaign_runner.py tests/test_teacher_sft_repair.py tests/test_opd_probe_ablation_smoke.py -q
 bash -n scripts/test/run_pcd_no_visual.sh
 bash -n scripts/test/run_pcd_no_visual_10epoch.sh
 bash -n scripts/test/run_main5_10epoch_campaign.sh

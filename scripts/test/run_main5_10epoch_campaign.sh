@@ -19,10 +19,10 @@ GPU_MIN_FREE_MB="${DYME_MAIN5_GPU_MIN_FREE_MB:-60000}"
 GPU_MAX_UTIL_PCT="${DYME_MAIN5_GPU_MAX_UTIL_PCT:-20}"
 TRAIN_MAX_ATTEMPTS="${DYME_MAIN5_TRAIN_MAX_ATTEMPTS:-3}"
 TRAIN_RETRY_DELAY="${DYME_MAIN5_TRAIN_RETRY_DELAY:-300}"
-PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
-STUDENT_MODEL="${DYME_STUDENT_MODEL:-/data/deepseek_vg/yjj/models/llava-onevision-qwen2-0.5b-ov-hf}"
-TEACHER_MODEL="${DYME_TEACHER_MODEL:-/data/deepseek_vg/yjj/models/llava-onevision-qwen2-7b-ov-hf}"
+STUDENT_MODEL="${DYME_STUDENT_MODEL:-models/llava-0.5b-ov}"
+TEACHER_MODEL="${DYME_TEACHER_MODEL:-models/llava-7b-ov}"
 STUDENT_REPO="${DYME_MAIN5_STUDENT_REPO:-llava-hf/llava-onevision-qwen2-0.5b-ov-hf}"
 TEACHER_REPO="${DYME_MAIN5_TEACHER_REPO:-llava-hf/llava-onevision-qwen2-7b-ov-hf}"
 

@@ -10,7 +10,7 @@ OUT_ROOT="${DYME_MAIN5_CAMPAIGN_OUT_ROOT:-outputs/test-fast/pcd-no-visual/${RUN_
 LOG_ROOT="${DYME_MAIN5_CAMPAIGN_LOG_ROOT:-outputs/test-fast/logs/pcd_no_visual_${RUN_ID}}"
 CAMPAIGN_DIR="${DYME_MAIN5_CAMPAIGN_DIR:-outputs/test-fast/main5-campaign/${RUN_ID}}"
 SLEEP_SECONDS="${DYME_MAIN5_MONITOR_INTERVAL:-1800}"
-PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 ATTENTION_FILE="${CAMPAIGN_DIR}/NEEDS_ATTENTION_HEALTH"
 
 mkdir -p "${CAMPAIGN_DIR}"

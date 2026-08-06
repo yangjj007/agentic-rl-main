@@ -225,8 +225,8 @@ def test_pcd_no_visual_dry_run_defaults_to_local_model_paths(tmp_path: Path) -> 
     )
     out = result.stdout
 
-    assert "DYME_STUDENT_MODEL=/home/deepseek_VG/deepseek/models/llava-0.5b-ov" in out
-    assert "DYME_TEACHER_MODEL=/home/deepseek_VG/deepseek/models/llava-7b-ov" in out
+    assert "DYME_STUDENT_MODEL=models/llava-0.5b-ov" in out
+    assert "DYME_TEACHER_MODEL=models/llava-7b-ov" in out
 
 
 def test_pcd_no_visual_dry_run_canonical_speed_profile(tmp_path: Path) -> None:

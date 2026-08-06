@@ -1,6 +1,9 @@
 import shutil, os
 
-filepath = '/home/deepseek_VG/deepseek/agentic-rl-main/outputs/test-fast/logs/train_test_opd_20260621_212323.log'
+filepath = os.environ.get(
+    "DYME_LOG_PATH",
+    "outputs/test-fast/logs/train_test_opd_20260621_212323.log",
+)
 tmpfile = filepath + '.tmp'
 count = 0
 total = 0

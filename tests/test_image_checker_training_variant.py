@@ -63,6 +63,19 @@ def test_image_checker_training_script_selects_explicit_variant():
     assert 'DYME_VISUAL_CHECKER_AUX="${DYME_VISUAL_CHECKER_AUX:-none}"' in text
 
 
+def test_image_checker_variant_honors_chartqa_vf_full_override(monkeypatch):
+    import config.config_opd_7b_dyme_probe_image_checker as checker_mod
+
+    relative_path = "data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32.json"
+    monkeypatch.setenv("DYME_CHARTQA_VF_FULL", relative_path)
+    mod = importlib.reload(checker_mod)
+
+    assert mod.CONFIG["dataset"]["train_dataset"] == str(Path(relative_path).resolve())
+
+    monkeypatch.delenv("DYME_CHARTQA_VF_FULL")
+    importlib.reload(checker_mod)
+
+
 def test_visual_supervision_checker_efficiency_env_overrides(monkeypatch):
     monkeypatch.setenv("DYME_VISUAL_TEACHER_BATCH_SIZE", "8")
     monkeypatch.setenv("DYME_VISUAL_CHECKER_MAX_SCORE_TOKENS", "4")

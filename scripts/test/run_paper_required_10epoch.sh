@@ -8,11 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
-if [[ -x "/home/deepseek_VG/.conda/envs/dyme/bin/python" ]]; then
-  PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
-else
-  PYTHON_BIN="${PYTHON_BIN:-python}"
-fi
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 MODE="dry-run"
 RUN_ID="${DYME_PAPER_REQUIRED_RUN_ID:-paper_required_10epoch}"
@@ -21,7 +17,7 @@ EPOCHS="${DYME_PAPER_REQUIRED_EPOCHS:-10}"
 STAGES="base_eval,sft_train,dyme_train,no_pcd_anchor,sanity,eval_required"
 EVAL_NUM_PROCESSES="${DYME_PAPER_EVAL_NUM_PROCESSES:-8}"
 
-STUDENT_MODEL="${DYME_STUDENT_MODEL:-/home/deepseek_VG/deepseek/models/llava-0.5b-ov}"
+STUDENT_MODEL="${DYME_STUDENT_MODEL:-models/llava-0.5b-ov}"
 BASE_ROOT="${DYME_PAPER_REQUIRED_OUTPUT_ROOT:-outputs/test-fast/paper-required/${RUN_ID}}"
 BASELINE_ROOT="${BASE_ROOT}/baselines"
 BASELINE_LOG_ROOT="${BASE_ROOT}/logs/baselines"

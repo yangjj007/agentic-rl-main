@@ -77,7 +77,7 @@ def test_paper_required_10epoch_dry_run_lists_required_non_main_experiments() ->
     assert "--manifest outputs/test-fast/paper-required/pytest_required/sanity/pcd_manifest.csv" in out
     assert "--variant deplot_no_vs_opd_pcd" in out
     assert "--out outputs/test-fast/paper-required/pytest_required/sanity/pcd_probe_controls.csv" in out
-    assert "--model_path /home/deepseek_VG/deepseek/models/llava-0.5b-ov" in out
+    assert "--model_path models/llava-0.5b-ov" in out
     assert "--model_path outputs/test-fast/paper-required/pytest_required/baselines/sft/final_checkpoint" in out
     assert "--model_path outputs/test-fast/paper-required/pytest_required/baselines/dyme/final_checkpoint" in out
     assert "--model_path outputs/test-fast/paper-required/pytest_required/opd-deplot-anchor/deplot_no_vs_opd/final_checkpoint" in out
