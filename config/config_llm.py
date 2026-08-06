@@ -66,6 +66,8 @@ CONFIG = {
     "rl": RL_CONFIG,
     "client": CLIENT_CONFIG,
     "dataset": DATASET_CONFIG,
+    # ChartQA-only evaluator is disabled for GSM8K.
+    "checkpoint_eval": {"enabled": False},
 }
 
 # Save configuration to a file for reference

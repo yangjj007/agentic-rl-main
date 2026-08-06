@@ -16,11 +16,13 @@ import subprocess
 import sys
 from datetime import datetime
 from functools import partial
+from pathlib import Path
 from typing import Dict, Any
 
 import torch
 import wandb
 from accelerate import Accelerator
+from accelerate.utils import broadcast_object_list
 from datasets import Dataset, load_dataset
 from transformers import AutoProcessor, LlavaOnevisionForConditionalGeneration
 from trl import GRPOConfig
@@ -47,6 +49,276 @@ from opsd_utils.deepspeed_utils import (
     uses_deepspeed_json_file,
 )
 from opsd_utils.trusted_torch_load import maybe_allow_trusted_torch_load
+from opsd_utils.checkpoint_eval import CheckpointEvaluationTriggerCallback
+from opsd_utils.checkpoint_eval_paths import (
+    find_best_checkpoint_path,
+    find_checkpoint_evaluation_policy,
+    recover_interrupted_checkpoint_eval_save,
+    update_final_checkpoint_link,
+    validate_checkpoint_eval_output_dir,
+)
+
+
+_CHECKPOINT_EVAL_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "split": "validation",
+    "batch_size": 1,
+    "max_new_tokens": 1024,
+    "patience": 3,
+    "tie_policy": "reset",
+    "max_samples": None,
+}
+
+
+def resolve_checkpoint_eval_config(
+    raw_config: dict[str, Any] | None,
+    *,
+    task: str,
+    eval_dataset: Any,
+    dyme_args: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate and normalize save-time checkpoint evaluation settings.
+
+    The evaluator intentionally receives an already-loaded dataset and the
+    trainer's in-memory student model.  Main only validates the configuration,
+    applies the Trainer save/metric invariants, and returns a detached config
+    for the trainer/callback.
+    """
+    config = {**_CHECKPOINT_EVAL_DEFAULTS, **(raw_config or {})}
+    enabled = bool(config.get("enabled", False))
+    config["enabled"] = enabled
+    if not enabled:
+        return config
+
+    task_name = str(task or "").strip().lower()
+    if "chart" not in task_name:
+        raise ValueError(
+            "checkpoint_eval is enabled, but this training task is not ChartQA: "
+            f"{task!r}. Set checkpoint_eval.enabled=false for non-ChartQA runs."
+        )
+    if eval_dataset is None:
+        raise ValueError(
+            "checkpoint_eval is enabled but no evaluation dataset was loaded. "
+            "Configure dataset.eval_dataset (and the requested split), or disable checkpoint_eval."
+        )
+    try:
+        eval_size = len(eval_dataset)
+    except TypeError as exc:
+        raise ValueError("checkpoint_eval requires a sized evaluation dataset") from exc
+    if eval_size <= 0:
+        raise ValueError("checkpoint_eval cannot run on an empty evaluation dataset")
+
+    split = str(config.get("split", "validation")).strip().lower()
+    # Model selection must never consume the held-out ChartQA test set.  The
+    # standalone eval CLI may use test; the training-time policy may not.
+    if split not in {"validation", "val"}:
+        raise ValueError(
+            "checkpoint_eval.split must be one of validation or val; "
+            f"got {config.get('split')!r}"
+        )
+    config["split"] = split
+
+    for key in ("batch_size", "max_new_tokens", "patience"):
+        try:
+            value = int(config[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"checkpoint_eval.{key} must be a positive integer") from exc
+        if value <= 0:
+            raise ValueError(f"checkpoint_eval.{key} must be a positive integer, got {value}")
+        config[key] = value
+
+    if config.get("max_samples") is not None:
+        try:
+            max_samples = int(config["max_samples"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("checkpoint_eval.max_samples must be a positive integer") from exc
+        if max_samples <= 0:
+            raise ValueError("checkpoint_eval.max_samples must be a positive integer")
+        if max_samples > eval_size:
+            max_samples = eval_size
+        config["max_samples"] = max_samples
+
+    tie_policy = str(config.get("tie_policy", "reset")).strip().lower()
+    if tie_policy not in {"reset", "ignore", "stop"}:
+        raise ValueError(
+            "checkpoint_eval.tie_policy must be reset, ignore, or stop; "
+            f"got {config.get('tie_policy')!r}"
+        )
+    config["tie_policy"] = tie_policy
+
+    # ``TrainingArguments`` defaults to steps, and older project profiles
+    # (notably config_7B.py) rely on that default while only setting
+    # save_steps.  Normalize it here rather than rejecting a valid HF setup.
+    save_strategy = str(dyme_args.get("save_strategy", "steps")).strip().lower()
+    if save_strategy not in {"steps", "epoch"}:
+        raise ValueError(
+            "checkpoint_eval requires training.dyme_args.save_strategy to be "
+            f"'steps' or 'epoch', got {dyme_args.get('save_strategy')!r}"
+        )
+    output_dir = dyme_args.get("output_dir")
+    if not output_dir:
+        raise ValueError("checkpoint_eval requires training.dyme_args.output_dir")
+
+    # Native Trainer checkpoint writing remains the single writer for all
+    # distributed ranks.  These invariants prevent generic HF best-model logic
+    # from creating a second retention policy or dropping optimizer state.
+    dyme_args["save_total_limit"] = 1
+    dyme_args["save_only_model"] = False
+    dyme_args["metric_for_best_model"] = "checkpoint_score"
+    dyme_args["greater_is_better"] = True
+    dyme_args["load_best_model_at_end"] = False
+    # The native evaluation cadence is independent from save scheduling.  If
+    # left enabled, an ordinary Trainer eval returns its normal GRPO metrics,
+    # then HF's `_determine_best_metric` looks for `eval_checkpoint_score` and
+    # raises KeyError.  The callback promotes every save event to the one
+    # authoritative ChartQA evaluation instead.
+    dyme_args["eval_strategy"] = "no"
+    # The policy (best score + lower-score streak) is stateful.  Preserve it
+    # when resuming the one retained checkpoint instead of treating the next
+    # evaluation as a fresh baseline.
+    dyme_args["restore_callback_states_from_checkpoint"] = True
+    return config
+
+
+def _explicit_checkpoint_resume_target(
+    resume_from_checkpoint: Any,
+    *,
+    output_dir: str | os.PathLike[str],
+) -> Path | None:
+    """Return a directly requested retained-checkpoint path, if it exists.
+
+    This deliberately excludes ``final_checkpoint``.  That compatibility link
+    is atomically repointed by recovery and remains a valid resume path on its
+    own; only a user-provided ``checkpoint-<step>`` directory can become stale
+    when rank zero repairs the native write-before-rotation crash window.
+    """
+    if not isinstance(resume_from_checkpoint, (str, os.PathLike)):
+        return None
+    try:
+        raw_path = Path(os.fspath(resume_from_checkpoint))
+        if not raw_path.name.startswith("checkpoint-"):
+            return None
+        suffix = raw_path.name.removeprefix("checkpoint-")
+        if not suffix.isdecimal():
+            return None
+        output_root = Path(output_dir).resolve(strict=False)
+        candidate = raw_path.resolve(strict=False)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+    if candidate.parent != output_root or not candidate.is_dir():
+        return None
+    return candidate
+
+
+def _rewrite_recovered_resume_checkpoint(
+    resume_from_checkpoint: Any,
+    *,
+    resume_target_before_recovery: Path | None,
+    recovered_checkpoint: str | os.PathLike[str] | None,
+) -> str | bool | None:
+    """Redirect only an explicit checkpoint path that recovery removed.
+
+    The pre-recovery existence check is the proof that the caller selected the
+    directory that native checkpoint rotation subsequently removed.  Do not
+    redirect arbitrary missing paths: those should retain the normal Trainer
+    error rather than being silently treated as a request for the best model.
+    """
+    if recovered_checkpoint is None or resume_target_before_recovery is None:
+        return resume_from_checkpoint
+    try:
+        retained = Path(recovered_checkpoint).resolve(strict=False)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return resume_from_checkpoint
+    if resume_target_before_recovery == retained or resume_target_before_recovery.exists():
+        return resume_from_checkpoint
+    return os.fspath(retained)
+
+
+def _coordinate_checkpoint_eval_recovery(
+    *,
+    accelerator: Any,
+    output_dir: str | os.PathLike[str],
+    patience: int,
+    tie_policy: str,
+    resume_from_checkpoint: Any,
+) -> tuple[str | bool | None, str | None]:
+    """Run destructive checkpoint recovery once and share its exact outcome.
+
+    A rank-zero exception followed by a plain ``wait_for_everyone`` strands
+    every other worker at the barrier.  Instead, rank zero catches both
+    recovery and layout-validation errors, broadcasts a small serializable
+    result to all workers, and each worker raises the same contextual failure.
+    On success the rank-zero-normalized resume path is also authoritative, so
+    every process resumes the same retained checkpoint after recovery.
+    """
+    outcome: list[dict[str, Any] | None] = [None]
+    rank_zero_error: Exception | None = None
+    if bool(getattr(accelerator, "is_main_process", True)):
+        resume_target_before_recovery = _explicit_checkpoint_resume_target(
+            resume_from_checkpoint,
+            output_dir=output_dir,
+        )
+        try:
+            recovered_checkpoint = recover_interrupted_checkpoint_eval_save(
+                output_dir,
+                patience=patience,
+                tie_policy=tie_policy,
+            )
+            validate_checkpoint_eval_output_dir(output_dir)
+            normalized_resume = _rewrite_recovered_resume_checkpoint(
+                resume_from_checkpoint,
+                resume_target_before_recovery=resume_target_before_recovery,
+                recovered_checkpoint=recovered_checkpoint,
+            )
+            if isinstance(normalized_resume, os.PathLike):
+                normalized_resume = os.fspath(normalized_resume)
+            outcome[0] = {
+                "ok": True,
+                "recovered_checkpoint": (
+                    os.fspath(recovered_checkpoint)
+                    if recovered_checkpoint is not None
+                    else None
+                ),
+                "resume_from_checkpoint": normalized_resume,
+            }
+        except Exception as exc:
+            # Do not re-raise before the collective: workers that reached the
+            # next line must receive this failure rather than wait forever.
+            rank_zero_error = exc
+            outcome[0] = {
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+
+    broadcast_object_list(outcome, from_process=0)
+    received = outcome[0]
+    if not isinstance(received, dict) or not isinstance(received.get("ok"), bool):
+        raise RuntimeError(
+            "checkpoint_eval recovery did not receive a valid rank-zero outcome"
+        )
+    if not received["ok"]:
+        error_type = received.get("error_type", "RuntimeError")
+        detail = received.get("error", "unknown recovery or validation error")
+        message = (
+            "checkpoint_eval rank-zero recovery/layout validation failed "
+            f"({error_type}): {detail}"
+        )
+        if rank_zero_error is not None:
+            raise RuntimeError(message) from rank_zero_error
+        raise RuntimeError(message)
+
+    recovered = received.get("recovered_checkpoint")
+    normalized_resume = received.get("resume_from_checkpoint")
+    if recovered is not None and not isinstance(recovered, str):
+        raise RuntimeError(
+            "checkpoint_eval recovery received an invalid retained checkpoint path"
+        )
+    if normalized_resume is not None and not isinstance(normalized_resume, (str, bool)):
+        raise RuntimeError(
+            "checkpoint_eval recovery received an invalid resume_from_checkpoint value"
+        )
+    return normalized_resume, recovered
 
 
 def apply_launch_config(launch_config: dict[str, Any]) -> None:
@@ -191,6 +463,7 @@ def write_run_config_snapshot(
     client_config: Dict[str, Any],
     dataset_config: Dict[str, Any],
     opsd_config: Dict[str, Any],
+    checkpoint_eval_config: Dict[str, Any] | None,
     training_args: GRPOConfig,
     generation_config,
 ) -> None:
@@ -204,6 +477,7 @@ def write_run_config_snapshot(
         "client": client_config,
         "dataset": dataset_config,
         "opsd": opsd_config,
+        "checkpoint_eval": checkpoint_eval_config or {},
         "training_args": training_args.to_dict() if hasattr(training_args, "to_dict") else vars(training_args),
     }
     files = {
@@ -370,7 +644,35 @@ def load_teacher_model(model_config: Dict[str, Any], *, local_rank: int = 0, num
     return teacher
 
 
-def prepare_datasets(task: str, dataset_config: Dict[str, Any], mode='rl') -> (Dataset, Dataset):
+def _select_chartqa_eval_split(dataset_bundle: Any, requested_split: str) -> Dataset:
+    """Select validation data for training-time checkpoint evaluation.
+
+    ChartQA mirrors have used both ``validation`` and ``val`` as the split
+    name.  They are aliases for this purpose; ``test`` is deliberately never a
+    fallback because it would leak the final benchmark into model selection.
+    """
+    requested = str(requested_split or "validation").strip().lower()
+    if requested not in {"validation", "val"}:
+        raise ValueError(
+            "Training-time ChartQA checkpoint evaluation must use the validation "
+            f"split (validation/val), got {requested_split!r}"
+        )
+    available = set(getattr(dataset_bundle, "keys", lambda: [])())
+    for candidate in (requested, "validation", "val"):
+        if candidate in available:
+            return dataset_bundle[candidate]
+    raise ValueError(
+        "ChartQA dataset has no validation split (expected 'validation' or 'val'); "
+        f"available splits: {sorted(available)}. Refusing to fall back to test."
+    )
+
+
+def prepare_datasets(
+    task: str,
+    dataset_config: Dict[str, Any],
+    mode='rl',
+    checkpoint_eval_config: Dict[str, Any] | None = None,
+) -> (Dataset, Dataset):
     """
     Prepares the training and evaluation datasets based on the specified task.
 
@@ -401,9 +703,32 @@ def prepare_datasets(task: str, dataset_config: Dict[str, Any], mode='rl') -> (D
     _log_startup(f"Training dataset ready: {len(train_dataset)} samples")
 
     # Create evaluation dataset
+    checkpoint_eval_enabled = bool((checkpoint_eval_config or {}).get("enabled", False))
+    checkpoint_eval_split = (checkpoint_eval_config or {}).get("split", "validation")
     if 'chart' in task and load_eval:
         _log_startup(f"Loading eval dataset: {eval_spec}")
-        eval_dataset = load_dataset(eval_spec)['test']
+        dataset_bundle = load_dataset(eval_spec)
+        if checkpoint_eval_enabled:
+            eval_dataset = _select_chartqa_eval_split(dataset_bundle, checkpoint_eval_split)
+            max_samples = (checkpoint_eval_config or {}).get("max_samples")
+            if max_samples is not None:
+                max_samples = min(int(max_samples), len(eval_dataset))
+                eval_dataset = eval_dataset.select(range(max_samples))
+            _log_startup(
+                f"Checkpoint-eval dataset ready: split={checkpoint_eval_split} "
+                f"samples={len(eval_dataset)}"
+            )
+        else:
+            # Preserve the historical standalone/main behavior when the new
+            # policy is explicitly disabled.  The training callback is not
+            # attached in this mode, so test remains an ordinary eval dataset.
+            try:
+                eval_dataset = dataset_bundle['test']
+            except (KeyError, TypeError) as exc:
+                raise ValueError(
+                    "ChartQA eval dataset does not provide a test split while "
+                    "checkpoint_eval is disabled"
+                ) from exc
         _log_startup(f"Eval dataset ready: {len(eval_dataset)} samples")
         # Note: You can uncomment the line below for quick testing/debugging.
         # eval_dataset = eval_dataset.select(range(1000, 1100))
@@ -435,6 +760,7 @@ def _log_run_config_summary(
     opsd_config: Dict[str, Any],
     model_config: Dict[str, Any],
     launch_config: Dict[str, Any],
+    checkpoint_eval_config: Dict[str, Any] | None = None,
 ) -> None:
     if not _is_main_process():
         return
@@ -451,6 +777,7 @@ def _log_run_config_summary(
         "max_steps": dyme_args.get("max_steps"),
         "resume_from_checkpoint": os.environ.get("DYME_RESUME_FROM_CHECKPOINT", "").strip() or None,
         "opsd_enabled": bool(opsd_config.get("enabled", False)),
+        "checkpoint_eval": checkpoint_eval_config or {},
         "opsd_mode": opsd_config.get("mode"),
         "privileged_providers": opsd_config.get("privileged_providers", []),
         "text_include_gold": bool(opsd_config.get("text_include_gold", False)),
@@ -621,6 +948,7 @@ def main():
     launch_config = dict(CONFIG.get("launch", {}))
     apply_launch_config(launch_config)
     task = training_config['task']
+    checkpoint_eval_config = dict(CONFIG.get("checkpoint_eval", {}))
     opsd_config = dict(CONFIG.get('opsd', {"enabled": False, "mode": "dyme"}))
     if args.opsd_enabled:
         opsd_config["enabled"] = True
@@ -671,6 +999,7 @@ def main():
         opsd_config=opsd_config,
         model_config=model_config,
         launch_config=launch_config,
+        checkpoint_eval_config=checkpoint_eval_config,
     )
 
     # 2. Setup Environment
@@ -809,7 +1138,12 @@ def main():
         )
 
     # 4. Prepare Datasets
-    train_dataset, eval_dataset = prepare_datasets(task, dataset_config, mode=mode)
+    train_dataset, eval_dataset = prepare_datasets(
+        task,
+        dataset_config,
+        mode=mode,
+        checkpoint_eval_config=checkpoint_eval_config,
+    )
     _log_dataset_status(train_dataset, dataset_config)
 
     # 5. Initialize Reward Calculator
@@ -832,6 +1166,39 @@ def main():
         or os.environ.get("DYME_RESUME_FROM_CHECKPOINT", "").strip()
         or None
     )
+    checkpoint_eval_config = resolve_checkpoint_eval_config(
+        checkpoint_eval_config,
+        task=task,
+        eval_dataset=eval_dataset,
+        dyme_args=dyme_args,
+    )
+    if checkpoint_eval_config.get("enabled"):
+        # HF writes a new native checkpoint before applying its rotation.  A
+        # crash in that tiny interval can leave the old + new directories;
+        # rank zero alone repairs it only when both serialized states prove
+        # the exact internal save relationship.  Its recovery/validation
+        # result is broadcast before any worker proceeds, avoiding a deadlock
+        # if rank zero finds a malformed layout.  It also rewrites an explicit
+        # old checkpoint path that recovery just pruned, so every rank resumes
+        # the retained new best checkpoint.
+        resume_from_checkpoint, recovered_checkpoint = _coordinate_checkpoint_eval_recovery(
+            accelerator=accelerator,
+            output_dir=dyme_args.get("output_dir"),
+            patience=checkpoint_eval_config["patience"],
+            tie_policy=checkpoint_eval_config["tie_policy"],
+            resume_from_checkpoint=resume_from_checkpoint,
+        )
+        if accelerator.is_main_process and recovered_checkpoint is not None:
+            _log_startup(
+                "Recovered interrupted checkpoint-eval save: "
+                f"retained {recovered_checkpoint}"
+            )
+        _log_startup(
+            "Checkpoint evaluation enabled: "
+            f"split={checkpoint_eval_config['split']} "
+            f"patience={checkpoint_eval_config['patience']} "
+            "(student model stays in memory)"
+        )
     if ds_zero_stage is not None and ds_zero_stage >= 3:
         dyme_args.setdefault("ds3_gather_for_generation", True)
     if not use_wandb:
@@ -855,6 +1222,19 @@ def main():
         teacher_model=teacher_model,
         teacher_model_config=teacher_model_config,
         visual_supervision_meta=visual_meta,
+        checkpoint_eval_config=checkpoint_eval_config,
+        callbacks=(
+            [
+                CheckpointEvaluationTriggerCallback(
+                    enabled=True,
+                    patience=checkpoint_eval_config["patience"],
+                    tie_policy=checkpoint_eval_config["tie_policy"],
+                    output_dir=training_args.output_dir,
+                )
+            ]
+            if checkpoint_eval_config.get("enabled")
+            else None
+        ),
     )
     if accelerator.is_main_process:
         write_run_config_snapshot(
@@ -866,6 +1246,7 @@ def main():
             client_config=client_config,
             dataset_config=dataset_config,
             opsd_config=opsd_config,
+            checkpoint_eval_config=checkpoint_eval_config,
             training_args=training_args,
             generation_config=dyme_trainer.generation_config,
     )
@@ -879,17 +1260,44 @@ def main():
     )
     dyme_trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
-    output_dir = training_args.output_dir
-    output_dir = os.path.join(output_dir, "final_checkpoint")
-    if accelerator.is_main_process and is_deepspeed_accelerate_config():
-        print(
-            "[DyME] Saving consolidated student checkpoint (DeepSpeed ZeRO gather if configured)...",
-            flush=True,
-        )
-    dyme_trainer.save_model(output_dir)
-    if accelerator.is_main_process:
-        processor.save_pretrained(output_dir)
-        print(f"Model and processor saved to {output_dir}")
+    if checkpoint_eval_config.get("enabled"):
+        # CheckpointEvaluationPolicy writes complete resumable checkpoints at
+        # improvement time.  Do not perform an unconditional final save: it
+        # could overwrite the best model with a lower-scoring terminal model.
+        if accelerator.is_main_process:
+            best_checkpoint = find_best_checkpoint_path(dyme_trainer, training_args.output_dir)
+            if best_checkpoint is None:
+                raise RuntimeError(
+                    "Checkpoint evaluation was enabled but no best checkpoint was reported "
+                    f"under {training_args.output_dir!r}."
+                )
+            final_link = update_final_checkpoint_link(training_args.output_dir, best_checkpoint)
+            best_score = getattr(dyme_trainer, "best_checkpoint_score", None)
+            best_step = getattr(dyme_trainer, "best_checkpoint_step", None)
+            if best_score is None:
+                policy = find_checkpoint_evaluation_policy(dyme_trainer)
+                state = getattr(policy, "state", None)
+                best_score = getattr(state, "best_score", None)
+                best_step = best_step if best_step is not None else getattr(state, "best_step", None)
+            print(
+                "[DyME] Checkpoint evaluation summary: "
+                f"best_score={best_score!r} best_step={best_step!r} "
+                f"best_checkpoint={best_checkpoint} final_checkpoint={final_link}",
+                flush=True,
+            )
+    else:
+        # Preserve the historical behavior for configs which explicitly
+        # disable checkpoint evaluation (e.g. no-eval smoke runs).
+        output_dir = os.path.join(training_args.output_dir, "final_checkpoint")
+        if accelerator.is_main_process and is_deepspeed_accelerate_config():
+            print(
+                "[DyME] Saving consolidated student checkpoint (DeepSpeed ZeRO gather if configured)...",
+                flush=True,
+            )
+        dyme_trainer.save_model(output_dir)
+        if accelerator.is_main_process:
+            processor.save_pretrained(output_dir)
+            print(f"Model and processor saved to {output_dir}")
 if __name__ == "__main__":
     try:
         main()

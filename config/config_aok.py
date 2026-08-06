@@ -104,6 +104,9 @@ CONFIG = {
     "rl": RL_CONFIG,
     "client": CLIENT_CONFIG,
     "dataset": DATASET_CONFIG,
+    # This main entrypoint's in-memory evaluator is ChartQA-specific; keep it
+    # off for the A-OKVQA task until an A-OKVQA evaluator is added.
+    "checkpoint_eval": {"enabled": False},
 }
 
 # Save configuration to a file for reference

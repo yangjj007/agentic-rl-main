@@ -1,6 +1,8 @@
 import os
 import torch
 
+from config.config import CHECKPOINT_EVAL_CONFIG
+
 # ====== Model Configuration ======
 MODEL_CONFIG = {
     "pretrained_model_path": "Qwen/Qwen2.5-VL-7B-Instruct",  
@@ -68,6 +70,7 @@ CONFIG = {
     "rl": RL_CONFIG,
     "client": CLIENT_CONFIG,
     "dataset": DATASET_CONFIG,
+    "checkpoint_eval": dict(CHECKPOINT_EVAL_CONFIG),
 }
 
 
@@ -79,4 +82,3 @@ def save_config(config, config_path="./config.json"):
 
 if __name__ == "__main__":
     save_config(CONFIG)
-

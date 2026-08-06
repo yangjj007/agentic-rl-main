@@ -178,7 +178,7 @@ print_variant_command() {
   local probe_all_wrong_line=""
 
   if [[ "${MODE}" == "smoke" ]]; then
-    max_steps_line=$'DYME_TRAIN_MAX_STEPS='"${SMOKE_STEPS}"$' \\\nDYME_MAX_STEPS='"${SMOKE_STEPS}"$' \\'
+    max_steps_line=$'DYME_TRAIN_MAX_STEPS='"${SMOKE_STEPS}"$' \\\nDYME_MAX_STEPS='"${SMOKE_STEPS}"$' \\\nDYME_CHECKPOINT_EVAL=0 \\'
   fi
   if [[ -n "${probe_all_wrong_after_step}" ]]; then
     probe_all_wrong_line=$'DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP='"${probe_all_wrong_after_step}"$' \\\n'
@@ -406,7 +406,12 @@ run_variant() {
     train_env+=("DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=${probe_all_wrong_after_step}")
   fi
   if [[ "${MODE}" == "smoke" ]]; then
-    train_env=("DYME_TRAIN_MAX_STEPS=${SMOKE_STEPS}" "DYME_MAX_STEPS=${SMOKE_STEPS}" "${train_env[@]}")
+    train_env=(
+      "DYME_TRAIN_MAX_STEPS=${SMOKE_STEPS}"
+      "DYME_MAX_STEPS=${SMOKE_STEPS}"
+      "DYME_CHECKPOINT_EVAL=0"
+      "${train_env[@]}"
+    )
     env -u DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP "${train_env[@]}" \
       bash scripts/train_opd_7b_dyme_probe.sh --no_opsd_probe_on_generate --no_opsd_probe_first_token_logits --opsd_detail_every 0
   else

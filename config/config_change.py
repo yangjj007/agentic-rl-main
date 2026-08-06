@@ -1,5 +1,7 @@
 import os
 
+from config.config import CHECKPOINT_EVAL_CONFIG
+
 from data_utils.paths import OUTPUTS_DIR, project_path
 
 # ====== Model Configuration ======
@@ -66,6 +68,7 @@ CONFIG = {
     "rl": RL_CONFIG,
     "client": CLIENT_CONFIG,
     "dataset": DATASET_CONFIG,
+    "checkpoint_eval": dict(CHECKPOINT_EVAL_CONFIG),
 }
 
 # Save configuration to a file for reference

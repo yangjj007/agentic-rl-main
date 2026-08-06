@@ -22,6 +22,9 @@ export DYME_VISUAL_CHECKER_MAX_SCORE_TOKENS="${DYME_VISUAL_CHECKER_MAX_SCORE_TOK
 export DYME_VISUAL_LOG=1
 export DYME_VISUAL_SAVE_ARTIFACTS=1
 export DYME_VISUAL_LOG_SAMPLES="${DYME_VISUAL_LOG_SAMPLES:-2}"
+# This tiny diagnostic inherits a production ChartQA config. Keep its save
+# events cheap even if the caller's shell enabled checkpoint selection.
+export DYME_CHECKPOINT_EVAL=0
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 
 mkdir -p "${DYME_OUTPUT_DIR}" "${DYME_LOG_DIR}"

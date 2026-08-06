@@ -121,6 +121,7 @@ print_variant_command() {
   cat <<CMD
 DYME_TRAIN_MAX_STEPS=${MAX_STEPS} \\
 DYME_MAX_STEPS=${MAX_STEPS} \\
+DYME_CHECKPOINT_EVAL=0 \\
 DYME_OUTPUT_DIR=${out_dir} \\
 DYME_LOG_DIR=${log_dir} \\
 DYME_TEACHER_PROBE=${probe_flag} \\
@@ -214,6 +215,7 @@ run_variant() {
   mkdir -p "${log_dir}" "${out_dir}"
   DYME_TRAIN_MAX_STEPS="${MAX_STEPS}" \
   DYME_MAX_STEPS="${MAX_STEPS}" \
+  DYME_CHECKPOINT_EVAL=0 \
   DYME_OUTPUT_DIR="${out_dir}" \
   DYME_LOG_DIR="${log_dir}" \
   DYME_TEACHER_PROBE="${probe_flag}" \

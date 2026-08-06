@@ -1,5 +1,6 @@
 from config.config import (
     CLIENT_CONFIG,
+    CHECKPOINT_EVAL_CONFIG,
     CONFIG,
     DATASET_CONFIG,
     DYME_OPSD_CONFIG,
@@ -11,6 +12,7 @@ from config.config import (
 
 __all__ = [
     "CLIENT_CONFIG",
+    "CHECKPOINT_EVAL_CONFIG",
     "CONFIG",
     "DATASET_CONFIG",
     "DYME_OPSD_CONFIG",

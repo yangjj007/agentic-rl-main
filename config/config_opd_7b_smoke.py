@@ -37,4 +37,9 @@ CONFIG = {
         "dyme_args": _dyme_args,
     },
     "opsd": DYME_OPSD_CONFIG,
+    # Smoke runs intentionally do not download/evaluate an HF validation set.
+    "checkpoint_eval": {
+        **base.CONFIG.get("checkpoint_eval", {}),
+        "enabled": False,
+    },
 }
