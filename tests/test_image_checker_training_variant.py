@@ -5,6 +5,7 @@ import importlib
 from pathlib import Path
 
 from config.loader import load_config
+from data_utils.paths import project_path
 from reward_utils.visual_checker_teacher import TeacherVisualChecker
 from reward_utils.visual_supervision_factory import (
     build_visual_supervision,
@@ -31,6 +32,16 @@ def test_image_checker_variant_inherits_best_opd_and_adds_image_checker():
     assert visual["checker"]["grounding"] == "image_primary"
     assert visual["checker"]["aux_evidence"] == "none"
     assert visual_supervision_needs_teacher(cfg["opsd"]) is True
+    assert cfg["dataset"]["train_dataset"] in {
+        project_path("data", "chartqa", "train_new_prerefine_vf_full_real.json"),
+        project_path("data", "chartqa", "train_new_prerefine_vf_full.json"),
+    }
+    assert cfg["data_validation"] == {
+        "strict": True,
+        "require_real_deplot": True,
+        "require_qwen_rewrite": True,
+        "expected_samples": 4576,
+    }
 
     checker, refiner, meta = build_visual_supervision(
         cfg["rl"],
@@ -61,6 +72,10 @@ def test_image_checker_training_script_selects_explicit_variant():
     assert 'DYME_VISUAL_PREFETCH_IC=' not in text
     assert 'DYME_VISUAL_CHECKER_GROUNDING="${DYME_VISUAL_CHECKER_GROUNDING:-image_primary}"' in text
     assert 'DYME_VISUAL_CHECKER_AUX="${DYME_VISUAL_CHECKER_AUX:-none}"' in text
+    assert "DYME_CHARTQA_RAW=" not in text
+    assert "DYME_CHARTQA_VF_HINT=" not in text
+    assert "DYME_CHARTQA_VF_FULL=" not in text
+    assert 'source "$(dirname "$0")/launch_utils.sh"' in text
 
 
 def test_visual_supervision_checker_efficiency_env_overrides(monkeypatch):

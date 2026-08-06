@@ -131,6 +131,25 @@ PY
   echo "============================================================"
 }
 
+# Run a training command while preserving its exit status (including when
+# output is tee'd).  Kept here so production launchers do not need the test
+# helper, whose defaults intentionally disable expensive preprocessing.
+run_train_with_log() {
+  local log_file="$1"
+  shift
+  echo "Writing log to: ${log_file}"
+  set +o pipefail
+  "$@" 2>&1 | tee "${log_file}"
+  local train_ec="${PIPESTATUS[0]}"
+  set -o pipefail
+  if [[ "${train_ec}" -ne 0 ]]; then
+    echo "!!! Training exited with code ${train_ec} (log: ${log_file})" >&2
+    return "${train_ec}"
+  fi
+  echo ">>> Training finished OK (log: ${log_file})"
+  return 0
+}
+
 # Build data/chartqa/train_medium_vf_full.json when missing (gitignored on GitHub).
 # F1: hint → visual_fact_hint; F2: DePlot or placeholder (--no-enabled when DYME_DEPLOT_ENABLED=0).
 ensure_chartqa_vf_full() {
@@ -227,8 +246,37 @@ print(1 if cfg.get('deplot', {}).get('enabled', True) else 0)
 prepare_chartqa_training_data() {
   local cfg="${1:-}"
   export WANDB_MODE="${WANDB_MODE:-disabled}"
+
+  # Strict recipes validate the exact dataset selected by the Python config.
+  # Do this before ensure_chartqa_vf_full: that helper historically returns
+  # early for an existing stale file and can otherwise write placeholders.
+  local strict_validation
+  strict_validation="$(${PYTHON_BIN} - "${cfg}" <<'PY'
+import sys
+from scripts.validate_chartqa_training_data import _config_input
+
+_, _, validation = _config_input(sys.argv[1]) if sys.argv[1] else (None, {}, {})
+print("1" if validation.get("strict", False) else "0")
+PY
+  )"
+  if [[ "${strict_validation}" == "1" ]]; then
+    local validation_ec=0
+    "${PYTHON_BIN}" scripts/validate_chartqa_training_data.py --config "${cfg}" || validation_ec=$?
+    if [[ "${validation_ec}" -ne 0 ]]; then
+      return "${validation_ec}"
+    fi
+    ensure_tokenizers
+    ensure_spacy_model
+    return 0
+  fi
+
   export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-$(config_deplot_enabled "${cfg}")}"
   ensure_chartqa_vf_full
+  if [[ "${DYME_REQUIRE_QWEN_REWRITE:-0}" == "1" ]]; then
+    "${PYTHON_BIN}" scripts/validate_chartqa_training_data.py \
+      --input "${DYME_CHARTQA_VF_FULL:-data/chartqa/train_medium_vf_full.json}" \
+      ${DYME_EXPECTED_CHARTQA_SAMPLES:+--expected-samples "${DYME_EXPECTED_CHARTQA_SAMPLES}"}
+  fi
   ensure_tokenizers
   ensure_spacy_model
 }

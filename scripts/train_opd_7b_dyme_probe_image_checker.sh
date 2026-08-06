@@ -7,16 +7,12 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-source "$(dirname "$0")/test/launch_utils.sh"
+source "$(dirname "$0")/launch_utils.sh"
 
 DYME_CONFIG="opd_7b_dyme_probe_image_checker"
 export DYME_VISUAL_CHECKER="${DYME_VISUAL_CHECKER:-1}"
 export DYME_VISUAL_CHECKER_GROUNDING="${DYME_VISUAL_CHECKER_GROUNDING:-image_primary}"
 export DYME_VISUAL_CHECKER_AUX="${DYME_VISUAL_CHECKER_AUX:-none}"
-export DYME_CHARTQA_RAW="${DYME_CHARTQA_RAW:-data/chartqa/train_new_prerefine.json}"
-export DYME_CHARTQA_VF_HINT="${DYME_CHARTQA_VF_HINT:-data/chartqa/train_new_prerefine_vf_hint.json}"
-export DYME_CHARTQA_VF_FULL="${DYME_CHARTQA_VF_FULL:-data/chartqa/train_new_prerefine_vf_full.json}"
-
 # Full training profile — do not inherit smoke profile env from the shell.
 unset DYME_MAX_STEPS
 if [[ -n "${DYME_TRAIN_MAX_STEPS:-}" ]]; then
@@ -28,7 +24,6 @@ export DYME_OPSD_HANG_DEBUG="${DYME_OPSD_HANG_DEBUG:-0}"
 export DYME_OPSD_HANG_FORCE="${DYME_OPSD_HANG_FORCE:-0}"
 
 prepare_chartqa_training_data "${DYME_CONFIG}"
-ensure_spacy_model
 
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan

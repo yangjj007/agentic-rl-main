@@ -1,7 +1,7 @@
 """Regression tests for the fail-fast ChartQA training-data gate.
 
 These tests use temporary files and pure validator helpers. They do not load a
-DePlot model (or import torch), so they also run on CPU-only data hosts.
+DePlot model or import torch, so they also run on CPU-only data hosts.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -54,8 +55,7 @@ def _row(
 ) -> dict[str, object]:
     image_path = tmp_path / "chart.png"
     if image:
-        # Only existence is relevant; avoid PIL/torch dependencies.
-        image_path.write_bytes(b"not-an-image-but-an-existing-file")
+        Image.new("RGB", (2, 2)).save(image_path)
     if deplot == "real":
         deplot_value: object = _deplot()
     elif deplot == "placeholder":
@@ -137,6 +137,16 @@ def test_missing_image_is_rejected(tmp_path: Path, local_image_resolver: None) -
     assert stats["image_missing"] == 1
 
 
+def test_unreadable_image_is_rejected(tmp_path: Path, local_image_resolver: None) -> None:
+    row = _row(tmp_path)
+    Path(str(row["image"])).write_bytes(b"not an image")
+    stats, errors = validator.validate(_write_dataset(tmp_path, [row]))
+
+    assert errors
+    assert stats["image_missing"] == 0
+    assert stats["image_unreadable"] == 1
+
+
 @pytest.mark.parametrize(
     "metadata",
     [
@@ -172,11 +182,57 @@ def test_expected_sample_count_mismatch_is_rejected(
     assert stats["effective_rows"] == 1
 
 
+def test_machine_rows_are_excluded_like_chart_collector(
+    tmp_path: Path, local_image_resolver: None
+) -> None:
+    machine = _row(tmp_path, deplot="missing")
+    machine["human_or_machine"] = 1
+    stats, errors = validator.validate(
+        _write_dataset(tmp_path, [machine]), expected_samples=0
+    )
+
+    assert errors
+    assert stats["effective_rows"] == 0
+    assert stats["excluded_rows"] == 1
+    assert stats["deplot_missing"] == 0
+
+
+def test_required_fields_are_checked_for_effective_rows(
+    tmp_path: Path, local_image_resolver: None
+) -> None:
+    row = _row(tmp_path)
+    row.pop("answer")
+    stats, errors = validator.validate(_write_dataset(tmp_path, [row]))
+
+    assert errors
+    assert stats["answer_missing"] == 1
+    assert stats["required_missing"] == 1
+
+
 def test_malformed_deplot_payload_is_rejected(
     tmp_path: Path, local_image_resolver: None
 ) -> None:
     stats, errors = validator.validate(
         _write_dataset(tmp_path, [_row(tmp_path, deplot="{not valid json")])
+    )
+
+    assert errors
+    assert stats["deplot_unknown"] == 1
+    assert stats["deplot_real"] == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"source": "google/deplot", "parsed_table": {"not": "text"}},
+        {"source": "google/deplot", "parsed_table": "A | 1", "error": "inference_failed"},
+    ],
+)
+def test_non_text_or_error_deplot_payload_is_rejected_without_crashing(
+    tmp_path: Path, local_image_resolver: None, payload: object
+) -> None:
+    stats, errors = validator.validate(
+        _write_dataset(tmp_path, [_row(tmp_path, deplot=payload)])
     )
 
     assert errors

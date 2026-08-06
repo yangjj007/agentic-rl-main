@@ -856,6 +856,82 @@ def _log_dataset_status(train_dataset: Dataset, dataset_config: Dict[str, Any]) 
     print(f"[DyME-DATA] {json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True)}", flush=True)
 
 
+def _run_training_data_preflight(config: Dict[str, Any], config_arg: str) -> None:
+    """Validate strict, precomputed training data before distributed startup.
+
+    Production launch scripts run this check too, but keeping the guard here is
+    important: a user can invoke ``accelerate ... main.py`` directly and must
+    not be able to bypass the data contract.  The validator is imported lazily
+    so ordinary profiles and lightweight config tooling do not gain an eager
+    DePlot/vision dependency.  It performs no model inference and only reads
+    the exact ``dataset.train_dataset`` selected by the loaded config.
+    """
+    validation = config.get("data_validation") or {}
+    if not bool(validation.get("strict", False)):
+        return
+
+    dataset_config = config.get("dataset") or {}
+    raw_path = dataset_config.get("train_dataset")
+    if not raw_path:
+        if _is_main_process():
+            print("[DyME-DATA-WARNING] refusing to start training", file=sys.stderr, flush=True)
+            print(
+                f"[DyME-DATA-ERROR] strict preflight requires dataset.train_dataset "
+                f"(config={config_arg!r})",
+                file=sys.stderr,
+                flush=True,
+            )
+        raise SystemExit(2)
+
+    path = Path(os.path.expanduser(str(raw_path)))
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+
+    try:
+        # This module is deliberately torch-free at import time; DePlot model
+        # loading is never reached by the validator.
+        from scripts.validate_chartqa_training_data import validate
+
+        expected_samples = int(validation.get("expected_samples", 0) or 0)
+        stats, errors = validate(
+            path,
+            require_qwen=bool(validation.get("require_qwen_rewrite", True)),
+            require_real_deplot=bool(validation.get("require_real_deplot", True)),
+            expected_samples=expected_samples,
+        )
+    except Exception as exc:
+        if _is_main_process():
+            print("[DyME-DATA-WARNING] refusing to start training", file=sys.stderr, flush=True)
+            print(
+                f"[DyME-DATA-ERROR] strict preflight could not validate "
+                f"{path} (config={config_arg!r}): {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        raise SystemExit(2)
+
+    if _is_main_process():
+        print(
+            f"[DyME-DATA-PREFLIGHT] config={config_arg} "
+            f"train_dataset={path}",
+            flush=True,
+        )
+        print(
+            f"[DyME-DATA-CHECK] {json.dumps(_json_safe(stats), ensure_ascii=False, sort_keys=True)}",
+            flush=True,
+        )
+    if errors:
+        if _is_main_process():
+            print("[DyME-DATA-WARNING] refusing to start training", file=sys.stderr, flush=True)
+            print("[DyME-DATA-ERROR] training data gate failed:", file=sys.stderr, flush=True)
+            for error in errors:
+                print(f"  - {error}", file=sys.stderr, flush=True)
+        raise SystemExit(2)
+
+    if _is_main_process():
+        print("[DyME-DATA-CHECK] passed", flush=True)
+
+
 def main():
     """
     Main function to orchestrate the model training pipeline.
@@ -940,6 +1016,10 @@ def main():
 
     # 1. Load Configurations
     CONFIG = load_config(args.config)
+    # Fail before Accelerator/model/teacher initialization for strict
+    # precomputed-data recipes.  This also protects direct ``main.py`` or
+    # ``accelerate`` invocations that do not use a shell launcher.
+    _run_training_data_preflight(CONFIG, args.config)
     model_config = CONFIG['model']
     training_config = CONFIG['training']
     rl_config = CONFIG['rl']

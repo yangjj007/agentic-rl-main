@@ -1,5 +1,4 @@
 import os
-import torch
 
 from config.env_overrides import env_bool, env_int, env_str
 from data_utils.paths import OUTPUTS_DIR, project_path

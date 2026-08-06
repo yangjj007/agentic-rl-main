@@ -150,7 +150,17 @@ def has_real_deplot(vf: Any) -> bool:
         return False
     if data.get("source") == PLACEHOLDER_SOURCE:
         return False
-    table = (data.get("parsed_table") or "").strip()
+    # A failed inference can accidentally carry a partial table alongside an
+    # error field.  It must not be advertised as clean teacher evidence.
+    if str(data.get("error") or "").strip():
+        return False
+    table = data.get("parsed_table")
+    # ``parsed_table`` is emitted as normalized text.  Treat malformed dicts,
+    # lists, and other payloads as invalid instead of raising AttributeError
+    # during startup validation or teacher batching.
+    if not isinstance(table, str):
+        return False
+    table = table.strip()
     return bool(table) and data.get("source") in (REAL_SOURCE, "google/deplot", "deplot")
 
 
@@ -161,7 +171,12 @@ def format_deplot_for_teacher(vf: Any) -> str:
         return ""
     if data.get("source") == PLACEHOLDER_SOURCE:
         return ""
-    table = (data.get("parsed_table") or "").strip()
+    if str(data.get("error") or "").strip():
+        return ""
+    table = data.get("parsed_table")
+    if not isinstance(table, str):
+        return ""
+    table = table.strip()
     if table:
         return table
     return ""

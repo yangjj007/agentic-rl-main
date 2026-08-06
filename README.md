@@ -167,6 +167,22 @@ python main.py --config trimode --opsd_privilege_profile visual
 python main.py --config trimode --opsd_privilege_profile hybrid --opsd_detail_every 10
 ```
 
+The strict OPD image-checker recipe validates its configured precomputed
+dataset before launching Accelerate.  Run it directly; no
+`DYME_DEPLOT_ENABLED`, `DYME_CHARTQA_VF_FULL`, or expected-sample exports are
+required:
+
+```bash
+bash scripts/train_opd_7b_dyme_probe_image_checker.sh
+```
+
+The launcher exits before model initialization when the configured file is
+missing, has placeholder/invalid DePlot rows, missing or unreadable images, or
+lacks successful Qwen rewrite provenance.  It prefers
+`data/chartqa/train_new_prerefine_vf_full_real.json` and accepts the historical
+`train_new_prerefine_vf_full.json` name only when that file itself passes the
+same checks.
+
 **Privileged sample schema**
 
 | Field | Used by | Notes |

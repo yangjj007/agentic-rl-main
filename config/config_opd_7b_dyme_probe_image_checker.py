@@ -21,7 +21,31 @@ OUTPUT_DIR = env_str(
 
 CONFIG = copy.deepcopy(base.CONFIG)
 CONFIG["training"]["dyme_args"]["output_dir"] = OUTPUT_DIR
-CONFIG["dataset"]["train_dataset"] = project_path("data", "chartqa", "train_new_prerefine_vf_full.json")
+
+# Prefer the separately named real-DePlot artifact when it exists.  Some
+# servers generated the same real rows under the historical ``*_vf_full.json``
+# name, so retain that path as a compatibility candidate.  The selected path
+# is still subjected to the same strict validator; a stale/placeholder file is
+# never accepted silently.
+_REAL_DATASET = project_path(
+    "data", "chartqa", "train_new_prerefine_vf_full_real.json"
+)
+_LEGACY_DATASET = project_path(
+    "data", "chartqa", "train_new_prerefine_vf_full.json"
+)
+CONFIG["dataset"]["train_dataset"] = (
+    _REAL_DATASET if os.path.isfile(_REAL_DATASET) else _LEGACY_DATASET
+)
+
+# This is a precomputed-data recipe.  The launcher must inspect the exact file
+# above before initializing a model; it must never silently create a
+# placeholder DePlot dataset for this experiment.
+CONFIG["data_validation"] = {
+    "strict": True,
+    "require_real_deplot": True,
+    "require_qwen_rewrite": True,
+    "expected_samples": 4576,
+}
 
 _visual = CONFIG["opsd"].setdefault("visual_supervision", {})
 _checker = _visual.setdefault("checker", {})
@@ -39,3 +63,7 @@ _visual["enabled"] = bool(
     _checker.get("enabled")
     or _refiner.get("enabled", False)
 )
+
+# Keep the resolved configuration honest: this experiment consumes real,
+# precomputed DePlot rows (the flag is not used to regenerate data at launch).
+CONFIG["deplot"] = dict(CONFIG.get("deplot", {}), enabled=True)
