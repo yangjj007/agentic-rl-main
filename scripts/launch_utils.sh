@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # Shared helpers for accelerate launch scripts.
 
-if [[ -x "/home/deepseek_VG/.conda/envs/dyme/bin/python" ]]; then
-  PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
-else
-  PYTHON_BIN="${PYTHON_BIN:-python}"
-fi
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 detect_num_gpus() {
   # Explicit override always wins.

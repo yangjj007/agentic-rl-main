@@ -36,7 +36,7 @@ def test_positive_replay_sft_warmup_dry_run_prints_replay_dataset_and_checkpoint
     assert "DYME_REPLAY_SFT_EPOCHS=0.5" in out
     assert "Launch plan: --num_processes 7" in out
     assert "main_sft.py --config scripts/test/config/config_positive_replay_sft.py" in out
-    assert "--pretrained_model_path /home/deepseek_VG/deepseek/models/llava-0.5b-ov" in out
+    assert "--pretrained_model_path models/llava-0.5b-ov" in out
     assert str(tmp_path / "outputs" / "pytest_replay_warmup" / "final_checkpoint") in out
     assert "Next DyME env:" in out
     assert "DYME_STUDENT_MODEL=" in out

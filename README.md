@@ -623,8 +623,8 @@ bash scripts/train_rlsd_chartqa.sh
 **Two-stage cold start (optional offline SFT → RLSD/OPD):**
 
 ```bash
-export DYME_STUDENT_MODEL=/home/deepseek_VG/deepseek/models/llava-0.5b-ov
-export DYME_TEACHER_MODEL=/home/deepseek_VG/deepseek/models/llava-7b-ov
+export DYME_STUDENT_MODEL=models/llava-0.5b-ov
+export DYME_TEACHER_MODEL=models/llava-7b-ov
 bash scripts/train_opd_7b_chartqa_deepspeed.sh
 ```
 

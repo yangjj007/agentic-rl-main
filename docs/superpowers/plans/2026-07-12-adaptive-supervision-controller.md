@@ -22,7 +22,7 @@ Define tests against `AdaptiveSupervisionConfig`, `AdaptiveSupervisionController
 
 - [x] **Step 2: Run the controller tests and verify RED**
 
-Run: `/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest tests/test_adaptive_supervision.py -q`
+Run: `python -m pytest tests/test_adaptive_supervision.py -q`
 
 Expected: collection failure because `opsd_utils.adaptive_supervision` does not exist.
 
@@ -46,7 +46,7 @@ Test construction from `opsd_config["adaptive_supervision"]`, global count-to-ra
 
 - [x] **Step 2: Run trainer integration tests and verify RED**
 
-Run: `/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest tests/test_adaptive_supervision_trainer.py -q`
+Run: `python -m pytest tests/test_adaptive_supervision_trainer.py -q`
 
 Expected: failures for missing trainer controller helpers.
 
@@ -73,7 +73,7 @@ Assert that sampler activation is unconditional for the adaptive path, route cap
 
 - [x] **Step 2: Run focused tests and verify RED**
 
-Run: `/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest tests/test_adaptive_supervision_trainer.py tests/test_opd_route_cap.py -q`
+Run: `python -m pytest tests/test_adaptive_supervision_trainer.py tests/test_opd_route_cap.py -q`
 
 Expected: adaptive overrides are not yet consumed.
 
@@ -99,7 +99,7 @@ Add assertions for environment overrides, resolved adaptive config, and a new `d
 
 - [x] **Step 2: Run config tests and verify RED**
 
-Run: `/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest tests/test_config_antidegen.py tests/test_pcd_no_visual_runner.py -q`
+Run: `python -m pytest tests/test_config_antidegen.py tests/test_pcd_no_visual_runner.py -q`
 
 Expected: missing adaptive configuration and variant failures.
 
@@ -123,7 +123,7 @@ Cover built-in scenarios `cold_start`, `gradual_learning`, `regression`, and `si
 
 - [x] **Step 2: Run simulator tests and verify RED**
 
-Run: `/home/deepseek_VG/.conda/envs/dyme/bin/python -m pytest tests/test_adaptive_supervision_simulator.py -q`
+Run: `python -m pytest tests/test_adaptive_supervision_simulator.py -q`
 
 Expected: simulator module is missing.
 
@@ -133,7 +133,7 @@ Provide built-in signal sequences plus optional JSONL input. Print per-step stat
 
 - [x] **Step 4: Run all scenarios and verify invariants**
 
-Run: `/home/deepseek_VG/.conda/envs/dyme/bin/python scripts/simulate_adaptive_supervision.py --all`
+Run: `python scripts/simulate_adaptive_supervision.py --all`
 
 Expected: finite metrics, monotonic mastery, non-increasing supervision, and correct endpoint bounds.
 

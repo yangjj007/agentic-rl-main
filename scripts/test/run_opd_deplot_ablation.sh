@@ -9,11 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
-if [[ -x "/home/deepseek_VG/.conda/envs/dyme/bin/python" ]]; then
-  PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
-else
-  PYTHON_BIN="${PYTHON_BIN:-python}"
-fi
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 MODE="dry-run"
 SMOKE_STEPS="${DYME_DEPLOT_ABLATION_SMOKE_STEPS:-2}"
@@ -108,8 +104,8 @@ fi
 
 LOG_ROOT="${DYME_DEPLOT_ABLATION_LOG_ROOT:-outputs/test-fast/logs/opd_deplot_ablation_${RUN_ID}}"
 OUT_ROOT="${DYME_DEPLOT_ABLATION_OUTPUT_ROOT:-outputs/test-fast/opd-deplot-ablation/${RUN_ID}}"
-STUDENT_MODEL="${DYME_STUDENT_MODEL:-/home/deepseek_VG/deepseek/models/llava-0.5b-ov}"
-TEACHER_MODEL="${DYME_TEACHER_MODEL:-/home/deepseek_VG/deepseek/models/llava-7b-ov}"
+STUDENT_MODEL="${DYME_STUDENT_MODEL:-models/llava-0.5b-ov}"
+TEACHER_MODEL="${DYME_TEACHER_MODEL:-models/llava-7b-ov}"
 
 print_gpu_snapshot() {
   if command -v nvidia-smi >/dev/null 2>&1; then

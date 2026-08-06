@@ -147,7 +147,7 @@ P2 不应在 ChartQA 主效果和 P0 因果链完成前占用主要训练预算�
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 DYME_EVAL_BATCH_SIZE=1 \
-/home/deepseek_VG/.conda/envs/dyme/bin/python -m accelerate.commands.launch \
+python -m accelerate.commands.launch \
   --config_file scripts/test/accelerate_single_gpu_no_deepspeed.yaml \
   --num_processes 8 \
   -m eval.eval_chartqa \

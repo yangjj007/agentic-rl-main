@@ -9,11 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
-if [[ -x "/home/deepseek_VG/.conda/envs/dyme/bin/python" ]]; then
-  PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
-else
-  PYTHON_BIN="${PYTHON_BIN:-python}"
-fi
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 MODE="dry-run"
 MAX_STEPS="${DYME_ABLATION_MAX_STEPS:-500}"

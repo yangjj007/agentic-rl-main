@@ -6,7 +6,7 @@ cd "$(dirname "$0")/../.."
 RUN_ID="${DYME_PCD_RUN_ID:-pcd_oracle_new_directions_smoke10}"
 MAX_STEPS="${DYME_PCD_MAX_STEPS:-10}"
 DRY_RUN=1
-PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 usage() {
   cat <<'USAGE'

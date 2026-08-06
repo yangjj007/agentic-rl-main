@@ -597,7 +597,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prompt-preview-limit", type=int, default=16)
     parser.add_argument(
         "--teacher-model",
-        default=os.environ.get("DYME_TEACHER_MODEL", "/home/deepseek_VG/deepseek/models/llava-7b-ov"),
+        default=os.environ.get("DYME_TEACHER_MODEL", "models/llava-7b-ov"),
     )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=500)

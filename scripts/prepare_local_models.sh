@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Normalize ModelScope --local_dir downloads for HuggingFace transformers loading.
-# Usage: bash scripts/prepare_local_models.sh ~/deepseek/models/llava-0.5b-ov ~/deepseek/models/llava-7b-ov
+# Usage: bash scripts/prepare_local_models.sh models/llava-0.5b-ov models/llava-7b-ov
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then

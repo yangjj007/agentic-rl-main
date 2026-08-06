@@ -18,28 +18,22 @@ OUTPUT_DIR = env_str(
     "DYME_OUTPUT_DIR",
     os.path.join(OUTPUTS_DIR, "opd-7b-dyme-probe-image-checker"),
 )
+_DATASET_CANDIDATES = (
+    project_path("data", "chartqa", "train_new_prerefine_vf_full_real_deplot_fp32.json"),
+    project_path("data", "chartqa", "train_new_prerefine_vf_full_real.json"),
+    project_path("data", "chartqa", "train_new_prerefine_vf_full.json"),
+)
+_DEFAULT_DATASET = next((p for p in _DATASET_CANDIDATES if os.path.isfile(p)), _DATASET_CANDIDATES[0])
+TRAIN_DATASET = env_str("DYME_CHARTQA_VF_FULL", _DEFAULT_DATASET)
+if not os.path.isabs(TRAIN_DATASET):
+    TRAIN_DATASET = project_path(TRAIN_DATASET)
 
 CONFIG = copy.deepcopy(base.CONFIG)
 CONFIG["training"]["dyme_args"]["output_dir"] = OUTPUT_DIR
+CONFIG["dataset"]["train_dataset"] = TRAIN_DATASET
 
-# Prefer the separately named real-DePlot artifact when it exists.  Some
-# servers generated the same real rows under the historical ``*_vf_full.json``
-# name, so retain that path as a compatibility candidate.  The selected path
-# is still subjected to the same strict validator; a stale/placeholder file is
-# never accepted silently.
-_REAL_DATASET = project_path(
-    "data", "chartqa", "train_new_prerefine_vf_full_real.json"
-)
-_LEGACY_DATASET = project_path(
-    "data", "chartqa", "train_new_prerefine_vf_full.json"
-)
-CONFIG["dataset"]["train_dataset"] = (
-    _REAL_DATASET if os.path.isfile(_REAL_DATASET) else _LEGACY_DATASET
-)
-
-# This is a precomputed-data recipe.  The launcher must inspect the exact file
-# above before initializing a model; it must never silently create a
-# placeholder DePlot dataset for this experiment.
+# This experiment consumes precomputed visual facts.  The launcher and main
+# both run the strict validator before any model is initialized.
 CONFIG["data_validation"] = {
     "strict": True,
     "require_real_deplot": True,
@@ -64,6 +58,4 @@ _visual["enabled"] = bool(
     or _refiner.get("enabled", False)
 )
 
-# Keep the resolved configuration honest: this experiment consumes real,
-# precomputed DePlot rows (the flag is not used to regenerate data at launch).
 CONFIG["deplot"] = dict(CONFIG.get("deplot", {}), enabled=True)

@@ -15,9 +15,9 @@ WAIT_FOR_TRAIN="${DYME_EVAL_WAIT_FOR_TRAIN:-1}"
 WAIT_INTERVAL="${DYME_EVAL_WAIT_INTERVAL:-120}"
 STABLE_CHECKS="${DYME_EVAL_STABLE_CHECKS:-3}"
 FORCE="${DYME_EVAL_FORCE:-0}"
-PYTHON_BIN="${PYTHON_BIN:-/home/deepseek_VG/.conda/envs/dyme/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
-if [[ ! -x "${PYTHON_BIN}" ]]; then
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   PYTHON_BIN="python"
 fi
 
