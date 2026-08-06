@@ -33,6 +33,7 @@ def test_image_checker_variant_inherits_best_opd_and_adds_image_checker():
     assert visual["checker"]["aux_evidence"] == "none"
     assert visual_supervision_needs_teacher(cfg["opsd"]) is True
     assert cfg["dataset"]["train_dataset"] in {
+        project_path("data", "chartqa", "train_new_prerefine_vf_full_real_deplot_fp32.json"),
         project_path("data", "chartqa", "train_new_prerefine_vf_full_real.json"),
         project_path("data", "chartqa", "train_new_prerefine_vf_full.json"),
     }
