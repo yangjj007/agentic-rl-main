@@ -30,6 +30,9 @@ if not os.path.isabs(TRAIN_DATASET):
 
 CONFIG = copy.deepcopy(base.CONFIG)
 CONFIG["training"]["dyme_args"]["output_dir"] = OUTPUT_DIR
+CONFIG["training"]["dyme_args"]["num_train_epochs"] = int(
+    os.environ.get("DYME_NUM_TRAIN_EPOCHS", "16")
+)
 CONFIG["dataset"]["train_dataset"] = TRAIN_DATASET
 
 # This experiment consumes precomputed visual facts.  The launcher and main
