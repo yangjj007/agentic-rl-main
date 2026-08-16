@@ -56,7 +56,7 @@ DEFAULT_DATASET = (
 DEFAULT_OUT_DIR = PROJECT_ROOT / "outputs/chartqa-qwen25-consistency-audit"
 DEFAULT_TEACHER = Path("/data/junjie/models/opd_eval3d/teacher-7b")
 DEFAULT_CORRECTED_DATASET = (
-    PROJECT_ROOT / "data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json"
+    PROJECT_ROOT / "data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json"
 )
 _HINT_SECTION_RE = re.compile(r"(?im)^\s*(Goal|Observation|Reasoning|Conclusion)\s*:\s*")
 _HIGH_SECTION_RE = re.compile(r"(?is)<(SUMMARY|CAPTION|REASONING|CONCLUSION)>\s*(.*?)\s*</\1>")

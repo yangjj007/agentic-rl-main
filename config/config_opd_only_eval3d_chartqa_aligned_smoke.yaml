@@ -85,7 +85,7 @@ client:
 dataset:
   # Identical source corpus and validation contract to the production
   # opd_only recipe.  The cap merely makes this local teacher/student run fast.
-  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json
+  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json
   eval_dataset: null
   max_train_samples: 4
 data_validation:

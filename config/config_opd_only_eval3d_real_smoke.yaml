@@ -367,7 +367,7 @@ client:
   init_port: 23333
   num_server: 1
 dataset:
-  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json
+  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json
   eval_dataset: null
   max_train_samples: 4
 data_validation:

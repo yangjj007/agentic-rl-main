@@ -19,7 +19,7 @@ def test_opd_only_yaml_is_explicit_and_isolated():
     assert cfg["opsd"]["teacher_trajectory"]["prompt_profile"] == "chartqa_structured_trajectory"
     assert cfg["opsd"]["teacher_trajectory"]["require_quality_for_loss"] is True
     assert cfg["dataset"]["train_dataset"].endswith(
-        "train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json"
+        "train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json"
     )
     assert cfg["data_validation"] == {
         "strict": True,
@@ -114,7 +114,7 @@ def test_chartqa_corrected_dataset_applies_direct_repairs_without_deleting_rows(
 
     root = Path(__file__).resolve().parents[1]
     rows = json.loads(
-        (root / "data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json").read_text(
+        (root / "data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json").read_text(
             encoding="utf-8"
         )
     )
