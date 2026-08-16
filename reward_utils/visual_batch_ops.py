@@ -36,6 +36,7 @@ def prefetch_ic_unique(
     cache: dict,
     recorder: Any = None,
     teacher_batch_size: int = 4,
+    allow_hint_fallback: bool = True,
 ) -> int:
     """Warm IC cache for unique (image, question) pairs. Returns teacher vision call count."""
     if teacher_model is None or processor is None:
@@ -52,7 +53,9 @@ def prefetch_ic_unique(
             continue
         seen.add(key)
         if ic_source in ("auto", "teacher_image"):
-            ic_text, fb = _ic_text_from_sample(samples[idx])
+            ic_text, fb = _ic_text_from_sample(
+                samples[idx], allow_hint_fallback=allow_hint_fallback
+            )
             if ic_text:
                 cache[key] = ic_text
                 meta = _ic_stats(None, ic_text)
@@ -107,7 +110,9 @@ def prefetch_ic_unique(
             meta.update(_ic_stats(ic_obj, ic_text))
             meta.update(parse_ok=True, ic_preview=ic_text[:400], raw_teacher_output=output)
         else:
-            ic_text, fb = _ic_text_from_sample(sample)
+            ic_text, fb = _ic_text_from_sample(
+                sample, allow_hint_fallback=allow_hint_fallback
+            )
             meta.update(_ic_stats(ic_obj, ic_text))
             meta.update(parse_ok=bool(ic_text), error=err, fallback=fb, raw_teacher_output=output)
             if ic_text:

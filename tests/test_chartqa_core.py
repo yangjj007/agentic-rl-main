@@ -126,6 +126,60 @@ def test_prepare_chartqa_examples_accepts_raw_and_prepared_rows() -> None:
     assert [row["model_input_text"] for row in prepared] == ["raw?", "prepared?"]
 
 
+def test_eval_discards_training_hint_and_answer_fields_before_model_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evaluation must use only the public ChartQA image/question/label trio."""
+    torch = pytest.importorskip("torch")
+
+    class _CapturingProcessor(_TensorProcessor):
+        def __init__(self) -> None:
+            super().__init__(torch)
+            self.messages = []
+
+        def apply_chat_template(self, messages, add_generation_prompt: bool):
+            self.messages.extend(messages)
+            return super().apply_chat_template(messages, add_generation_prompt)
+
+    private_hint = "PRIVATE_HINT_70_DO_NOT_SHOW_TO_EVAL"
+    private_answer = "PRIVATE_SFT_TARGET_70_DO_NOT_SHOW_TO_EVAL"
+    prepared = prepare_chartqa_examples(
+        [
+            {
+                "image": _Image(),
+                "query": "What is publicly asked?",
+                "label": ["70"],
+                "hint": private_hint,
+                "answer": private_answer,
+                "visual_fact_hint": private_hint,
+                "visual_fact_deplot": private_hint,
+            }
+        ]
+    )
+    assert prepared == [
+        {
+            "image_path": prepared[0]["image_path"],
+            "model_input_text": "What is publicly asked?",
+            "answer": "70",
+            "original_question": "What is publicly asked?",
+        }
+    ]
+
+    processor = _CapturingProcessor()
+    monkeypatch.setattr(chartqa_core, "_load_rgb_image", lambda value: value)
+    chartqa_core.build_chartqa_batch_inputs(
+        processor,
+        prepared,
+        device=None,
+        input_dtype=None,
+        prompt_template="Question: {question}",
+    )
+    rendered = str(processor.messages)
+    assert "What is publicly asked?" in rendered
+    assert private_hint not in rendered
+    assert private_answer not in rendered
+
+
 def test_shard_chartqa_examples_is_contiguous_and_exact() -> None:
     rows = [{"id": index} for index in range(10)]
 

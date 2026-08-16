@@ -11,7 +11,7 @@ training:
   num_gpus: 1
   num_client: 1
   dyme_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/opd-only-eval3d-chartqa-aligned-smoke
+    output_dir: /data/junjie/agentic-rl-main/outputs/opd-only-eval3d-chartqa-no-gold-refiner-smoke
     logging_steps: 1
     num_generations: 2
     generation_batch_size: 2

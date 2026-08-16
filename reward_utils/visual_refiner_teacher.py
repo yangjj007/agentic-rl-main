@@ -83,6 +83,11 @@ class TeacherVisualRefiner(ContextRefinerLocal):
         self._ic_source = self.visual_config.get("ic_source", "teacher_image")
         self._max_ic_tokens = int(refiner_cfg.get("max_ic_tokens", 768))
         self._max_refine_tokens = int(refiner_cfg.get("max_refine_tokens", 1000))
+        # ``include_gold=false`` is a hard no-reference contract.  A raw
+        # ChartQA hint is a supervised annotation and may state the answer in
+        # its Conclusion; it must never become an implicit visual-evidence
+        # fallback when the image call or DePlot extraction fails.
+        self._allow_hint_fallback = bool(refiner_cfg.get("include_gold", False))
         self._skip_cold_start = bool(refiner_cfg.get("skip_cold_start", True))
         self._prefetch_ic = bool(self.visual_config.get("prefetch_ic", True))
         self._teacher_batch_size = int(self.visual_config.get("teacher_batch_size", 4))
@@ -130,9 +135,13 @@ class TeacherVisualRefiner(ContextRefinerLocal):
         self._batch_images = images
         self._skip_cold_start_active = skip_cold_start
         self._refine_result_cache = {}
-        if ic_cache is not None:
+        if ic_cache is not None and self._allow_hint_fallback:
             self._ic_cache = ic_cache
         else:
+            # The checker may legitimately cache a hint-based I_c in legacy
+            # supervision modes.  It cannot be shared with an ``include_gold:
+            # false`` refiner: cached text has no provenance marker, and
+            # reusing it would bypass the no-gold fallback guard below.
             self._ic_cache = {}
         batch_questions = questions or [
             s.get("question_wo_prompt", s.get("question", "")) for s in samples
@@ -153,6 +162,7 @@ class TeacherVisualRefiner(ContextRefinerLocal):
                 cache=self._ic_cache,
                 recorder=self._recorder,
                 teacher_batch_size=self._teacher_batch_size,
+                allow_hint_fallback=self._allow_hint_fallback,
             )
 
     def end_generate_batch(self) -> None:
@@ -242,6 +252,7 @@ class TeacherVisualRefiner(ContextRefinerLocal):
                 cache=self._ic_cache,
                 recorder=self._recorder,
                 sample_idx=job.sample_idx,
+                allow_hint_fallback=bool(include_gold),
             )
             if include_gold:
                 eval_prompt = prompt_refine % (

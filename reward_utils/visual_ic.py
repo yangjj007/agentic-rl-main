@@ -81,13 +81,26 @@ def _parse_ic_json(text: str) -> tuple[Optional[dict], Optional[str]]:
     return parsed, None
 
 
-def ic_text_from_offline_sample(sample: dict[str, Any]) -> tuple[str, str]:
-    """DyME-aligned offline I_c: DePlot table > hint visual facts > hint."""
+def ic_text_from_offline_sample(
+    sample: dict[str, Any], *, allow_hint_fallback: bool = True
+) -> tuple[str, str]:
+    """Return offline visual evidence without silently changing its trust level.
+
+    A DePlot table is extracted from the chart and is safe to use as extra
+    teacher evidence.  In contrast, ``visual_fact_hint`` and ``hint`` are
+    training annotations and can contain the reference answer.  Callers that
+    are explicitly in no-gold mode must set ``allow_hint_fallback=False`` so a
+    failed vision extraction cannot turn a supposedly image/evidence-only
+    teacher call into a hidden-reference call.
+    """
     deplot_vf = sample.get("visual_fact_deplot")
     if deplot_vf and not is_deplot_placeholder(deplot_vf):
         text = format_deplot_for_teacher(deplot_vf)
         if text:
             return text, "deplot"
+
+    if not allow_hint_fallback:
+        return "", "empty"
 
     for key in ("visual_fact_hint", "visual_fact", "visual_facts", "hint"):
         raw = sample.get(key)
@@ -98,8 +111,12 @@ def ic_text_from_offline_sample(sample: dict[str, Any]) -> tuple[str, str]:
     return "", "empty"
 
 
-def _ic_text_from_sample(sample: dict[str, Any]) -> tuple[str, str]:
-    return ic_text_from_offline_sample(sample)
+def _ic_text_from_sample(
+    sample: dict[str, Any], *, allow_hint_fallback: bool = True
+) -> tuple[str, str]:
+    return ic_text_from_offline_sample(
+        sample, allow_hint_fallback=allow_hint_fallback
+    )
 
 
 def _ic_stats(ic_obj: Optional[dict], ic_text: str) -> dict[str, Any]:
@@ -132,6 +149,7 @@ def extract_visual_facts_teacher(
     cache: Optional[dict[tuple[str, str], str]] = None,
     recorder: Any = None,
     sample_idx: int = 0,
+    allow_hint_fallback: bool = True,
 ) -> tuple[str, dict[str, Any]]:
     """
     Returns (ic_text_for_prompts, meta).
@@ -156,7 +174,9 @@ def extract_visual_facts_teacher(
         return ic_text, meta
 
     if ic_source in ("offline", "sample", "deplot", "offline_deplot"):
-        ic_text, fb = _ic_text_from_sample(sample)
+        ic_text, fb = _ic_text_from_sample(
+            sample, allow_hint_fallback=allow_hint_fallback
+        )
         meta.update(_ic_stats(None, ic_text))
         meta.update(parse_ok=bool(ic_text), ic_source=f"offline_{fb}", ic_preview=ic_text[:400])
         if ic_text and cache is not None:
@@ -166,7 +186,9 @@ def extract_visual_facts_teacher(
         return ic_text, meta
 
     if teacher_model is None or processor is None:
-        ic_text, fb = _ic_text_from_sample(sample)
+        ic_text, fb = _ic_text_from_sample(
+            sample, allow_hint_fallback=allow_hint_fallback
+        )
         meta.update(_ic_stats(None, ic_text))
         meta.update(
             parse_ok=bool(ic_text),
@@ -179,7 +201,9 @@ def extract_visual_facts_teacher(
         return ic_text, meta
 
     if not _has_image(image):
-        ic_text, fb = _ic_text_from_sample(sample)
+        ic_text, fb = _ic_text_from_sample(
+            sample, allow_hint_fallback=allow_hint_fallback
+        )
         meta.update(_ic_stats(None, ic_text))
         meta.update(
             parse_ok=bool(ic_text),
@@ -221,7 +245,9 @@ def extract_visual_facts_teacher(
             if cache is not None:
                 cache[cache_key] = ic_text
         else:
-            ic_text, fb = _ic_text_from_sample(sample)
+            ic_text, fb = _ic_text_from_sample(
+                sample, allow_hint_fallback=allow_hint_fallback
+            )
             meta.update(_ic_stats(ic_obj, ic_text))
             meta.update(
                 parse_ok=False,
@@ -232,7 +258,9 @@ def extract_visual_facts_teacher(
                 raw_teacher_output=output,
             )
     except Exception as exc:
-        ic_text, fb = _ic_text_from_sample(sample)
+        ic_text, fb = _ic_text_from_sample(
+            sample, allow_hint_fallback=allow_hint_fallback
+        )
         meta.update(_ic_stats(None, ic_text))
         meta.update(
             parse_ok=False,

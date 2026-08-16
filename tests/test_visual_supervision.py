@@ -775,6 +775,32 @@ def test_ic_text_from_offline_prefers_deplot():
     assert "hint-only" not in ic_text
 
 
+def test_no_gold_offline_ic_never_falls_back_to_hint_annotations():
+    """A failed no-gold visual call must not reveal a ChartQA rationale."""
+    sample = {
+        "hint": "Conclusion: the answer is 70.",
+        "visual_fact_hint": "Answer-derived visual fact: 70.",
+        "answer": "Answer: 70",
+    }
+
+    ic_text, source = ic_text_from_offline_sample(
+        sample, allow_hint_fallback=False
+    )
+    assert ic_text == ""
+    assert source == "empty"
+
+    ic_text, meta = extract_visual_facts_teacher(
+        teacher_model=None,
+        processor=None,
+        sample=sample,
+        question="What is the value?",
+        image="chart.png",
+        allow_hint_fallback=False,
+    )
+    assert ic_text == ""
+    assert meta.get("ic_source") == "offline_empty"
+
+
 def test_extract_visual_facts_uses_offline_deplot_without_teacher():
     from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
 

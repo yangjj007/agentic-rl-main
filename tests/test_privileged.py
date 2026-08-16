@@ -207,6 +207,34 @@ def test_deplot_only_provider_skips_hint():
     assert hint_cot not in suffix
 
 
+def test_no_gold_probe_providers_exclude_all_training_annotations():
+    """The production probe combination may receive a rich train row, not its hint."""
+    from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
+
+    hidden_hint = "PRIVATE_HINT_ANSWER_IS_70"
+    hidden_answer = "PRIVATE_ANSWER_70"
+    sample = {
+        "hint": hidden_hint,
+        "answer": hidden_answer,
+        "reference_answer": "Answer: 70",
+        "visual_fact_hint": hidden_hint,
+        "visual_fact": hidden_hint,
+        "visual_fact_deplot": build_deplot_visual_fact(
+            {"question": "q"}, "Year | Red\n2018 | 72\n2019 | 70"
+        ),
+    }
+    suffix, _ = build_privileged_context(
+        sample,
+        ["format_only", "visual_facts_deplot"],
+        privileged_profile="text",
+        opsd_config={"text_include_gold": False},
+    )
+    assert "2019 | 70" in suffix
+    assert hidden_hint not in suffix
+    assert hidden_answer not in suffix
+    assert "[Reference Answer]" not in suffix
+
+
 def test_oracle_hint_provider_exports_response_prefix_and_preserves_evidence_order():
     """Official oracle-hint keeps DePlot as evidence and pre-fills hint structure."""
     from data_utils.chart.deplot_pipeline import build_deplot_visual_fact
