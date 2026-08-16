@@ -12,8 +12,14 @@ from opsd_utils import debug_log as opsd_debug
 from opsd_utils.deepspeed_utils import should_colocate_teacher_with_student
 
 # Legacy stacked tensors (dim0 = total images). Prefer *_list keys.
-TEACHER_IMAGE_STACKED_KEYS = frozenset({"teacher_pixel_values", "teacher_image_sizes"})
-TEACHER_VISION_LIST_KEYS = frozenset({"teacher_pixel_values_list", "teacher_image_sizes_list"})
+TEACHER_IMAGE_STACKED_KEYS = frozenset({
+    "teacher_pixel_values", "teacher_image_sizes",
+    "teacher_traj_pixel_values", "teacher_traj_image_sizes",
+})
+TEACHER_VISION_LIST_KEYS = frozenset({
+    "teacher_pixel_values_list", "teacher_image_sizes_list",
+    "teacher_traj_pixel_values_list", "teacher_traj_image_sizes_list",
+})
 
 
 def image_token_id(processor) -> int:

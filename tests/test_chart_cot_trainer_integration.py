@@ -72,4 +72,19 @@ def test_verifier_exception_degrades_to_q2_and_records_error(monkeypatch) -> Non
     assert result.verifications[0].quality == "Q2"
     assert result.verifications[0].verification_error is True
     assert "verifier_error" in result.verifications[0].reason_codes
-    assert result.gate_result.metrics["verifier_error_rate"] == 1.0
+
+
+def test_quality_evaluation_receives_actual_trajectory_answer_verdict() -> None:
+    response = _response("2019: 70 and 2020: 77.")
+    result = evaluate_teacher_trajectory_quality(
+        teacher_traj_texts={0: response},
+        samples=[{"question": "q", "visual_fact_deplot": "Year | Value\n2019 | 70\n2020 | 77"}],
+        num_generations=1,
+        config=ChartCoTQualityGateConfig(enabled=True, mode="diagnostic"),
+        answer_correct_by_index={0: False},
+    )
+
+    assert result.verifications[0].answer_correct is False
+    assert result.verifications[0].quality == "Q1"
+    assert "answer_incorrect" in result.verifications[0].reason_codes
+    assert result.gate_result.metrics["verifier_error_rate"] == 0.0

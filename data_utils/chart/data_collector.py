@@ -40,9 +40,14 @@ def prepare_chart_rl_data(json_path: str) -> List[Dict[str, Any]]:
             # Create a new dictionary to avoid modifying the original list in place.
             new_entry = entry.copy()
 
-            # Clean up the answer text.
+            # Preserve the short gold answer independently from the training
+            # target.  SFT rows deliberately turn ``answer`` into a
+            # rationale+answer target below, while RL/OPD teacher probes must
+            # always compare against the short ChartQA label.
             if 'answer' in new_entry:
-                new_entry['answer'] = ANSWER_TEMPLATE.format(answer=new_entry['answer'].strip())
+                reference_answer = ANSWER_TEMPLATE.format(answer=new_entry['answer'].strip())
+                new_entry['reference_answer'] = reference_answer
+                new_entry['answer'] = reference_answer
 
             image = new_entry.get('image', '')
             if image:
@@ -97,9 +102,12 @@ def prepare_chart_sft_data(json_path: str) -> List[Dict[str, Any]]:
             # Create a new dictionary to avoid modifying the original list in place.
             new_entry = entry.copy()
 
-            # Clean up the answer text.
+            # Keep the evaluator/probe reference separate from the supervised
+            # target.  The latter includes rationale text by design.
             if 'answer' in new_entry:
-                new_entry['answer'] = new_entry['hint'] + '\n' + ANSWER_TEMPLATE.format(answer=new_entry['answer'].strip())
+                reference_answer = ANSWER_TEMPLATE.format(answer=new_entry['answer'].strip())
+                new_entry['reference_answer'] = reference_answer
+                new_entry['answer'] = new_entry['hint'] + '\n' + reference_answer
 
             # Format the prompt using an f-string.
             new_entry['prompt'] = PROMPT_TEMPLATE.format(question=new_entry['question'])

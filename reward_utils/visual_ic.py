@@ -213,7 +213,10 @@ def extract_visual_facts_teacher(
                 ic_source="teacher_image",
                 latency_ms=round(latency_ms, 1),
                 ic_preview=ic_text[:400],
-                raw_teacher_output=output[:200],
+                # Keep the complete teacher response in the structured JSONL
+                # artifact. Console output is still bounded by the YAML
+                # preview limit, while a malformed I_c can be audited later.
+                raw_teacher_output=output,
             )
             if cache is not None:
                 cache[cache_key] = ic_text
@@ -226,7 +229,7 @@ def extract_visual_facts_teacher(
                 error=err,
                 fallback=fb,
                 latency_ms=round(latency_ms, 1),
-                raw_teacher_output=output[:200],
+                raw_teacher_output=output,
             )
     except Exception as exc:
         ic_text, fb = _ic_text_from_sample(sample)

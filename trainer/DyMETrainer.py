@@ -1,6 +1,7 @@
 import itertools
 import json
 import os
+import re
 import time
 import textwrap
 import warnings
@@ -83,6 +84,7 @@ from opsd_utils.checkpoint_eval import (
 from opsd_utils.constants import MODE_GRPO, MODE_OPSD, MODE_SFT, MODE_SKIP, DEFAULT_OPSD_CONFIG
 from opsd_utils.chart_cot_quality_gate import (
     ChartCoTQualityGateConfig,
+    aggregate_chart_cot_verifications,
     append_quality_sample_records,
     evaluate_teacher_trajectory_quality,
 )
@@ -135,6 +137,10 @@ from opsd_utils.teacher_sft_repair import (
 from opsd_utils.teacher_traj_schedule import effective_linear_weight, effective_teacher_traj_weight
 from opsd_utils.phase_schedule import boundary_reached, training_progress
 from opsd_utils.teacher_probe_log import append_teacher_probe_record, build_teacher_probe_record
+from opsd_utils.teacher_trajectory_log import (
+    append_teacher_trajectory_record,
+    build_teacher_trajectory_record,
+)
 from opsd_utils.deepspeed_utils import (
     deepspeed_requires_single_student_forward,
     gradient_checkpointing_enable_kwargs,
@@ -1297,9 +1303,32 @@ class DyMETrainer(Trainer):
     def _teacher_trajectory_config(self) -> dict[str, Any]:
         cfg = self.opsd_config.get("teacher_trajectory") or {}
         decay_cfg = cfg.get("weight_decay") or {}
+        audit_cfg = cfg.get("audit_log") or {}
         return {
             "enabled": bool(cfg.get("enabled", True)),
+            "context_providers": cfg.get(
+                "context_providers",
+                self.opsd_config.get("privileged_providers", ["format_only", "visual_facts_deplot"]),
+            ),
+            "batch_size": max(1, int(cfg.get("batch_size", 1) or 1)),
             "max_new_tokens": int(cfg.get("max_new_tokens", 128)),
+            "do_sample": bool(cfg.get("do_sample", False)),
+            "temperature": float(cfg.get("temperature", 0.0) or 0.0),
+            "top_p": float(cfg.get("top_p", 1.0)),
+            "repetition_penalty": float(cfg.get("repetition_penalty", 1.05)),
+            "prompt_profile": cfg.get("prompt_profile", "chartqa_structured_trajectory"),
+            "answer_parser": cfg.get("answer_parser", "chartqa_final_answer"),
+            "max_relative_change": float(cfg.get("max_relative_change", 0.05)),
+            "verify": bool(cfg.get("verify", True)),
+            "require_quality_for_loss": bool(cfg.get("require_quality_for_loss", False)),
+            "required_quality": str(cfg.get("required_quality", "Q3") or "Q3").upper(),
+            "audit_log": {
+                "enabled": bool(audit_cfg.get("enabled", False)),
+                "max_text_chars": int(audit_cfg.get("max_text_chars", 0) or 0),
+            },
+            "require_two_bindings_for_multirow": bool(
+                cfg.get("require_two_bindings_for_multirow", False)
+            ),
             "loss_type": (cfg.get("loss_type") or "fkl").lower(),
             "weight": float(cfg.get("weight", self.opsd_config.get("loss", {}).get("teacher_traj_fkl_weight", 0.5))),
             "weight_decay": {
@@ -1984,6 +2013,8 @@ class DyMETrainer(Trainer):
             "teacher_probe_generate_batches": 0,
             "teacher_probe_fallback_batches": 0,
             "teacher_probe_text": {},
+            "teacher_probe_outputs": {},
+            "teacher_probe_scores": {},
         }
         probe_mode = self.opsd_config.get("mode") == "dyme_teacher_probe_opd"
         opd_only_probe = self.training_stage == "opd_only"
@@ -2007,6 +2038,13 @@ class DyMETrainer(Trainer):
 
         def reference_for(row: int) -> str:
             idx = source_idx_for(row)
+            sample = sample_for(row)
+            # ``answer`` is an SFT target in some data pipelines and can
+            # therefore contain a full rationale before ``Answer: ...``.
+            # Teacher-probe correctness must use the canonical short label.
+            reference_answer = sample.get("reference_answer") if isinstance(sample, dict) else None
+            if str(reference_answer or "").strip():
+                return str(reference_answer)
             return str(answers[idx]) if idx < len(answers) else ""
 
         def group_metadata_for(row: int) -> tuple[bool | None, float | None, bool, bool, str]:
@@ -2023,7 +2061,14 @@ class DyMETrainer(Trainer):
             )
             is_all_wrong = has_correct_i is False
             is_mixed_wrong = has_correct_i is True
-            route_reason = "all_wrong_teacher_rescue" if is_all_wrong else "mixed_wrong_teacher_probe"
+            # The probe can still be useful evidence in ``opd_only``, but it
+            # never rescues, selects, or reroutes a row.  Keep audit records
+            # semantically honest: the historical names below describe mixed
+            # RL routing only.
+            if opd_only_probe:
+                route_reason = "opd_only_diagnostic_all_wrong" if is_all_wrong else "opd_only_diagnostic"
+            else:
+                route_reason = "all_wrong_teacher_rescue" if is_all_wrong else "mixed_wrong_teacher_probe"
             return has_correct_i, reward_std_i, is_all_wrong, is_mixed_wrong, route_reason
 
         eligible_indices: list[int] = []
@@ -2172,6 +2217,8 @@ class DyMETrainer(Trainer):
                 if parsed_answer.parse_failed:
                     stats["teacher_probe_parse_failed"] += 1
             stats["teacher_probe_text"][global_idx] = text[:160].replace("\n", "\\n")
+            stats["teacher_probe_outputs"][global_idx] = text
+            stats["teacher_probe_scores"][global_idx] = float(score)
             # In opd_only the probe is diagnostic/trajectory supervision only;
             # its answer score must never route or discard the completion.
             final_route = "opd_only_diagnostic" if opd_only_probe else ("opd" if score > 0 else "sft")
@@ -2250,15 +2297,20 @@ class DyMETrainer(Trainer):
                 )
             if score > 0:
                 stats["teacher_probe_correct"] += 1
-                teacher_traj_texts[global_idx] = text
-                if self._teacher_trajectory_config()["enabled"]:
-                    teacher_trajs[global_idx] = (gen_ids.to(device), gen_mask.to(device))
-            else:
-                stats["teacher_probe_wrong"] += 1
-                if opd_only_probe:
+                # Legacy RL mode historically used a successful short answer
+                # probe as a teacher trajectory. OPD-only deliberately does
+                # not: a dedicated structured, no-gold trajectory is emitted
+                # below, so `Answer: ...` cannot masquerade as CoT.
+                if not opd_only_probe:
                     teacher_traj_texts[global_idx] = text
                     if self._teacher_trajectory_config()["enabled"]:
                         teacher_trajs[global_idx] = (gen_ids.to(device), gen_mask.to(device))
+            else:
+                stats["teacher_probe_wrong"] += 1
+                if opd_only_probe:
+                    # Diagnostic only; the dedicated generator is independent
+                    # of probe correctness and runs after this loop.
+                    pass
                 else:
                     completion_modes[global_idx] = MODE_SFT
 
@@ -2274,10 +2326,546 @@ class DyMETrainer(Trainer):
         opsd_debug.log(
             "teacher_probe",
             "teacher answer probe finished",
-            **{k: v for k, v in stats.items() if k != "teacher_probe_text"},
+            **{
+                k: v
+                for k, v in stats.items()
+                if k not in {"teacher_probe_text", "teacher_probe_outputs", "teacher_probe_scores"}
+            },
             sample_text=next(iter(stats["teacher_probe_text"].values()), ""),
         )
         return completion_modes, teacher_trajs, teacher_traj_texts, stats
+
+    def _apply_teacher_trajectory_generation(
+        self,
+        *,
+        inputs: list[dict[str, Union[torch.Tensor, Any]]],
+        completion_modes: list[int],
+        answers: list[str],
+        completions: list[str],
+        answer_flag: str,
+        global_step: int,
+        device,
+        teacher_probe_stats: dict[str, Any] | None = None,
+    ) -> tuple[
+        dict[int, tuple[torch.Tensor, torch.Tensor]],
+        dict[int, str],
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        """Generate independent structured teacher trajectories for OPD-only.
+
+        A short answer probe is useful for diagnostic answer accuracy but is
+        not a reasoning trajectory.  This method deliberately creates a new
+        teacher prompt with the structured/no-gold profile, then logs complete
+        question--student--probe--trajectory records for semantic review.
+        It never changes completion modes or the OPD sample set.
+        """
+        cfg = self._teacher_trajectory_config()
+        stats: dict[str, Any] = {
+            "teacher_traj_candidates": 0,
+            "teacher_traj_generated": 0,
+            "teacher_traj_correct": 0,
+            "teacher_traj_wrong": 0,
+            "teacher_traj_parse_failed": 0,
+            "teacher_traj_loss_eligible": 0,
+            "teacher_traj_generate_batches": 0,
+            "teacher_traj_generate_s": 0.0,
+            "teacher_traj_fallback_batches": 0,
+            "teacher_traj_evidence_retry_candidates": 0,
+            "teacher_traj_evidence_retry_generated": 0,
+            "teacher_traj_evidence_retry_recovered": 0,
+            "teacher_traj_text": {},
+        }
+        if self.teacher_model is None or not cfg["enabled"]:
+            return {}, {}, stats, {}
+
+        candidate_indices = [
+            row for row, mode_i in enumerate(completion_modes) if mode_i == MODE_OPSD
+        ]
+        stats["teacher_traj_candidates"] = len(candidate_indices)
+        if not candidate_indices:
+            return {}, {}, stats, {}
+
+        expanded_count = len(completion_modes)
+
+        def source_idx_for(row: int) -> int:
+            return self._source_row_index(row, len(inputs), expanded_count)
+
+        def sample_for(row: int) -> dict[str, Union[torch.Tensor, Any]]:
+            return inputs[source_idx_for(row)] if inputs else {}
+
+        def reference_for(row: int) -> str:
+            sample = sample_for(row)
+            ref = sample.get("reference_answer") if isinstance(sample, dict) else None
+            if str(ref or "").strip():
+                return str(ref)
+            idx = source_idx_for(row)
+            return str(answers[idx]) if idx < len(answers) else ""
+
+        teacher_tensors = build_teacher_prompt_batch(
+            self.processing_class,
+            inputs,
+            candidate_indices,
+            list(cfg["context_providers"]),
+            device,
+            opsd_config=self.opsd_config,
+            global_step=global_step,
+            output_dir=self.args.output_dir,
+            expanded_count=expanded_count,
+            num_generations=self.num_generations,
+            prompt_profile=cfg["prompt_profile"],
+        )
+        teacher_stats = teacher_tensors.get("teacher_stats", {}) if teacher_tensors else {}
+        if float(teacher_stats.get("privileged_suffix_has_gold_rate", 0.0) or 0.0) > 0.0:
+            raise RuntimeError("OPD-only teacher trajectory prompt unexpectedly contains gold evidence")
+
+        generated_rows: list[tuple[int, torch.Tensor, torch.Tensor, str]] = []
+        for start in range(0, len(candidate_indices), cfg["batch_size"]):
+            end = min(start + cfg["batch_size"], len(candidate_indices))
+            compact_rows = list(range(start, end))
+            gen_start = self._perf_start()
+            batch_outputs, fallback_used = self._teacher_generate_batch_from_tensors(
+                teacher_tensors,
+                compact_rows,
+                max_new_tokens=cfg["max_new_tokens"],
+                do_sample=cfg["do_sample"],
+                temperature=cfg["temperature"],
+                top_p=cfg["top_p"],
+                repetition_penalty=cfg["repetition_penalty"],
+            )
+            stats["teacher_traj_generate_s"] += self._perf_elapsed(gen_start)
+            stats["teacher_traj_generate_batches"] += 1
+            if fallback_used:
+                stats["teacher_traj_fallback_batches"] += 1
+            for offset, (ids_i, mask_i, text_i) in enumerate(batch_outputs):
+                generated_rows.append((candidate_indices[start + offset], ids_i, mask_i, text_i))
+
+        def _has_all_reasoning_sections(text: str) -> bool:
+            return all(
+                re.search(rf"(?im)^\s*{heading}\s*:", text or "") is not None
+                for heading in ("goal", "observation", "reasoning", "conclusion")
+            )
+
+        def _has_answer_section(text: str) -> bool:
+            return re.search(r"(?im)^\s*answer\s*:", text or "") is not None
+
+        def _tokens_from_text(text: str) -> tuple[torch.Tensor, torch.Tensor]:
+            encoded = self.processing_class.tokenizer(
+                text,
+                add_special_tokens=False,
+                return_tensors="pt",
+            )
+            ids = encoded["input_ids"][0].to(device)
+            mask = encoded["attention_mask"][0].to(device)
+            return ids, mask
+
+        trajectories: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        texts: dict[int, str] = {}
+        trajectory_correct: dict[int, bool] = {}
+        trajectory_answers: dict[int, str] = {}
+        trajectory_parse_failed: dict[int, bool] = {}
+        trajectory_raw_outputs: dict[int, str] = {}
+        trajectory_evidence_retry_raw_outputs: dict[int, str] = {}
+        trajectory_answer_sources: dict[int, str] = {}
+        probe_outputs = (teacher_probe_stats or {}).get("teacher_probe_outputs", {})
+        # Final trajectory rows may come from either the initial structured
+        # prompt or the evidence-grounding retry.  Keep their exact prompt /
+        # vision source together with the generated tokens so auxiliary FKL
+        # never silently conditions on the primary OPD prompt.
+        trajectory_teacher_sources: dict[int, tuple[dict[str, Any], int]] = {
+            global_idx: (teacher_tensors, compact_idx)
+            for compact_idx, global_idx in enumerate(candidate_indices)
+        }
+        for global_idx, ids_i, mask_i, text_i in generated_rows:
+            source_idx = source_idx_for(global_idx)
+            prompt_idx = global_idx // self.num_generations
+            generation_idx = global_idx % self.num_generations
+            sample = sample_for(global_idx)
+            reference = reference_for(global_idx)
+            raw_text = text_i
+            trajectory_raw_outputs[global_idx] = raw_text
+            answer_source = "trajectory"
+            # The teacher was trained on ChartQA hints that usually stop at
+            # Conclusion. If it produced a complete four-section reasoning
+            # chain but omitted only the final answer line, attach the answer
+            # independently generated by the no-gold teacher probe. This is
+            # never a dataset label: audit records retain both raw outputs and
+            # quality verification still rejects a wrong probe answer.
+            probe_text = str(probe_outputs.get(global_idx, ""))
+            if (
+                not _has_answer_section(text_i)
+                and _has_all_reasoning_sections(text_i)
+                and probe_text
+            ):
+                _probe_score, probe_parsed = eval_teacher_probe_chart(
+                    probe_text,
+                    reference,
+                    cfg["max_relative_change"],
+                    answer_flag=answer_flag.lower(),
+                )
+                probe_answer = probe_parsed.answer if probe_parsed is not None else ""
+                if str(probe_answer or "").strip():
+                    text_i = f"{text_i.rstrip()}\nAnswer: {str(probe_answer).strip()}"
+                    ids_i, mask_i = _tokens_from_text(text_i)
+                    answer_source = "teacher_probe_completion"
+            if cfg["answer_parser"] == "chartqa_final_answer":
+                score, parsed_answer = eval_teacher_probe_chart(
+                    text_i,
+                    reference,
+                    cfg["max_relative_change"],
+                    answer_flag=answer_flag.lower(),
+                )
+                trajectory_answer = parsed_answer.answer if parsed_answer is not None else ""
+                parse_failed = bool(parsed_answer.parse_failed) if parsed_answer is not None else True
+            else:
+                score = float(
+                    eval_one_chart(
+                        text_i,
+                        reference.lower().replace(answer_flag.lower(), "").strip(),
+                        cfg["max_relative_change"],
+                        answer_flag=answer_flag.lower(),
+                    )
+                )
+                trajectory_answer = ""
+                parse_failed = False
+            is_correct = bool(score > 0)
+            trajectory_correct[global_idx] = is_correct
+            trajectory_answers[global_idx] = str(trajectory_answer or "")
+            trajectory_parse_failed[global_idx] = parse_failed
+            trajectory_answer_sources[global_idx] = answer_source
+            stats["teacher_traj_generated"] += 1
+            stats["teacher_traj_correct" if is_correct else "teacher_traj_wrong"] += 1
+            if parse_failed:
+                stats["teacher_traj_parse_failed"] += 1
+            texts[global_idx] = text_i
+            stats["teacher_traj_text"][global_idx] = text_i[:240].replace("\n", "\\n")
+            # Initially retain every non-empty generation. The quality verdict
+            # below may reject it from *auxiliary trajectory loss* only; the
+            # primary OPD row remains present regardless.
+            if bool(mask_i.numel() and mask_i.sum().item() > 0):
+                trajectories[global_idx] = (ids_i.to(device), mask_i.to(device))
+
+        verifications: dict[int, Any] = {}
+        if cfg["verify"] and texts:
+            quality_samples = [sample_for(row) for row in range(expanded_count)]
+            quality_result = evaluate_teacher_trajectory_quality(
+                teacher_traj_texts=texts,
+                samples=quality_samples,
+                num_generations=1,
+                config=ChartCoTQualityGateConfig(
+                    enabled=True,
+                    mode="diagnostic",
+                    require_quality=cfg["required_quality"],
+                    log_samples=False,
+                    require_two_bindings_for_multirow=cfg["require_two_bindings_for_multirow"],
+                ),
+                answer_correct_by_index=trajectory_correct,
+            )
+            verifications = quality_result.verifications
+            for metric_name, metric_value in quality_result.gate_result.metrics.items():
+                self._metrics["train" if self.model.training else "eval"].setdefault(
+                    f"teacher_traj_verify/{metric_name}", []
+                ).append(float(metric_value))
+
+        # A correct structured answer can still be a poor supervision target
+        # when it merely repeats the conclusion in Observation.  Retry only
+        # this explicitly diagnosed problem, with a more concrete no-gold
+        # evidence instruction.  This retry remains auxiliary: it does not
+        # affect OPD routing, rewards, or the primary OPD loss.
+        retry_indices = [
+            global_idx
+            for global_idx, verification in verifications.items()
+            if "grounding_missing_supported_claim" in set(verification.reason_codes)
+        ]
+        stats["teacher_traj_evidence_retry_candidates"] = len(retry_indices)
+        if retry_indices:
+            retry_tensors = build_teacher_prompt_batch(
+                self.processing_class,
+                inputs,
+                retry_indices,
+                list(cfg["context_providers"]),
+                device,
+                opsd_config=self.opsd_config,
+                global_step=global_step,
+                output_dir=self.args.output_dir,
+                expanded_count=expanded_count,
+                num_generations=self.num_generations,
+                prompt_profile="chartqa_structured_trajectory_evidence_retry",
+            )
+            retry_stats = retry_tensors.get("teacher_stats", {}) if retry_tensors else {}
+            if float(retry_stats.get("privileged_suffix_has_gold_rate", 0.0) or 0.0) > 0.0:
+                raise RuntimeError("OPD-only teacher trajectory evidence retry unexpectedly contains gold evidence")
+            retry_rows: dict[int, tuple[torch.Tensor, torch.Tensor, str]] = {}
+            for start in range(0, len(retry_indices), cfg["batch_size"]):
+                end = min(start + cfg["batch_size"], len(retry_indices))
+                compact_rows = list(range(start, end))
+                retry_start = self._perf_start()
+                retry_outputs, fallback_used = self._teacher_generate_batch_from_tensors(
+                    retry_tensors,
+                    compact_rows,
+                    max_new_tokens=cfg["max_new_tokens"],
+                    do_sample=cfg["do_sample"],
+                    temperature=cfg["temperature"],
+                    top_p=cfg["top_p"],
+                    repetition_penalty=cfg["repetition_penalty"],
+                )
+                stats["teacher_traj_generate_s"] += self._perf_elapsed(retry_start)
+                stats["teacher_traj_generate_batches"] += 1
+                if fallback_used:
+                    stats["teacher_traj_fallback_batches"] += 1
+                for offset, output in enumerate(retry_outputs):
+                    retry_rows[retry_indices[start + offset]] = output
+
+            retry_texts: dict[int, str] = {}
+            retry_correct: dict[int, bool] = {}
+            retry_answers: dict[int, str] = {}
+            retry_parse_failed: dict[int, bool] = {}
+            retry_tokens: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+            for global_idx, (ids_i, mask_i, text_i) in retry_rows.items():
+                source_idx = source_idx_for(global_idx)
+                reference = reference_for(global_idx)
+                answer_source = "trajectory_evidence_retry"
+                trajectory_evidence_retry_raw_outputs[global_idx] = text_i
+                probe_text = str(probe_outputs.get(global_idx, ""))
+                if (
+                    not _has_answer_section(text_i)
+                    and _has_all_reasoning_sections(text_i)
+                    and probe_text
+                ):
+                    _probe_score, probe_parsed = eval_teacher_probe_chart(
+                        probe_text,
+                        reference,
+                        cfg["max_relative_change"],
+                        answer_flag=answer_flag.lower(),
+                    )
+                    probe_answer = probe_parsed.answer if probe_parsed is not None else ""
+                    if str(probe_answer or "").strip():
+                        text_i = f"{text_i.rstrip()}\nAnswer: {str(probe_answer).strip()}"
+                        ids_i, mask_i = _tokens_from_text(text_i)
+                        answer_source = "teacher_probe_completion_after_evidence_retry"
+                if cfg["answer_parser"] == "chartqa_final_answer":
+                    score, parsed_answer = eval_teacher_probe_chart(
+                        text_i,
+                        reference,
+                        cfg["max_relative_change"],
+                        answer_flag=answer_flag.lower(),
+                    )
+                    answer = parsed_answer.answer if parsed_answer is not None else ""
+                    parse_failed = bool(parsed_answer.parse_failed) if parsed_answer is not None else True
+                else:
+                    score = float(
+                        eval_one_chart(
+                            text_i,
+                            reference.lower().replace(answer_flag.lower(), "").strip(),
+                            cfg["max_relative_change"],
+                            answer_flag=answer_flag.lower(),
+                        )
+                    )
+                    answer = ""
+                    parse_failed = False
+                retry_texts[global_idx] = text_i
+                retry_correct[global_idx] = bool(score > 0)
+                retry_answers[global_idx] = str(answer or "")
+                retry_parse_failed[global_idx] = parse_failed
+                retry_tokens[global_idx] = (ids_i.to(device), mask_i.to(device))
+                trajectory_teacher_sources[global_idx] = (
+                    retry_tensors,
+                    retry_indices.index(global_idx),
+                )
+                trajectory_answer_sources[global_idx] = answer_source
+                stats["teacher_traj_evidence_retry_generated"] += 1
+
+            if retry_texts:
+                retry_quality = evaluate_teacher_trajectory_quality(
+                    teacher_traj_texts=retry_texts,
+                    samples=[sample_for(row) for row in range(expanded_count)],
+                    num_generations=1,
+                    config=ChartCoTQualityGateConfig(
+                        enabled=True,
+                        mode="diagnostic",
+                        require_quality=cfg["required_quality"],
+                        log_samples=False,
+                        require_two_bindings_for_multirow=cfg["require_two_bindings_for_multirow"],
+                    ),
+                    answer_correct_by_index=retry_correct,
+                )
+                for global_idx, retry_verification in retry_quality.verifications.items():
+                    previous_verification = verifications.get(global_idx)
+                    # Preserve both outputs in the audit: the original stays
+                    # raw, while this final text is what can reach FKL.
+                    texts[global_idx] = retry_texts[global_idx]
+                    trajectories[global_idx] = retry_tokens[global_idx]
+                    trajectory_correct[global_idx] = retry_correct[global_idx]
+                    trajectory_answers[global_idx] = retry_answers[global_idx]
+                    trajectory_parse_failed[global_idx] = retry_parse_failed[global_idx]
+                    verifications[global_idx] = retry_verification
+                    if retry_verification.quality == cfg["required_quality"]:
+                        stats["teacher_traj_evidence_retry_recovered"] += 1
+                    opsd_debug.log(
+                        "teacher_trajectory",
+                        "evidence-grounding trajectory retry finished",
+                        global_step=global_step,
+                        global_idx=global_idx,
+                        previous_quality=getattr(previous_verification, "quality", None),
+                        retry_quality=retry_verification.quality,
+                        retry_reason_codes=list(retry_verification.reason_codes),
+                        accepted=retry_verification.quality == cfg["required_quality"],
+                        text_preview=retry_texts[global_idx][:240].replace("\n", "\\n"),
+                    )
+                # Report final (post-retry) quality separately from the
+                # initial generation so dashboards do not misleadingly show
+                # Q2 while the FKL target is a verified Q3 retry.
+                final_metrics = aggregate_chart_cot_verifications(verifications)
+                for metric_name, metric_value in final_metrics.items():
+                    self._metrics["train" if self.model.training else "eval"].setdefault(
+                        f"teacher_traj_verify_final/{metric_name}", []
+                    ).append(float(metric_value))
+
+        if cfg["require_quality_for_loss"]:
+            trajectories = {
+                idx: pair
+                for idx, pair in trajectories.items()
+                if verifications.get(idx) is not None
+                and verifications[idx].quality == cfg["required_quality"]
+            }
+        stats["teacher_traj_loss_eligible"] = len(trajectories)
+
+        def _teacher_tensors_for_eligible_trajectories() -> dict[str, Any]:
+            """Compact exact teacher conditions for quality-accepted FKL rows.
+
+            Prompt lengths can differ between the initial structured request
+            and an evidence retry, so concatenate only their unpadded token
+            spans and left-pad the compact batch.  Image tensors remain in
+            their original per-sample lists.  ``teacher_compact_indices`` is
+            understood by the OPD loss helper and maps a rollout row to this
+            compact teacher batch.
+            """
+            eligible = sorted(trajectories)
+            if not eligible:
+                return {}
+            rows: list[tuple[torch.Tensor, torch.Tensor]] = []
+            num_images: list[int] = []
+            response_prefix_lens: list[int] = []
+            pixels: list[Any] = []
+            image_sizes: list[Any] = []
+            for global_idx in eligible:
+                source_tensors, source_row = trajectory_teacher_sources[global_idx]
+                ids = source_tensors["teacher_prompt_ids"][source_row].to(device)
+                mask = source_tensors["teacher_prompt_mask"][source_row].to(device)
+                valid_ids = ids[mask.bool()]
+                if not valid_ids.numel():
+                    valid_ids = ids[-1:]
+                rows.append((valid_ids, torch.ones_like(valid_ids, dtype=mask.dtype)))
+                image_count = source_tensors.get("teacher_num_images")
+                if isinstance(image_count, torch.Tensor):
+                    num_images.append(int(image_count[source_row].item()))
+                elif isinstance(image_count, (list, tuple)):
+                    num_images.append(int(image_count[source_row]))
+                else:
+                    num_images.append(1)
+                prefix_lens = source_tensors.get("teacher_response_prefix_lens")
+                if isinstance(prefix_lens, torch.Tensor):
+                    response_prefix_lens.append(int(prefix_lens[source_row].item()))
+                elif isinstance(prefix_lens, (list, tuple)):
+                    response_prefix_lens.append(int(prefix_lens[source_row]))
+                else:
+                    response_prefix_lens.append(0)
+                pixel_list = source_tensors.get("teacher_pixel_values_list")
+                size_list = source_tensors.get("teacher_image_sizes_list")
+                if isinstance(pixel_list, list):
+                    pixels.append(pixel_list[source_row])
+                if isinstance(size_list, list):
+                    image_sizes.append(size_list[source_row])
+
+            max_len = max(int(ids.numel()) for ids, _mask in rows)
+            pad_id = int(self.processing_class.tokenizer.pad_token_id)
+            padded_ids: list[torch.Tensor] = []
+            padded_masks: list[torch.Tensor] = []
+            for ids, mask in rows:
+                pad_len = max_len - int(ids.numel())
+                if pad_len:
+                    padded_ids.append(torch.cat([ids.new_full((pad_len,), pad_id), ids], dim=0))
+                    padded_masks.append(torch.cat([mask.new_zeros((pad_len,)), mask], dim=0))
+                else:
+                    padded_ids.append(ids)
+                    padded_masks.append(mask)
+            compact: dict[str, Any] = {
+                "teacher_prompt_ids": torch.stack(padded_ids, dim=0),
+                "teacher_prompt_mask": torch.stack(padded_masks, dim=0),
+                "teacher_num_images": torch.tensor(num_images, dtype=torch.long, device=device),
+                "teacher_response_prefix_lens": torch.tensor(
+                    response_prefix_lens, dtype=torch.long, device=device
+                ),
+                "teacher_compact_indices": eligible,
+            }
+            if pixels:
+                compact["teacher_pixel_values_list"] = pixels
+            if image_sizes:
+                compact["teacher_image_sizes_list"] = image_sizes
+            return compact
+
+        trajectory_loss_teacher_tensors = _teacher_tensors_for_eligible_trajectories()
+
+        probe_scores = (teacher_probe_stats or {}).get("teacher_probe_scores", {})
+        audit_paths: list[str] = []
+        for global_idx, _ids_i, _mask_i, text_i in generated_rows:
+            record = build_teacher_trajectory_record(
+                sample=sample_for(global_idx),
+                global_step=global_step,
+                rank=self.accelerator.process_index,
+                global_idx=global_idx,
+                source_idx=source_idx_for(global_idx),
+                prompt_idx=global_idx // self.num_generations,
+                generation_idx=global_idx % self.num_generations,
+                reference=reference_for(global_idx),
+                student_output=completions[global_idx] if global_idx < len(completions) else "",
+                teacher_probe_output=str(probe_outputs.get(global_idx, "")),
+                teacher_probe_correct=(
+                    bool(float(probe_scores[global_idx]) > 0)
+                    if global_idx in probe_scores
+                    else None
+                ),
+                trajectory_output=texts.get(global_idx, text_i),
+                trajectory_raw_output=trajectory_raw_outputs.get(global_idx, text_i),
+                trajectory_evidence_retry_raw_output=trajectory_evidence_retry_raw_outputs.get(global_idx, ""),
+                trajectory_prompt_profile=(
+                    "chartqa_structured_trajectory_evidence_retry"
+                    if global_idx in trajectory_evidence_retry_raw_outputs
+                    else cfg["prompt_profile"]
+                ),
+                trajectory_answer=trajectory_answers.get(global_idx, ""),
+                trajectory_answer_source=trajectory_answer_sources.get(global_idx, "trajectory"),
+                trajectory_correct=trajectory_correct.get(global_idx),
+                trajectory_parse_failed=trajectory_parse_failed.get(global_idx, False),
+                verification=verifications.get(global_idx),
+                loss_eligible=global_idx in trajectories,
+                max_text_chars=cfg["audit_log"]["max_text_chars"],
+            )
+            audit_path = append_teacher_trajectory_record(
+                output_dir=getattr(self.args, "output_dir", None),
+                opsd_config=self.opsd_config,
+                rank=self.accelerator.process_index,
+                record=record,
+            )
+            if audit_path:
+                audit_paths.append(audit_path)
+
+        opsd_debug.log(
+            "teacher_trajectory",
+            "dedicated structured teacher trajectories finished",
+            global_step=global_step,
+            candidates=stats["teacher_traj_candidates"],
+            generated=stats["teacher_traj_generated"],
+            correct=stats["teacher_traj_correct"],
+            wrong=stats["teacher_traj_wrong"],
+            parse_failed=stats["teacher_traj_parse_failed"],
+            loss_eligible=stats["teacher_traj_loss_eligible"],
+            prompt_profile=cfg["prompt_profile"],
+            provider_names=cfg["context_providers"],
+            audit_path=audit_paths[0] if audit_paths else None,
+            sample_text=next(iter(stats["teacher_traj_text"].values()), ""),
+        )
+        return trajectories, texts, stats, trajectory_loss_teacher_tensors
 
     def _log_training_phase(self, phase: str, global_step: int) -> None:
         if self._last_training_phase == phase:
@@ -2558,6 +3146,7 @@ class DyMETrainer(Trainer):
         mode: str,
         teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] | None = None,
         teacher_traj_texts: dict[int, str] | None = None,
+        teacher_traj_teacher_tensors: dict[str, Any] | None = None,
         teacher_probe_stats: dict[str, Any] | None = None,
     ) -> dict[str, Union[torch.Tensor, Any]]:
         """Build a rollout batch whose only optimization route is OPD."""
@@ -2623,6 +3212,12 @@ class DyMETrainer(Trainer):
         result["teacher_traj_completion_mask"] = pad_sequence(
             traj_masks, batch_first=True, padding_value=0
         ).to(device)
+        # Structured trajectory logits must be conditioned on the exact
+        # no-gold prompt used to generate that trajectory, rather than the
+        # primary OPD prompt or terse answer-probe prompt.
+        for key, value in (teacher_traj_teacher_tensors or {}).items():
+            if key.startswith("teacher_") or key == "teacher_compact_indices":
+                result[f"teacher_traj_{key}"] = value
         result["teacher_probe_stats"] = dict(teacher_probe_stats or {})
         result["teacher_traj_texts"] = dict(teacher_traj_texts or {})
         self._metrics[mode].setdefault("routing/opd_only", []).append(1.0)
@@ -2791,8 +3386,14 @@ class DyMETrainer(Trainer):
             # Auxiliary teacher components are executed for observability and
             # optional trajectory supervision only.  Their rewards/refined
             # text are deliberately discarded; every completion stays OPD.
+            opsd_debug.set_detail_step(global_step_for_probe)
             aux_probe_modes = [MODE_OPSD] * int(completion_ids.size(0))
-            aux_answers = [str(x.get("answer", "")) for x in inputs]
+            # Use the canonical short label for checker/probe diagnostics;
+            # never pass an SFT rationale target as a reference answer.
+            aux_answers = [
+                str(x.get("reference_answer") or x.get("answer", ""))
+                for x in inputs
+            ]
             aux_prompts = [str(x.get("prompt", "")) for x in inputs]
             aux_hints = [str(x.get("hint", "")) for x in inputs]
             aux_images = [x.get("image") for x in inputs]
@@ -2851,8 +3452,9 @@ class DyMETrainer(Trainer):
             probe_stats: dict[str, Any] = {}
             teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
             teacher_traj_texts: dict[int, str] = {}
+            teacher_traj_teacher_tensors: dict[str, Any] = {}
             if self.teacher_model is not None and bool((self.opsd_config.get("teacher_probe") or {}).get("enabled", False)):
-                probe_modes, teacher_trajs, teacher_traj_texts, probe_stats = self._apply_teacher_probe_routing(
+                probe_modes, _legacy_teacher_trajs, _legacy_teacher_traj_texts, probe_stats = self._apply_teacher_probe_routing(
                     inputs=inputs,
                     completion_modes=aux_probe_modes,
                     acc_rewards=torch.zeros((len(inputs), self.num_generations), device=device),
@@ -2873,6 +3475,31 @@ class DyMETrainer(Trainer):
                     trajectory_rows=len(teacher_trajs),
                 )
 
+            if self.teacher_model is not None and self._teacher_trajectory_config()["enabled"]:
+                (
+                    teacher_trajs,
+                    teacher_traj_texts,
+                    trajectory_stats,
+                    teacher_traj_teacher_tensors,
+                ) = self._apply_teacher_trajectory_generation(
+                    inputs=inputs,
+                    completion_modes=aux_probe_modes,
+                    answers=aux_answers,
+                    completions=completions,
+                    answer_flag=getattr(self.checker, "answer_flag", "Answer:"),
+                    global_step=aux_step,
+                    device=device,
+                    teacher_probe_stats=probe_stats,
+                )
+                probe_stats = {**probe_stats, **trajectory_stats}
+                opsd_debug.log(
+                    "opd_only_aux",
+                    "dedicated teacher trajectory diagnostics complete; route unchanged",
+                    candidates=trajectory_stats.get("teacher_traj_candidates", 0),
+                    generated=trajectory_stats.get("teacher_traj_generated", 0),
+                    loss_eligible=trajectory_stats.get("teacher_traj_loss_eligible", 0),
+                )
+
             return self._build_opd_only_batch(
                 inputs=inputs,
                 prompt_ids=prompt_ids,
@@ -2886,6 +3513,7 @@ class DyMETrainer(Trainer):
                 mode=mode,
                 teacher_trajs=teacher_trajs,
                 teacher_traj_texts=teacher_traj_texts,
+                teacher_traj_teacher_tensors=teacher_traj_teacher_tensors,
                 teacher_probe_stats=probe_stats,
             )
 
@@ -4560,6 +5188,14 @@ class DyMETrainer(Trainer):
             traj_inputs = dict(inputs)
             traj_inputs["completion_ids"] = inputs["teacher_traj_completion_ids"]
             traj_inputs["completion_mask"] = inputs["teacher_traj_completion_mask"]
+            for key, value in inputs.items():
+                # The trajectory generator emits keys such as
+                # ``teacher_prompt_ids`` and ``teacher_pixel_values_list``.
+                # They are kept as ``teacher_traj_teacher_*`` in the rollout
+                # batch and must be restored before FKL so it uses the exact
+                # no-gold trajectory condition rather than the OPD prompt.
+                if key.startswith("teacher_traj_teacher_"):
+                    traj_inputs[key[len("teacher_traj_"):]] = value
             traj_loss = compute_vlm_opsd_loss_masked_batch(
                 model,
                 traj_indices,
@@ -4595,6 +5231,16 @@ class DyMETrainer(Trainer):
             float(traj_cfg["weight"]) if traj_loss is not None else 0.0
         )
         self._metrics[mode].setdefault("teacher_traj/rows", []).append(float(len(traj_indices)))
+        probe_stats = inputs.get("teacher_probe_stats")
+        if isinstance(probe_stats, dict):
+            for metric_key in (
+                "teacher_traj_evidence_retry_candidates",
+                "teacher_traj_evidence_retry_generated",
+                "teacher_traj_evidence_retry_recovered",
+            ):
+                self._metrics[mode].setdefault(f"teacher_traj/{metric_key}", []).append(
+                    float(probe_stats.get(metric_key, 0.0) or 0.0)
+                )
         self._metrics[mode].setdefault("routing/opd_only", []).append(1.0)
         self._metrics[mode].setdefault("routing/opd_route_count", []).append(float(len(opsd_indices)))
         self._metrics[mode].setdefault("routing/grpo_route_count", []).append(0.0)

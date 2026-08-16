@@ -20,6 +20,51 @@ CHARTQA_SHORT_ANSWER_HINT = (
     "Answer: <short answer>"
 )
 
+# This is intentionally separate from ``CHARTQA_SHORT_ANSWER_HINT``. A
+# teacher answer probe must be terse for reliable answer parsing, while a
+# trajectory target needs an auditable chain of observations and reasoning.
+# Neither prompt contains a gold answer or a gold rationale.
+CHARTQA_STRUCTURED_TRAJECTORY_HINT = (
+    "Write an evidence-grounded solution to the chart question. Use only the "
+    "chart image and the provided DePlot table as evidence; do not assume any "
+    "reference answer or hidden annotation. Do not transcribe the full table. "
+    "Every numeric observation must be supported by the image or DePlot. In the "
+    "Observation, cite at least two explicit `label: value` pairs from the DePlot "
+    "table when it contains two or more rows; this evidence must be relevant to "
+    "the requested comparison. "
+    "Your response must contain exactly these five non-empty headings in this "
+    "order:\n"
+    "Goal: ...\n"
+    "Observation: ...\n"
+    "Reasoning: ...\n"
+    "Conclusion: ...\n"
+    "Answer: <short answer>"
+)
+
+# Used only for a no-gold retry after the deterministic verifier finds that a
+# otherwise well-formed trajectory failed to ground its Observation in DePlot.
+# It deliberately names no row, value, answer, hint, or reference annotation:
+# the table already supplied by ``DeplotOnlyProvider`` remains the sole extra
+# evidence.  The wording is intentionally concrete because some instruction-
+# tuned teachers otherwise restate the final answer as an "observation".
+CHARTQA_STRUCTURED_TRAJECTORY_EVIDENCE_RETRY_HINT = (
+    "Regenerate a complete evidence-grounded solution to the chart question. "
+    "Use only the chart image and the provided DePlot table; do not use or "
+    "assume any reference answer, hint, or hidden annotation. This is a "
+    "quality retry because an earlier draft did not cite table evidence. "
+    "In Observation, copy at least two exact `label: value` facts from distinct "
+    "rows or series in the DePlot table, then use those facts in Reasoning. "
+    "Do not replace them with an abstract statement such as 'the lowest value "
+    "is ...'. Do not transcribe the entire table. Your response must contain "
+    "exactly these five non-empty headings in this order:\n"
+    "Goal: ...\n"
+    "Observation: ...\n"
+    "Reasoning: ...\n"
+    "Conclusion: ...\n"
+    "Answer: <short answer>"
+)
+
+
 CHARTQA_ORACLE_HINT = (
     "You are running an ORACLE-HINT evidence-anchored ChartQA teacher probe.\n"
     "Use the chart image and DePlot table as visual evidence, but they are not "

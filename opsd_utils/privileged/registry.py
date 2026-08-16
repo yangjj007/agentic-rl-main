@@ -7,6 +7,8 @@ from opsd_utils.privileged.profiles import DEFAULT_PROFILE, effective_profile, r
 from opsd_utils.privileged.providers import (
     CHARTQA_ORACLE_HINT,
     CHARTQA_SHORT_ANSWER_HINT,
+    CHARTQA_STRUCTURED_TRAJECTORY_HINT,
+    CHARTQA_STRUCTURED_TRAJECTORY_EVIDENCE_RETRY_HINT,
     CropProvider,
     DeplotOnlyProvider,
     FormatOnlyProvider,
@@ -33,6 +35,10 @@ def _format_only_hint_from_config(cfg: dict[str, Any]) -> str | None:
         return CHARTQA_ORACLE_HINT
     if probe_cfg.get("prompt_profile") == "chartqa_short_answer":
         return CHARTQA_SHORT_ANSWER_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_structured_trajectory":
+        return CHARTQA_STRUCTURED_TRAJECTORY_HINT
+    if probe_cfg.get("prompt_profile") == "chartqa_structured_trajectory_evidence_retry":
+        return CHARTQA_STRUCTURED_TRAJECTORY_EVIDENCE_RETRY_HINT
     hint = cfg.get("format_only_hint")
     if hint:
         return str(hint)

@@ -284,6 +284,79 @@ def verify_grounded_claims(text: str, table: ChartTable | None) -> tuple[Grounde
                     )
                     consumed_spans.add((sentence, start, end))
 
+        # Natural ChartQA prose often places the value before its row label,
+        # e.g. "the lowest value is 70 in 2019" rather than "2019: 70".
+        # This is still an explicit table binding when exactly one non-generic
+        # label and one numeric value occur in the same sentence.  Keep it
+        # conservative: avoid generic columns and ambiguous labels, and do
+        # not interpret arithmetic/derived sentences as source claims.
+        if not derived_sentence:
+            concrete_labels = [
+                label
+                for label in label_values
+                if label not in ambiguous_labels
+                and label.strip().lower() not in {
+                    "value", "values", "amount", "number", "numbers", "count", "total",
+                    "rate", "percentage", "percent",
+                }
+                and re.search(rf"(?i)(?<!\w){re.escape(label)}(?!\w)", sentence)
+            ]
+            # Bind only an unambiguous prose statement.  In particular, do
+            # not silently downgrade "the lowest value is 71 in 2019" to
+            # unknown: it is a directly checkable (and contradictory) claim
+            # about the 2019 table row.  Numeric row labels themselves are
+            # excluded from the candidate values.
+            numeric_candidates = [
+                match
+                for match in _NUMBER_RE.finditer(sentence)
+                if match.group(0) not in label_values
+            ]
+            if len(concrete_labels) == 1 and len(numeric_candidates) == 1:
+                label = concrete_labels[0]
+                expected_values = label_values[label]
+                match = numeric_candidates[0]
+                start, end = match.span()
+                claimed = match.group(0)
+                    # A generic column heading ("value is 70") may have
+                    # consumed the numeric span above.  If the same sentence
+                    # also names a concrete row/series, rebind it to that
+                    # concrete evidence rather than leaving it as a generic
+                    # assertion.
+                generic_bound = next(
+                    (
+                        index
+                        for index, existing in enumerate(claims)
+                        if existing.sentence == sentence
+                        and existing.value == claimed
+                        and existing.label.strip().lower() in {
+                            "value", "values", "amount", "number", "numbers", "count", "total",
+                            "rate", "percentage", "percent",
+                        }
+                    ),
+                    None,
+                )
+                if generic_bound is not None:
+                    claims.pop(generic_bound)
+                    consumed_spans.discard((sentence, start, end))
+                if (sentence, start, end) not in consumed_spans:
+                    status = "supported" if any(
+                        numbers_equivalent(
+                            parse_number(claimed),
+                            parse_number(expected),
+                            tolerance=Decimal("0.005"),
+                        )
+                        for expected in expected_values
+                    ) else "contradicted"
+                    claims.append(
+                        GroundedClaim(
+                            sentence=sentence,
+                            label=label,
+                            value=claimed,
+                            status=status,
+                        )
+                    )
+                    consumed_spans.add((sentence, start, end))
+
         for match in _NUMBER_RE.finditer(sentence):
             span = (sentence, match.start(), match.end())
             if span in consumed_spans:
@@ -522,10 +595,48 @@ def verify_chart_cot_trajectory(
     deplot: Any,
     *,
     answer_correct: bool,
+    require_two_bindings_for_multirow: bool = True,
 ) -> ChartCoTVerification:
     parsed = parse_chart_cot(response)
     table = parse_deplot_table(deplot)
     claims = verify_grounded_claims(parsed.observation, table)
+    # A coherent-looking trajectory that merely restates its conclusion (for
+    # example, "the lowest value is 70") is not evidence-grounded.  For Q3 we
+    # require concrete DePlot row/series bindings.  When the table has more
+    # than one data row, one binding is not enough to substantiate a
+    # comparison such as min/max: require two distinct label:value bindings.
+    # This is deliberately a Q2 issue, not a contradiction: absence of a
+    # binding is insufficient evidence rather than a false claim.  Do not let
+    # a generic column heading such as "Value is 70" count as a source
+    # binding; it only echoes a number and does not identify the row/series.
+    generic_measure_labels = {
+        "value", "values", "amount", "number", "numbers", "count", "total",
+        "rate", "percentage", "percent",
+    }
+    supported_observation_claims = [
+        claim
+        for claim in claims
+        if (
+            claim.status == "supported"
+            and claim.label.strip().lower() not in generic_measure_labels
+        )
+    ]
+    # A table with one series often uses a stable series/column label and
+    # varies only by row/year.  Count distinct `(label, value)` evidence
+    # bindings rather than labels alone, so 2018:72 / 2019:70 qualifies even
+    # when the verifier infers the shared series label from DePlot context.
+    supported_observation_bindings = {
+        (claim.label.strip().lower(), claim.value.strip().lower())
+        for claim in supported_observation_claims
+    }
+    required_observation_bindings = (
+        2
+        if require_two_bindings_for_multirow and table is not None and len(table.rows) > 1
+        else 1
+    )
+    has_supported_observation_claim = (
+        len(supported_observation_bindings) >= required_observation_bindings
+    )
     reasoning_checks = verify_reasoning(parsed.reasoning, table)
     consistency = verify_conclusion_answer_consistency(parsed.conclusion, parsed.answer)
 
@@ -536,6 +647,8 @@ def verify_chart_cot_trajectory(
         reason_codes.append("structure_invalid")
     if any(claim.status == "contradicted" for claim in claims):
         reason_codes.append("grounding_contradiction")
+    if parsed.structure_valid and table is not None and not has_supported_observation_claim:
+        reason_codes.append("grounding_missing_supported_claim")
     if any(check.status == "invalid" for check in reasoning_checks):
         reason_codes.append("reasoning_invalid")
     if consistency.status == "inconsistent":
@@ -554,7 +667,7 @@ def verify_chart_cot_trajectory(
         quality = "Q0"
     elif not answer_correct or not parsed.structure_valid:
         quality = "Q1"
-    elif consistency.status != "consistent":
+    elif consistency.status != "consistent" or "grounding_missing_supported_claim" in reason_codes:
         quality = "Q2"
     else:
         quality = "Q3"

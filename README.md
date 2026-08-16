@@ -88,7 +88,7 @@ These delimiters are essential for stable parsing, reward assignment, and evalua
 | --- | --- |
 | `dyme` | Original DyME: any correct rollout → GRPO; all wrong → SFT. |
 | `trimode` | Any correct → OPSD (replaces GRPO); all wrong → SFT (DyME cold-start via `sft_check`, ignores recoverable). |
-| `opd_only` | Isolated post-SFT OPD stage: all rollout completions use OPD; no reward routing, GRPO, SFT, teacher trajectory, checker, or refiner loss. |
+| `opd_only` | Isolated post-SFT OPD stage: all rollout completions use OPD; no reward routing, GRPO, online SFT, or teacher-SFT repair. Teacher probe, structured trajectory FKL, visual checker, and refiner may be enabled as diagnostics/auxiliary distillation, but cannot select, replace, or discard an OPD row. |
 | `replace_sft` | Any correct → GRPO; all wrong → OPSD (no SFT). |
 | `opsd_on_wrong` | Any correct → GRPO; all wrong + recoverable → OPSD; all wrong + not recoverable → SFT (legacy three-way routing). |
 | `grpo_opsd_joint` | Any correct → GRPO (+ optional joint OPSD loss); all wrong + recoverable → OPSD; else SFT. |
@@ -621,6 +621,18 @@ Run offline SFT, then copy `config/config_opd_only_7b_chartqa.yaml`, set
 `model.pretrained_model_path` to the SFT `final_checkpoint`, select a fresh
 `training.dyme_args.output_dir`, and launch that YAML.  The OPD-only recipe
 does not read a student or teacher path from the environment.
+
+**Pure OPD-only smoke:** after setting the two explicit local model paths in
+the selected YAML, run one isolated OPD step (no routing):
+
+```bash
+accelerate launch --config_file default_config.yaml --num_processes 1 main.py \
+  --config config/config_opd_only_7b_chartqa_smoke.yaml --mode rl
+```
+
+`teacher_probe`, `teacher_trajectory`, and visual checker/refiner may remain
+enabled in this stage. Their raw outputs are saved under the run directory,
+but their results cannot convert a row to SFT/GRPO or remove it from OPD.
 
 **Cross-model OPD (7B frozen teacher + 0.5B student):**
 

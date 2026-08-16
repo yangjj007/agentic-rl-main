@@ -20,6 +20,7 @@ class ChartCoTQualityGateConfig:
     require_quality: str = "Q3"
     log_samples: bool = True
     max_log_samples: int = 8
+    require_two_bindings_for_multirow: bool = True
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None) -> "ChartCoTQualityGateConfig":
@@ -32,6 +33,9 @@ class ChartCoTQualityGateConfig:
             require_quality=str(raw.get("require_quality", "Q3") or "Q3").upper(),
             log_samples=bool(raw.get("log_samples", True)),
             max_log_samples=max(0, int(raw.get("max_log_samples", 8) or 0)),
+            require_two_bindings_for_multirow=bool(
+                raw.get("require_two_bindings_for_multirow", True)
+            ),
         )
 
     @property
@@ -53,6 +57,24 @@ class TeacherTrajectoryQualityEvaluation:
     sample_records: tuple[dict[str, Any], ...]
 
 
+def _supported_non_generic_observation_claim_count(verification: ChartCoTVerification) -> int:
+    """Count concrete DePlot bindings suitable for a structured trajectory."""
+    generic_measure_labels = {
+        "value", "values", "amount", "number", "numbers", "count", "total",
+        "rate", "percentage", "percent",
+    }
+    return len(
+        {
+            (claim.label.strip().lower(), claim.value.strip().lower())
+            for claim in verification.grounded_claims
+            if (
+                claim.status == "supported"
+                and claim.label.strip().lower() not in generic_measure_labels
+            )
+        }
+    )
+
+
 def aggregate_chart_cot_verifications(
     verifications: Mapping[int, ChartCoTVerification],
 ) -> dict[str, float]:
@@ -69,6 +91,9 @@ def aggregate_chart_cot_verifications(
         "structure_valid_rate": sum(value.parsed.structure_valid for value in values) / denom,
         "deplot_available_rate": sum(value.deplot_available for value in values) / denom,
         "grounded_claim_count": float(len(claims)),
+        "supported_observation_binding_count": float(
+            sum(_supported_non_generic_observation_claim_count(value) for value in values)
+        ),
         "verifier_error_rate": sum(value.verification_error for value in values) / denom,
     }
     for quality in ("Q3", "Q2", "Q1", "Q0"):
@@ -121,6 +146,7 @@ def evaluate_teacher_trajectory_quality(
     samples: Sequence[Mapping[str, Any]],
     num_generations: int,
     config: ChartCoTQualityGateConfig,
+    answer_correct_by_index: Mapping[int, bool] | None = None,
 ) -> TeacherTrajectoryQualityEvaluation:
     candidate_indices = {int(index) for index in teacher_traj_texts}
     if not config.enabled:
@@ -132,16 +158,18 @@ def evaluate_teacher_trajectory_quality(
         prompt_idx = global_idx // max(int(num_generations), 1)
         sample = samples[prompt_idx] if prompt_idx < len(samples) else {}
         response = teacher_traj_texts.get(global_idx, "")
+        answer_correct = bool((answer_correct_by_index or {}).get(global_idx, True))
         try:
             verifications[global_idx] = verify_chart_cot_trajectory(
                 response,
                 sample.get("visual_fact_deplot"),
-                answer_correct=True,
+                answer_correct=answer_correct,
+                require_two_bindings_for_multirow=config.require_two_bindings_for_multirow,
             )
         except Exception:
             verifications[global_idx] = verifier_error_result(
                 response,
-                answer_correct=True,
+                answer_correct=answer_correct,
             )
 
     gate_result = filter_quality_eligible_indices(candidate_indices, verifications, config)

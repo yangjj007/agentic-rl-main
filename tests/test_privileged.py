@@ -81,6 +81,24 @@ def test_format_only_chartqa_short_answer_profile():
     assert images == []
 
 
+def test_format_only_chartqa_structured_retry_profile_is_no_gold_and_requires_rows():
+    suffix, _ = build_privileged_context(
+        {"answer": "Answer: 70", "hint": "private annotation"},
+        ["format_only"],
+        privileged_profile="hybrid",
+        opsd_config={
+            "text_include_gold": False,
+            "teacher_probe": {
+                "prompt_profile": "chartqa_structured_trajectory_evidence_retry",
+            },
+        },
+    )
+
+    assert "at least two exact `label: value` facts" in suffix
+    assert "Answer: 70" not in suffix
+    assert "private annotation" not in suffix
+
+
 def test_math_lm_downgrade():
     sample = {"hint": "step", "answer": "Answer: 1"}
     profile = effective_profile(sample, "hybrid")

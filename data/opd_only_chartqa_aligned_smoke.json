@@ -1,0 +1,12 @@
+[
+  {
+    "question": "What's the lowest value of red graph?",
+    "answer": "70",
+    "image": "data/images/chartqa/images/1696.png",
+    "human_or_machine": 0,
+    "hint": "Goal: Find the lowest value of the red graph.\nObservation: The 'Rep/Lean Rep' category has values for the years: 2018: 72, 2019: 70, and 2020: 77.\nReasoning: Comparing these values, the minimum value is 70.\nConclusion: The lowest value of the red graph is 70.",
+    "visual_fact_hint": "Goal: Find the lowest value of the red graph.\nObservation: The data for the 'Rep/Lean Rep' category across the years are: 2018: 72, 2019: 70, and 2020: 77.\nReasoning: Comparing these values, the minimum value is 70.\nConclusion: The lowest value of the red graph is 70.",
+    "visual_fact": "Goal: Find the lowest value of the red graph.\nObservation: The data for the 'Rep/Lean Rep' category across the years are: 2018: 72, 2019: 70, and 2020: 77.\nReasoning: Comparing these values, the minimum value is 70.\nConclusion: The lowest value of the red graph is 70.",
+    "visual_fact_deplot": "{\"source\": \"google/deplot\", \"model_id\": \"google/deplot\", \"question\": \"What's the lowest value of red graph?\", \"parsed_table\": \"Year | Rep/Lean Rep\\n2018 | 72\\n2019 | 70\\n2020 | 77\"}"
+  }
+]

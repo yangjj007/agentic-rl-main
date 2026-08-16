@@ -70,6 +70,7 @@ def test_gate_aggregation_is_zero_safe_and_reports_quality_rates() -> None:
     assert metrics["q2_rate"] == 0.25
     assert metrics["q1_rate"] == 0.25
     assert metrics["q0_rate"] == 0.25
+    assert metrics["supported_observation_binding_count"] == 2.0
     assert metrics["conclusion_answer_consistent_rate"] == 0.5
 
 
@@ -84,3 +85,17 @@ def test_quality_sample_records_append_to_rank_jsonl(tmp_path) -> None:
     assert path == str(tmp_path / "chart_cot_quality" / "rank2.jsonl")
     row = json.loads((tmp_path / "chart_cot_quality" / "rank2.jsonl").read_text(encoding="utf-8"))
     assert row == {"global_idx": 1, "global_step": 9, "quality": "Q0"}
+
+
+def test_quality_config_can_disable_strict_multirow_binding_requirement() -> None:
+    cfg = ChartCoTQualityGateConfig.from_mapping(
+        {"enabled": True, "mode": "diagnostic", "require_two_bindings_for_multirow": False}
+    )
+    result = verify_chart_cot_trajectory(
+        "Goal: Find min.\nObservation: The lowest value is 70 in 2019.\n"
+        "Reasoning: The minimum is 70.\nConclusion: The minimum is 70.\nAnswer: 70",
+        TABLE,
+        answer_correct=True,
+        require_two_bindings_for_multirow=cfg.require_two_bindings_for_multirow,
+    )
+    assert result.quality == "Q3"

@@ -26,6 +26,7 @@ _CONFIG_ALIASES = {
     "7b": "config_7b.yaml", "llm": "config_llm.yaml",
     "single_gpu_checkpoint_eval_smoke": "config_single_gpu_checkpoint_eval_smoke.yaml",
     "opd_only": "config_opd_only_7b_chartqa.yaml", "opd_only_smoke": "config_opd_only_7b_chartqa_smoke.yaml",
+    "opd_only_eval3d_aligned_smoke": "config_opd_only_eval3d_chartqa_aligned_smoke.yaml",
 }
 _CONFIG_ALIASES.update({
     "opd_only_7b_chartqa": "config_opd_only_7b_chartqa.yaml",
@@ -66,6 +67,14 @@ _REQUIRED_SECTION_FIELDS: dict[str, tuple[str, ...]] = {
     ),
     "deplot": ("enabled", "model_id", "batch_size", "max_new_tokens", "cache_path", "prompt"),
 }
+
+_REQUIRED_TEACHER_TRAJECTORY_FIELDS = (
+    "enabled", "context_providers", "batch_size", "loss_type", "weight",
+    "max_new_tokens", "do_sample", "temperature", "top_p", "repetition_penalty",
+    "prompt_profile", "answer_parser", "max_relative_change", "verify",
+    "require_quality_for_loss", "required_quality", "audit_log", "weight_decay",
+    "require_two_bindings_for_multirow",
+)
 
 
 def _require_mapping_fields(config: dict[str, Any], *, source: str) -> None:
@@ -117,6 +126,17 @@ def validate_config(config: dict[str, Any], *, source: str = "<config>") -> dict
     if missing:
         raise ValueError(f"{source} is missing required top-level fields: {', '.join(missing)}")
     _require_mapping_fields(config, source=source)
+    trajectory_cfg = config["opsd"].get("teacher_trajectory")
+    if not isinstance(trajectory_cfg, dict):
+        raise ValueError(f"{source}.opsd.teacher_trajectory must be a YAML mapping")
+    missing_trajectory = [
+        field for field in _REQUIRED_TEACHER_TRAJECTORY_FIELDS if field not in trajectory_cfg
+    ]
+    if missing_trajectory:
+        raise ValueError(
+            f"{source}.opsd.teacher_trajectory has implicit/missing fields: "
+            + ", ".join(missing_trajectory)
+        )
     training = config.get("training")
     if not isinstance(training, dict):
         raise ValueError(f"{source}.training must be a mapping")

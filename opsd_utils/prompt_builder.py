@@ -72,12 +72,21 @@ def build_teacher_prompt_batch(
     output_dir: Optional[str] = None,
     expanded_count: Optional[int] = None,
     num_generations: Optional[int] = None,
+    prompt_profile: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build padded teacher prompt tensors for OPSD samples at given indices."""
     opsd_config = opsd_config or {}
-    privileged_profile = opsd_config.get("privileged_profile", "hybrid")
-    crop_cfg = opsd_config.get("privileged_image") or {}
-    privileged_debug_cfg = opsd_config.get("privileged_debug") or {}
+    # Provider formatting historically read ``teacher_probe.prompt_profile``.
+    # Keep that compatible contract, but allow a dedicated trajectory call to
+    # request a different, explicit format without mutating the run config.
+    prompt_opsd_config = dict(opsd_config)
+    if prompt_profile:
+        prompt_probe_cfg = dict(prompt_opsd_config.get("teacher_probe") or {})
+        prompt_probe_cfg["prompt_profile"] = str(prompt_profile)
+        prompt_opsd_config["teacher_probe"] = prompt_probe_cfg
+    privileged_profile = prompt_opsd_config.get("privileged_profile", "hybrid")
+    crop_cfg = prompt_opsd_config.get("privileged_image") or {}
+    privileged_debug_cfg = prompt_opsd_config.get("privileged_debug") or {}
 
     opsd_debug.log(
         "teacher_prompt",
@@ -86,6 +95,7 @@ def build_teacher_prompt_batch(
         indices=indices,
         num_samples=len(samples),
         provider_names=provider_names,
+        prompt_profile=prompt_profile,
         privileged_profile=privileged_profile,
         device=str(device),
         global_step=global_step,
@@ -112,7 +122,7 @@ def build_teacher_prompt_batch(
             provider_names,
             privileged_profile=privileged_profile,
             crop_cfg=crop_cfg,
-            opsd_config=opsd_config,
+            opsd_config=prompt_opsd_config,
         )
         suffix, response_prefix = split_teacher_response_prefix(suffix)
         if not teacher_images:
@@ -229,7 +239,7 @@ def build_teacher_prompt_batch(
             provider_names,
             privileged_profile=privileged_profile,
             crop_cfg=crop_cfg,
-            opsd_config=opsd_config,
+            opsd_config=prompt_opsd_config,
         )
         priv_suffix, _ = split_teacher_response_prefix(priv_suffix)
         if privileged_suffix_has_gold(priv_suffix, sample):

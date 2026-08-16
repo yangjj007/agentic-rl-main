@@ -96,6 +96,28 @@ def test_grounding_supports_and_contradicts_explicit_label_value_claims() -> Non
     assert any(claim.value == "71" and claim.status == "contradicted" for claim in contradicted)
 
 
+def test_grounding_supports_value_before_unambiguous_row_label() -> None:
+    table = parse_deplot_table("Year | Value\n2019 | 70\n2020 | 77")
+    assert table is not None
+
+    claims = verify_grounded_claims("Observation: The lowest value is 70 in 2019.", table)
+
+    assert [(claim.label, claim.value, claim.status) for claim in claims] == [
+        ("2019", "70", "supported")
+    ]
+
+
+def test_grounding_contradicts_wrong_value_before_unambiguous_row_label() -> None:
+    table = parse_deplot_table("Year | Value\n2019 | 70\n2020 | 77")
+    assert table is not None
+
+    claims = verify_grounded_claims("Observation: The lowest value is 71 in 2019.", table)
+
+    assert [(claim.label, claim.value, claim.status) for claim in claims] == [
+        ("2019", "71", "contradicted")
+    ]
+
+
 def test_grounding_keeps_bare_derived_number_unknown() -> None:
     table = parse_deplot_table("Year | Value\n2019 | 70\n2020 | 77")
     assert table is not None
@@ -340,3 +362,48 @@ def test_quality_grounding_uses_observation_not_derived_conclusion() -> None:
 
     assert result.quality == "Q3"
     assert "grounding_contradiction" not in result.reason_codes
+
+
+def test_quality_q3_requires_an_explicit_supported_observation_claim() -> None:
+    result = verify_chart_cot_trajectory(
+        "Goal: Find the minimum.\n"
+        "Observation: The lowest value is 70.\n"
+        "Reasoning: Comparing the values, the minimum is 70.\n"
+        "Conclusion: The minimum is 70.\n"
+        "Answer: 70",
+        "Year | Value\n2019 | 70\n2020 | 77",
+        answer_correct=True,
+    )
+
+    assert result.quality == "Q2"
+    assert "grounding_missing_supported_claim" in result.reason_codes
+
+
+def test_quality_q3_requires_two_concrete_bindings_for_multi_row_comparison() -> None:
+    result = verify_chart_cot_trajectory(
+        "Goal: Find the minimum.\n"
+        "Observation: 2019: 70.\n"
+        "Reasoning: Comparing the values, the minimum is 70.\n"
+        "Conclusion: The minimum is 70.\n"
+        "Answer: 70",
+        "Year | Value\n2019 | 70\n2020 | 77",
+        answer_correct=True,
+    )
+
+    assert result.quality == "Q2"
+    assert "grounding_missing_supported_claim" in result.reason_codes
+
+
+def test_quality_accepts_one_concrete_binding_when_recipe_disables_strict_multirow_mode() -> None:
+    result = verify_chart_cot_trajectory(
+        "Goal: Find the minimum.\n"
+        "Observation: The lowest value is 70 in 2019.\n"
+        "Reasoning: Comparing the values, the minimum is 70.\n"
+        "Conclusion: The minimum is 70.\n"
+        "Answer: 70",
+        "Year | Value\n2019 | 70\n2020 | 77",
+        answer_correct=True,
+        require_two_bindings_for_multirow=False,
+    )
+
+    assert result.quality == "Q3"

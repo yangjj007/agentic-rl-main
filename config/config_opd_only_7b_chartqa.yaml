@@ -159,9 +159,27 @@ opsd:
       max_text_chars: 1024
   teacher_trajectory:
     enabled: true
+    context_providers:
+    - format_only
+    - visual_facts_deplot
+    batch_size: 1
     loss_type: fkl
     weight: 0.5
     max_new_tokens: 128
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    repetition_penalty: 1.05
+    prompt_profile: chartqa_structured_trajectory
+    answer_parser: chartqa_final_answer
+    max_relative_change: 0.05
+    verify: true
+    require_quality_for_loss: true
+    required_quality: Q3
+    require_two_bindings_for_multirow: false
+    audit_log:
+      enabled: true
+      max_text_chars: 0
     weight_decay:
       enabled: false
       start_step: 294

@@ -44,7 +44,10 @@ def test_change_config_reads_migrated_prerefine_dataset():
     assert len(rl_rows) == 4576
     assert len(sft_rows) == 4576
     assert rl_rows[0]["answer"].startswith("Answer:")
+    assert rl_rows[0]["reference_answer"] == rl_rows[0]["answer"]
     assert "Goal:" in sft_rows[0]["answer"]
+    assert sft_rows[0]["reference_answer"].startswith("Answer:")
+    assert "Goal:" not in sft_rows[0]["reference_answer"]
     # Image assets are intentionally not versioned with the JSON metadata.
     # The loader preserves a canonical project-relative path; strict training
     # recipes validate that the real local images are mounted before launch.

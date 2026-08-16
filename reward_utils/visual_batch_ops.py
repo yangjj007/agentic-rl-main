@@ -105,11 +105,11 @@ def prefetch_ic_unique(
             ic_text = json.dumps(ic_obj, ensure_ascii=False)
             cache[key] = ic_text
             meta.update(_ic_stats(ic_obj, ic_text))
-            meta.update(parse_ok=True, ic_preview=ic_text[:400], raw_teacher_output=output[:200])
+            meta.update(parse_ok=True, ic_preview=ic_text[:400], raw_teacher_output=output)
         else:
             ic_text, fb = _ic_text_from_sample(sample)
             meta.update(_ic_stats(ic_obj, ic_text))
-            meta.update(parse_ok=bool(ic_text), error=err, fallback=fb, raw_teacher_output=output[:200])
+            meta.update(parse_ok=bool(ic_text), error=err, fallback=fb, raw_teacher_output=output)
             if ic_text:
                 cache[key] = ic_text
         if recorder is not None:

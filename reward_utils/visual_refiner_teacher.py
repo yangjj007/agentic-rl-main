@@ -308,7 +308,9 @@ class TeacherVisualRefiner(ContextRefinerLocal):
                         valid_output=valid_output,
                         passthrough=not valid_output,
                         reason="" if valid_output else "invalid_refiner_output",
-                        raw_teacher_output=candidate[:400],
+                        # Keep the complete candidate in artifacts; the
+                        # recorder's YAML preview limit bounds console output.
+                        raw_teacher_output=candidate,
                     )
                 results[job.sample_idx] = refined
             except Exception as exc:
