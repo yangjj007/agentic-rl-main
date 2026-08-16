@@ -364,9 +364,17 @@ client:
   init_port: 23333
   num_server: 8
 dataset:
-  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_medium_vf_full.json
+  # Use the same audited Qwen2.5-rewritten corpus as the full OPD-only run;
+  # max_steps below limits duration, not data provenance.
+  # Same audited Qwen2.5 corpus as the production OPD-only recipe.
+  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json
   eval_dataset: null
   max_train_samples: null
+data_validation:
+  strict: true
+  require_real_deplot: true
+  require_qwen_rewrite: true
+  expected_samples: 4576
 checkpoint_eval:
   enabled: false
   split: validation

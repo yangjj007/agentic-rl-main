@@ -11,7 +11,7 @@ training:
   num_gpus: 1
   num_client: 1
   dyme_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/opd-only-eval3d-chartqa-no-gold-refiner-smoke
+    output_dir: /data/junjie/agentic-rl-main/outputs/opd-only-eval3d-qwen25-two-step-smoke
     logging_steps: 1
     num_generations: 2
     generation_batch_size: 2
@@ -23,7 +23,7 @@ training:
     num_train_epochs: 1
     learning_rate: 1.0e-6
     bf16: true
-    gradient_checkpointing: true
+    gradient_checkpointing: false
     ddp_find_unused_parameters: false
     max_grad_norm: 1.0
     save_strategy: steps
@@ -33,7 +33,7 @@ training:
     warmup_steps: 0
     beta: 0.0
     loss_type: grpo
-    max_steps: 1
+    max_steps: 2
     seed: 42
   sft_args:
     output_dir: /data/junjie/agentic-rl-main/outputs/unused-sft
@@ -83,9 +83,16 @@ client:
   init_port: 23333
   num_server: 1
 dataset:
-  train_dataset: /data/junjie/agentic-rl-main/data/opd_only_chartqa_aligned_smoke.json
+  # Identical source corpus and validation contract to the production
+  # opd_only recipe.  The cap merely makes this local teacher/student run fast.
+  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json
   eval_dataset: null
-  max_train_samples: 1
+  max_train_samples: 4
+data_validation:
+  strict: true
+  require_real_deplot: true
+  require_qwen_rewrite: true
+  expected_samples: 4576
 opsd:
   enabled: true
   mode: opd_only
@@ -172,5 +179,5 @@ opsd:
     template_pool: {path: best_template.txt, refresh_interval_sec: 60.0}
     logging: {enabled: true, sample_count: 3, preview_chars: 400, save_artifacts: true, log_route_binding: true}
 checkpoint_eval: {enabled: false, split: validation, batch_size: 1, max_new_tokens: 8, patience: 3, tie_policy: reset, max_samples: null}
-launch: {gradient_checkpointing_enable: true, opsd_detail_every: 1, opsd_detail_min_free_gb: 2.0, teacher_device_map: same, pytorch_cuda_alloc_conf: expandable_segments:True, wandb_enabled: false}
+launch: {gradient_checkpointing_enable: false, opsd_detail_every: 1, opsd_detail_min_free_gb: 2.0, teacher_device_map: same, pytorch_cuda_alloc_conf: expandable_segments:True, wandb_enabled: false}
 deplot: {enabled: false, model_id: local, batch_size: 1, max_new_tokens: 8, cache_path: null, prompt: 'Describe the image:'}

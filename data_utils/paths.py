@@ -40,7 +40,16 @@ def resolve_image_path(path: str) -> str:
         return path
 
     candidates = []
-    for old, new in _LEGACY_PREFIX_MAP:
+    # Build the replacement targets at call time.  Besides reflecting runtime
+    # path configuration, this keeps the resolver testable when a caller
+    # points ``PROJECT_ROOT``/``CHARTQA_DIR`` at a temporary data tree.
+    legacy_prefix_map = [
+        ("/chartqa_output/", CHARTQA_DIR + os.sep),
+        ("/path/to/chartqa_output/", CHARTQA_DIR + os.sep),
+        ("/path/to/data/chartqa_output/", CHARTQA_DIR + os.sep),
+        ("/path/to/data/aokvqa/", AOKVQA_DIR + os.sep),
+    ]
+    for old, new in legacy_prefix_map:
         if old in path:
             candidates.append(path.replace(old, new))
 

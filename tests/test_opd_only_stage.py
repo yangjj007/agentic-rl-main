@@ -18,6 +18,15 @@ def test_opd_only_yaml_is_explicit_and_isolated():
     assert cfg["opsd"]["teacher_trajectory"]["enabled"] is True
     assert cfg["opsd"]["teacher_trajectory"]["prompt_profile"] == "chartqa_structured_trajectory"
     assert cfg["opsd"]["teacher_trajectory"]["require_quality_for_loss"] is True
+    assert cfg["dataset"]["train_dataset"].endswith(
+        "train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json"
+    )
+    assert cfg["data_validation"] == {
+        "strict": True,
+        "require_real_deplot": True,
+        "require_qwen_rewrite": True,
+        "expected_samples": 4576,
+    }
 
 
 def test_opd_only_trajectory_fkl_restores_the_exact_generated_teacher_condition():
@@ -81,3 +90,38 @@ def test_all_yaml_recipes_are_complete_and_do_not_contain_legacy_env_syntax():
             set(_REQUIRED_TEACHER_TRAJECTORY_FIELDS)
             - set(cfg["opsd"]["teacher_trajectory"])
         ), path
+
+
+def test_chartqa_direct_audit_repairs_are_explicit_and_schema_valid():
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "chartqa_consistency_audit", root / "scripts/audit_chartqa_qwen25_consistency.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    expected = {750: "Yes", 1021: "[26,15,11,5,3]", 1464: "1.8", 2170: "No", 2550: "Yes", 3628: "2020"}
+    assert {idx: value["answer"] for idx, value in module._DIRECT_EVIDENCE_CORRECTIONS.items()} == expected
+    for value in module._DIRECT_EVIDENCE_CORRECTIONS.values():
+        assert module._repair_hint_is_valid(value["hint"], value["answer"])
+
+
+def test_chartqa_corrected_dataset_applies_direct_repairs_without_deleting_rows():
+    import json
+
+    root = Path(__file__).resolve().parents[1]
+    rows = json.loads(
+        (root / "data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(rows) == 4576
+    assert rows[750]["answer"] == "Yes"
+    assert rows[1021]["answer"] == "[26,15,11,5,3]"
+    assert rows[1464]["answer"] == "1.8"
+    assert rows[2170]["answer"] == "No"
+    assert rows[2550]["answer"] == "Yes"
+    assert rows[3628]["answer"] == "2020"

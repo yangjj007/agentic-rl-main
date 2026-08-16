@@ -363,9 +363,21 @@ client:
   init_port: 23333
   num_server: 8
 dataset:
-  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_medium_vf_full.json
+  # Full ChartQA train split: every row is Qwen2.5-rewritten and has a real
+  # DePlot table.  Do not replace this with the legacy *_vf_full.json recipe.
+  # Derived from the Qwen2.5 rewrite corpus.  103 high-confidence
+  # Qwen-rationale conflicts were replaced by answer-verified original
+  # ChartQA rationales; source rows, images, DePlot, and official labels stay
+  # intact.  The derivation script can regenerate this version from the
+  # immutable source corpus and audit evidence.
+  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25_corrected.json
   eval_dataset: HuggingFaceM4/ChartQA
   max_train_samples: null
+data_validation:
+  strict: true
+  require_real_deplot: true
+  require_qwen_rewrite: true
+  expected_samples: 4576
 checkpoint_eval:
   enabled: true
   split: validation
