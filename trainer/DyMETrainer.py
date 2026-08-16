@@ -4525,9 +4525,9 @@ class DyMETrainer(Trainer):
             return_completion_logits=True,
         )
         if not opsd_indices:
-            loss = student_completion_logits.sum() * 0.0
+            opd_loss_tensor = student_completion_logits.sum() * 0.0
         else:
-            loss = compute_vlm_opsd_loss_masked_batch(
+            opd_loss_tensor = compute_vlm_opsd_loss_masked_batch(
                 model,
                 opsd_indices,
                 list(range(prompt_ids.size(0))),
@@ -4542,7 +4542,8 @@ class DyMETrainer(Trainer):
                 loss_type=loss_type,
                 srkl_alpha=srkl_alpha,
             )
-            loss = loss * opsd_weight
+            opd_loss_tensor = opd_loss_tensor * opsd_weight
+        loss = opd_loss_tensor
 
         # Optional teacher trajectory supervision is an auxiliary term, not a
         # routing decision.  Probe-generated trajectories are attached to the
@@ -4582,7 +4583,8 @@ class DyMETrainer(Trainer):
             opsd_diagnostics.log_opsd_jsd_diagnostics(global_step=global_step)
 
         mode = "train" if self.model.training else "eval"
-        self._metrics[mode].setdefault("loss/opsd", []).append(float(loss.detach().item()))
+        self._metrics[mode].setdefault("loss/opsd", []).append(float(opd_loss_tensor.detach().item()))
+        self._metrics[mode].setdefault("loss/combined", []).append(float(loss.detach().item()))
         self._metrics[mode].setdefault("loss/grpo", []).append(0.0)
         self._metrics[mode].setdefault("loss/sft", []).append(0.0)
         self._metrics[mode].setdefault("loss/teacher_traj_fkl", []).append(0.0)
@@ -4606,7 +4608,8 @@ class DyMETrainer(Trainer):
                     "grpo_loss_scalar": 0.0,
                     "grpo_zero_loss_rate": 1.0,
                     "advantages_abs_mean": 0.0,
-                    "opsd_loss_scalar": float(loss.detach().item()),
+                    "opsd_loss_scalar": float(opd_loss_tensor.detach().item()),
+                    "opd_loss_scalar": float(opd_loss_tensor.detach().item()),
                     "teacher_traj_loss_scalar": float(traj_loss.detach().item()) if traj_loss is not None else 0.0,
                 },
             )
