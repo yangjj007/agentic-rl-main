@@ -139,10 +139,10 @@ def validate_config(config: dict[str, Any], *, source: str = "<config>") -> dict
             raise ValueError("opd_only requires opsd.loss.sft_weight=0.0")
         if not str(loss.get("loss_type") or "").strip():
             raise ValueError("opd_only requires an explicit opsd.loss.loss_type")
-        if bool(opsd["teacher_probe"].get("enabled", False)):
-            raise ValueError("opd_only requires opsd.teacher_probe.enabled=false")
-        if bool(opsd["teacher_trajectory"].get("enabled", False)):
-            raise ValueError("opd_only requires opsd.teacher_trajectory.enabled=false")
+        # Auxiliary teacher supervision is allowed in opd_only, but it must
+        # never change the OPD sample set.  Probe/trajectory/checker/refiner
+        # outputs are therefore diagnostics or teacher-distillation signals;
+        # route-changing repair and sampling controllers remain forbidden.
         if str(opsd["teacher_correct_repair"].get("mode", "none")).lower() != "none":
             raise ValueError("opd_only requires opsd.teacher_correct_repair.mode=none")
         for name in (
@@ -156,14 +156,6 @@ def validate_config(config: dict[str, Any], *, source: str = "<config>") -> dict
         model_path = str(config.get("model", {}).get("pretrained_model_path", "") or "")
         if not model_path or model_path.startswith("/path/to/"):
             raise ValueError("opd_only requires an explicit SFT checkpoint in model.pretrained_model_path")
-        visual_cfg = opsd["visual_supervision"] or {}
-        if bool(visual_cfg.get("enabled", False)) or bool(
-            (visual_cfg.get("checker") or {}).get("enabled", False)
-        ) or bool((visual_cfg.get("refiner") or {}).get("enabled", False)):
-            raise ValueError(
-                "opd_only forbids opsd.visual_supervision checker/refiner; "
-                "they are reward/SFT components rather than OPD loss inputs"
-            )
     _reject_environment_content(config, source)
     return config
 

@@ -14,11 +14,11 @@ def test_opd_only_yaml_is_explicit_and_isolated():
     assert cfg["opsd"]["loss"]["acc_gate"] is False
     assert cfg["opsd"]["loss"]["grpo_weight"] == 0.0
     assert cfg["opsd"]["loss"]["sft_weight"] == 0.0
-    assert cfg["opsd"]["teacher_probe"]["enabled"] is False
-    assert cfg["opsd"]["teacher_trajectory"]["enabled"] is False
+    assert cfg["opsd"]["teacher_probe"]["enabled"] is True
+    assert cfg["opsd"]["teacher_trajectory"]["enabled"] is True
 
 
-def test_opd_only_rejects_visual_reward_or_refiner_components():
+def test_opd_only_allows_visual_diagnostics_without_route_changes():
     cfg = load_config("opd_only")
     cfg["opsd"]["visual_supervision"] = {
         "enabled": True,
@@ -27,8 +27,7 @@ def test_opd_only_rejects_visual_reward_or_refiner_components():
     }
     from config.loader import validate_config
 
-    with pytest.raises(ValueError, match="forbids opsd.visual_supervision"):
-        validate_config(cfg)
+    assert validate_config(cfg)["training"]["stage"] == "opd_only"
 
 
 def test_python_config_paths_are_rejected():

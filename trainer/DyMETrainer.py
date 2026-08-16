@@ -1985,10 +1985,9 @@ class DyMETrainer(Trainer):
             "teacher_probe_fallback_batches": 0,
             "teacher_probe_text": {},
         }
-        if (
-            self.opsd_config.get("mode") != "dyme_teacher_probe_opd"
-            or self.teacher_model is None
-        ):
+        probe_mode = self.opsd_config.get("mode") == "dyme_teacher_probe_opd"
+        opd_only_probe = self.training_stage == "opd_only"
+        if (not probe_mode and not opd_only_probe) or self.teacher_model is None:
             return completion_modes, {}, {}, stats
 
         probe_cfg = self._teacher_probe_config()
@@ -2040,7 +2039,7 @@ class DyMETrainer(Trainer):
             if evidence_status["visual_fact_used"]:
                 stats["teacher_probe_visual_fact_used"] += 1
 
-            if probe_cfg["skip_no_evidence"] and not evidence_status["evidence_present"]:
+            if probe_cfg["skip_no_evidence"] and not evidence_status["evidence_present"] and not opd_only_probe:
                 completion_modes[global_idx] = MODE_SFT
                 stats["teacher_probe_skipped_no_evidence"] += 1
                 prompt_idx = global_idx // self.num_generations
@@ -2173,7 +2172,9 @@ class DyMETrainer(Trainer):
                 if parsed_answer.parse_failed:
                     stats["teacher_probe_parse_failed"] += 1
             stats["teacher_probe_text"][global_idx] = text[:160].replace("\n", "\\n")
-            final_route = "opd" if score > 0 else "sft"
+            # In opd_only the probe is diagnostic/trajectory supervision only;
+            # its answer score must never route or discard the completion.
+            final_route = "opd_only_diagnostic" if opd_only_probe else ("opd" if score > 0 else "sft")
             sample = sample_for(global_idx)
             student_output = completions[global_idx] if global_idx < len(completions) else ""
             evidence_status = teacher_probe_evidence_status(sample, provider_names)
@@ -2184,7 +2185,7 @@ class DyMETrainer(Trainer):
                 is_mixed_wrong_probe_candidate,
                 route_reason,
             ) = group_metadata_for(global_idx)
-            append_teacher_probe_record(
+            probe_log_path = append_teacher_probe_record(
                 output_dir=getattr(self.args, "output_dir", None),
                 opsd_config=self.opsd_config,
                 rank=self.accelerator.process_index,
@@ -2214,6 +2215,15 @@ class DyMETrainer(Trainer):
                     route_reason=route_reason,
                 ),
             )
+            if opd_only_probe:
+                opsd_debug.log(
+                    "teacher_probe",
+                    "opd_only probe record persisted",
+                    path=probe_log_path,
+                    global_idx=global_idx,
+                    score=score,
+                    final_route=final_route,
+                )
             if self.accelerator.is_main_process and not self._teacher_probe_preview_logged:
                 self._teacher_probe_preview_logged = True
                 preview_payload = {
@@ -2240,13 +2250,17 @@ class DyMETrainer(Trainer):
                 )
             if score > 0:
                 stats["teacher_probe_correct"] += 1
-                completion_modes[global_idx] = MODE_OPSD
                 teacher_traj_texts[global_idx] = text
                 if self._teacher_trajectory_config()["enabled"]:
                     teacher_trajs[global_idx] = (gen_ids.to(device), gen_mask.to(device))
             else:
                 stats["teacher_probe_wrong"] += 1
-                completion_modes[global_idx] = MODE_SFT
+                if opd_only_probe:
+                    teacher_traj_texts[global_idx] = text
+                    if self._teacher_trajectory_config()["enabled"]:
+                        teacher_trajs[global_idx] = (gen_ids.to(device), gen_mask.to(device))
+                else:
+                    completion_modes[global_idx] = MODE_SFT
 
         if generated_token_counts:
             ordered_counts = sorted(generated_token_counts)
@@ -2542,15 +2556,17 @@ class DyMETrainer(Trainer):
         completions: list[str],
         global_step: int,
         mode: str,
+        teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] | None = None,
+        teacher_traj_texts: dict[int, str] | None = None,
+        teacher_probe_stats: dict[str, Any] | None = None,
     ) -> dict[str, Union[torch.Tensor, Any]]:
         """Build a rollout batch whose only optimization route is OPD."""
         device = prompt_ids.device
         batch_size = int(completion_ids.size(0))
         opsd_indices = list(range(batch_size))
-        # Visual checker/refiner are reward / online-SFT tools.  OPD-only must
-        # not initialize them: doing so can invoke the teacher for a component
-        # whose output is intentionally excluded from the isolated loss, and
-        # used to leave its batch recorder unfinished.
+        # Build the teacher prompt for every completion.  Auxiliary teacher
+        # components (probe/checker/refiner) are intentionally run separately
+        # for diagnostics, but never participate in routing or sample choice.
         teacher_tensors = build_teacher_prompt_batch(
             self.processing_class,
             inputs,
@@ -2582,6 +2598,33 @@ class DyMETrainer(Trainer):
             "group_mixed_rate": 0.0,
         }
         result.update(teacher_tensors)
+        # Keep the OPD-only invariant explicit even when auxiliary diagnostics
+        # are enabled: all completions remain OPD and no reward-derived signal
+        # can affect the objective.
+        teacher_trajs = teacher_trajs or {}
+        traj_ids: list[torch.Tensor] = []
+        traj_masks: list[torch.Tensor] = []
+        traj_mask_values: list[bool] = []
+        for row in range(batch_size):
+            pair = teacher_trajs.get(row)
+            if pair is None:
+                traj_ids.append(completion_ids[row, :0])
+                traj_masks.append(completion_mask[row, :0])
+                traj_mask_values.append(False)
+            else:
+                ids_i, mask_i = pair
+                traj_ids.append(ids_i.to(device))
+                traj_masks.append(mask_i.to(device))
+                traj_mask_values.append(bool(mask_i.numel() and mask_i.sum().item() > 0))
+        result["teacher_traj_mask"] = torch.tensor(traj_mask_values, dtype=torch.bool, device=device)
+        result["teacher_traj_completion_ids"] = pad_sequence(
+            traj_ids, batch_first=True, padding_value=self.processing_class.tokenizer.pad_token_id
+        ).long().to(device)
+        result["teacher_traj_completion_mask"] = pad_sequence(
+            traj_masks, batch_first=True, padding_value=0
+        ).to(device)
+        result["teacher_probe_stats"] = dict(teacher_probe_stats or {})
+        result["teacher_traj_texts"] = dict(teacher_traj_texts or {})
         self._metrics[mode].setdefault("routing/opd_only", []).append(1.0)
         self._metrics[mode].setdefault("routing/opd_route_count", []).append(float(batch_size))
         self._metrics[mode].setdefault("routing/grpo_route_count", []).append(0.0)
@@ -2593,6 +2636,8 @@ class DyMETrainer(Trainer):
             batch_size=batch_size,
             completion_tokens=int(completion_mask.sum().item()),
             teacher_prompt_rows=int(teacher_tensors["teacher_prompt_ids"].size(0)),
+            teacher_traj_rows=int(sum(traj_mask_values)),
+            teacher_probe_enabled=bool(teacher_probe_stats),
         )
         return result
 
@@ -2743,6 +2788,91 @@ class DyMETrainer(Trainer):
         completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
         if self.training_stage == "opd_only":
+            # Auxiliary teacher components are executed for observability and
+            # optional trajectory supervision only.  Their rewards/refined
+            # text are deliberately discarded; every completion stays OPD.
+            aux_probe_modes = [MODE_OPSD] * int(completion_ids.size(0))
+            aux_answers = [str(x.get("answer", "")) for x in inputs]
+            aux_prompts = [str(x.get("prompt", "")) for x in inputs]
+            aux_hints = [str(x.get("hint", "")) for x in inputs]
+            aux_images = [x.get("image") for x in inputs]
+            aux_image_paths = [
+                image if isinstance(image, str) else getattr(image, "filename", "")
+                for image in aux_images
+            ]
+            aux_batch = {
+                "prompt": aux_prompts,
+                "hints": aux_hints,
+                "image": aux_image_paths,
+                "response": completions,
+                "answer": aux_answers,
+            }
+            aux_step = int(global_step_for_probe)
+            self._prepare_visual_supervision_batch(
+                inputs, global_step=aux_step, expanded_count=int(completion_ids.size(0))
+            )
+            try:
+                aux_rewards = ([], [], torch.zeros((len(inputs), self.num_generations), device=device), [])
+                if self.checker is not None:
+                    reward_fn = (
+                        calculate_rewards_sequential
+                        if getattr(self.checker, "requires_sequential", False)
+                        else calculate_rewards_in_parallel
+                    )
+                    aux_rewards = reward_fn(
+                        self.checker, aux_batch, gpu_id=self.accelerator.device.index or 0,
+                        task=self.task_name,
+                    )
+                    opsd_debug.log(
+                        "opd_only_aux",
+                        "visual checker/refiner diagnostics complete; rewards discarded",
+                        checker=type(self.checker).__name__,
+                        reward_count=len(aux_rewards[0]),
+                        reward_preview=aux_rewards[0][:3],
+                    )
+                if self.refiner is not None:
+                    refined = refine_context_sequential(
+                        self.refiner,
+                        [str(x.get("question_wo_prompt", x.get("prompt", ""))) for x in inputs],
+                        aux_hints,
+                        aux_answers,
+                        self.task_name,
+                        self.accelerator.device.index or 0,
+                    )
+                    opsd_debug.log(
+                        "opd_only_aux",
+                        "visual refiner diagnostics complete; outputs discarded",
+                        refiner=type(self.refiner).__name__,
+                        refined_preview=[str(x)[:240] for x in refined[:2]],
+                    )
+            finally:
+                self._finish_visual_supervision_batch(aux_step)
+
+            probe_stats: dict[str, Any] = {}
+            teacher_trajs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+            teacher_traj_texts: dict[int, str] = {}
+            if self.teacher_model is not None and bool((self.opsd_config.get("teacher_probe") or {}).get("enabled", False)):
+                probe_modes, teacher_trajs, teacher_traj_texts, probe_stats = self._apply_teacher_probe_routing(
+                    inputs=inputs,
+                    completion_modes=aux_probe_modes,
+                    acc_rewards=torch.zeros((len(inputs), self.num_generations), device=device),
+                    answers=aux_answers,
+                    completions=completions,
+                    answer_flag=getattr(self.checker, "answer_flag", "Answer:"),
+                    global_step=aux_step,
+                    device=device,
+                    group_has_correct=[False] * len(inputs),
+                    group_reward_std=[0.0] * len(inputs),
+                )
+                opsd_debug.log(
+                    "opd_only_aux",
+                    "teacher probe diagnostics complete; route unchanged",
+                    candidates=probe_stats.get("teacher_probe_candidates", 0),
+                    correct=probe_stats.get("teacher_probe_correct", 0),
+                    wrong=probe_stats.get("teacher_probe_wrong", 0),
+                    trajectory_rows=len(teacher_trajs),
+                )
+
             return self._build_opd_only_batch(
                 inputs=inputs,
                 prompt_ids=prompt_ids,
@@ -2754,6 +2884,9 @@ class DyMETrainer(Trainer):
                 completions=completions,
                 global_step=global_step_for_probe,
                 mode=mode,
+                teacher_trajs=teacher_trajs,
+                teacher_traj_texts=teacher_traj_texts,
+                teacher_probe_stats=probe_stats,
             )
 
         probe_stats = opsd_diagnostics.log_generate_probe(
@@ -4411,6 +4544,37 @@ class DyMETrainer(Trainer):
             )
             loss = loss * opsd_weight
 
+        # Optional teacher trajectory supervision is an auxiliary term, not a
+        # routing decision.  Probe-generated trajectories are attached to the
+        # same full batch; only rows with valid trajectories contribute.
+        traj_cfg = self._teacher_trajectory_config()
+        traj_mask = inputs.get("teacher_traj_mask")
+        traj_loss = None
+        traj_indices: list[int] = []
+        if traj_cfg["enabled"] and isinstance(traj_mask, torch.Tensor):
+            traj_indices = [
+                i for i, flag in enumerate(traj_mask.detach().bool().cpu().tolist()) if flag
+            ]
+        if traj_indices:
+            traj_inputs = dict(inputs)
+            traj_inputs["completion_ids"] = inputs["teacher_traj_completion_ids"]
+            traj_inputs["completion_mask"] = inputs["teacher_traj_completion_mask"]
+            traj_loss = compute_vlm_opsd_loss_masked_batch(
+                model,
+                traj_indices,
+                list(range(prompt_ids.size(0))),
+                traj_inputs,
+                beta=beta,
+                processor=self.processing_class,
+                teacher_model=self.teacher_model,
+                acc_gate=False,
+                global_step=global_step,
+                tokenizer=self.processing_class.tokenizer,
+                loss_type=traj_cfg["loss_type"],
+                srkl_alpha=srkl_alpha,
+            )
+            loss = loss + float(traj_cfg["weight"]) * traj_loss
+
         if opsd_indices and opsd_debug.should_log_detail(global_step):
             # The cache is also useful for SRKL: it records aligned logits
             # already produced by the OPD forward and never launches another
@@ -4422,7 +4586,13 @@ class DyMETrainer(Trainer):
         self._metrics[mode].setdefault("loss/grpo", []).append(0.0)
         self._metrics[mode].setdefault("loss/sft", []).append(0.0)
         self._metrics[mode].setdefault("loss/teacher_traj_fkl", []).append(0.0)
-        self._metrics[mode].setdefault("loss/teacher_traj_effective_weight", []).append(0.0)
+        self._metrics[mode]["loss/teacher_traj_fkl"][-1] = float(
+            traj_loss.detach().item() if traj_loss is not None else 0.0
+        )
+        self._metrics[mode].setdefault("loss/teacher_traj_effective_weight", []).append(
+            float(traj_cfg["weight"]) if traj_loss is not None else 0.0
+        )
+        self._metrics[mode].setdefault("teacher_traj/rows", []).append(float(len(traj_indices)))
         self._metrics[mode].setdefault("routing/opd_only", []).append(1.0)
         self._metrics[mode].setdefault("routing/opd_route_count", []).append(float(len(opsd_indices)))
         self._metrics[mode].setdefault("routing/grpo_route_count", []).append(0.0)
@@ -4437,6 +4607,7 @@ class DyMETrainer(Trainer):
                     "grpo_zero_loss_rate": 1.0,
                     "advantages_abs_mean": 0.0,
                     "opsd_loss_scalar": float(loss.detach().item()),
+                    "teacher_traj_loss_scalar": float(traj_loss.detach().item()) if traj_loss is not None else 0.0,
                 },
             )
         return loss

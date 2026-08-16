@@ -1256,20 +1256,18 @@ def main():
     # checker = RewardCalculator(rl_config, client_config.copy(), gpu_id=device_id)
     # refiner = ContextRefiner(rl_config, client_config.copy(), gpu_id=device_id)
 
-    if training_stage == "opd_only":
-        # This stage has no reward, online-SFT, or visual-supervision route.
-        # Do not even create fallback checker/refiner objects: an OPD rollout
-        # must only involve the frozen OPD teacher and the trainable student.
-        checker, refiner, visual_meta = None, None, {"enabled": False, "needs_teacher": False}
-    else:
-        checker, refiner, visual_meta = build_visual_supervision(
-            rl_config,
-            client_config,
-            opsd_config,
-            gpu_id=device_id,
-            teacher_model=teacher_model,
-            processor=processor,
-        )
+    # opd_only keeps every completion on the OPD route, but optional teacher
+    # probe/checker/refiner components may still run for diagnostics and
+    # teacher-trajectory supervision.  Their outputs are never used to route
+    # completions or to select samples.
+    checker, refiner, visual_meta = build_visual_supervision(
+        rl_config,
+        client_config,
+        opsd_config,
+        gpu_id=device_id,
+        teacher_model=teacher_model,
+        processor=processor,
+    )
     # 6. Define Training Arguments
     dyme_args = dict(training_config['dyme_args'])
     resume_from_checkpoint = (

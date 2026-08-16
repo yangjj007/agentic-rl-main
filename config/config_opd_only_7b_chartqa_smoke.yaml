@@ -74,9 +74,10 @@ rl:
 opsd:
   enabled: true
   mode: opd_only
-  privileged_profile: text
+  privileged_profile: hybrid
   privileged_providers:
   - format_only
+  - visual_facts_deplot
   privileged_image:
     mode: single
     crop_strategy: bbox_then_center
@@ -137,8 +138,10 @@ opsd:
       schedule_mode: step
       start_progress: 0.5
   teacher_probe:
-    enabled: false
-    context_providers: []
+    enabled: true
+    context_providers:
+    - format_only
+    - visual_facts_deplot
     batch_size: 1
     max_per_batch: 0
     max_new_tokens: 96
@@ -149,13 +152,14 @@ opsd:
     max_relative_change: 0.05
     prompt_profile: chartqa_short_answer
     answer_parser: chartqa_final_answer
-    skip_no_evidence: true
+    skip_no_evidence: false
     probe_all_wrong_after_step: null
     candidate_log:
-      enabled: false
+      enabled: true
       max_chars: 1024
+      max_text_chars: 1024
   teacher_trajectory:
-    enabled: false
+    enabled: true
     loss_type: fkl
     weight: 0.5
     max_new_tokens: 128
@@ -301,13 +305,13 @@ opsd:
     enabled: false
     weight: 0.1
   visual_supervision:
-    enabled: false
+    enabled: true
     ic_source: auto
     prefetch_ic: false
     dedupe_per_batch: true
     teacher_batch_size: 4
     checker:
-      enabled: false
+      enabled: true
       model_source: loaded_teacher
       grounding: image_primary
       aux_evidence: none
@@ -316,7 +320,7 @@ opsd:
       max_score_tokens: 16
       fallback: local
     refiner:
-      enabled: false
+      enabled: true
       model_source: loaded_teacher
       scope: batch_all
       fallback: passthrough
@@ -328,10 +332,10 @@ opsd:
       path: best_template.txt
       refresh_interval_sec: 60.0
     logging:
-      enabled: false
+      enabled: true
       sample_count: 3
       preview_chars: 400
-      save_artifacts: false
+      save_artifacts: true
       log_route_binding: true
 client:
   client_type: openai
