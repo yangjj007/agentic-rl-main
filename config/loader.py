@@ -9,6 +9,7 @@ import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG_DIR = _PROJECT_ROOT / "config"
+_PROJECT_URI_PREFIX = "project://"
 _CONFIG_ALIASES = {
     "norm": "config.yaml", "trimode": "config_trimode.yaml",
     "trimode_antidegen": "config_trimode_antidegen.yaml",
@@ -32,7 +33,10 @@ _CONFIG_ALIASES.update({
     "opd_only_7b_chartqa": "config_opd_only_7b_chartqa.yaml",
     "opd_only_7b_chartqa_smoke": "config_opd_only_7b_chartqa_smoke.yaml",
 })
-_REQUIRED_TOP_LEVEL = ("model", "training", "rl", "opsd", "client", "dataset", "checkpoint_eval", "launch", "deplot")
+_REQUIRED_TOP_LEVEL = (
+    "paths", "model", "training", "rl", "opsd", "client", "dataset",
+    "checkpoint_eval", "launch", "deplot",
+)
 # Keep this construction split so the mandated repository-wide static check
 # can look for legacy configuration mechanisms without matching the checker
 # that rejects them.  This is a content check, not an environment lookup.
@@ -42,6 +46,7 @@ _ENV_PATTERN = re.compile(
 )
 
 _REQUIRED_SECTION_FIELDS: dict[str, tuple[str, ...]] = {
+    "paths": ("project_root",),
     "model": (
         "pretrained_model_path", "use_flash_attention_2", "torch_dtype",
         "teacher_model_path", "teacher_dtype", "teacher_device_map",
@@ -119,9 +124,59 @@ def _reject_environment_content(value: Any, path: str = "config") -> None:
         raise ValueError(f"Environment-variable configuration is forbidden at {path}")
 
 
+def _resolve_project_uri(value: Any, *, project_root: Path, path: str = "config") -> Any:
+    """Expand explicit ``project://`` paths against ``paths.project_root``.
+
+    YAML stays self-contained and has no interpolation or environment lookup:
+    ``project://data/chartqa/train.json`` means the literal relative path under
+    the one explicitly declared project root.  Hub model IDs and external
+    absolute paths do not use this scheme and are intentionally unchanged.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _resolve_project_uri(child, project_root=project_root, path=f"{path}.{key}")
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _resolve_project_uri(child, project_root=project_root, path=f"{path}[{index}]")
+            for index, child in enumerate(value)
+        ]
+    if not isinstance(value, str) or not value.startswith(_PROJECT_URI_PREFIX):
+        return value
+
+    relative = value[len(_PROJECT_URI_PREFIX):]
+    if not relative or Path(relative).is_absolute():
+        raise ValueError(f"{path} must use project:// followed by a non-empty relative path")
+    candidate = (project_root / relative).resolve(strict=False)
+    try:
+        candidate.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError(f"{path} escapes paths.project_root: {value!r}") from exc
+    return str(candidate)
+
+
+def _resolve_project_paths(config: dict[str, Any], *, source: str) -> dict[str, Any]:
+    paths = config.get("paths")
+    if not isinstance(paths, dict):
+        raise ValueError(f"{source}.paths must be a YAML mapping")
+    raw_root = paths.get("project_root")
+    if not isinstance(raw_root, str) or not raw_root.strip():
+        raise ValueError(f"{source}.paths.project_root must be a non-empty absolute path")
+    root = Path(raw_root).expanduser()
+    if not root.is_absolute():
+        raise ValueError(f"{source}.paths.project_root must be an absolute path")
+    root = root.resolve(strict=False)
+    resolved = _resolve_project_uri(config, project_root=root, path="config")
+    resolved["paths"]["project_root"] = str(root)
+    return resolved
+
+
 def validate_config(config: dict[str, Any], *, source: str = "<config>") -> dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError(f"{source} must contain a YAML mapping")
+    _reject_environment_content(config, source)
+    config = _resolve_project_paths(config, source=source)
     missing = [key for key in _REQUIRED_TOP_LEVEL if key not in config]
     if missing:
         raise ValueError(f"{source} is missing required top-level fields: {', '.join(missing)}")
@@ -176,7 +231,6 @@ def validate_config(config: dict[str, Any], *, source: str = "<config>") -> dict
         model_path = str(config.get("model", {}).get("pretrained_model_path", "") or "")
         if not model_path or model_path.startswith("/path/to/"):
             raise ValueError("opd_only requires an explicit SFT checkpoint in model.pretrained_model_path")
-    _reject_environment_content(config, source)
     return config
 
 

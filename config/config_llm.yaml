@@ -1,3 +1,5 @@
+paths:
+  project_root: /data/junjie/agentic-rl-main
 model:
   pretrained_model_path: Qwen/Qwen2.5-0.5B-Instruct
   use_flash_attention_2: false
@@ -10,7 +12,7 @@ training:
   num_gpus: 8
   num_client: 8
   dyme_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/dyme-qwen25-gsm8k
+    output_dir: project://outputs/dyme-qwen25-gsm8k
     logging_steps: 1
     num_generations: 16
     max_completion_length: 1024
@@ -43,7 +45,7 @@ client:
   init_port: 23333
   num_server: 8
 dataset:
-  train_dataset: /data/junjie/agentic-rl-main/data/gsm8k/train_qwen25_refine.json
+  train_dataset: project://data/gsm8k/train_qwen25_refine.json
   eval_dataset: openai/gsm8k
   max_train_samples: null
 checkpoint_eval:

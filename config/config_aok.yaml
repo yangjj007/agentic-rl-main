@@ -1,3 +1,5 @@
+paths:
+  project_root: /data/junjie/agentic-rl-main
 model:
   pretrained_model_path: llava-hf/llava-onevision-qwen2-0.5b-ov-hf
   use_flash_attention_2: true
@@ -10,7 +12,7 @@ training:
   num_gpus: 8
   num_client: 8
   dyme_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/dyme-aok-online
+    output_dir: project://outputs/dyme-aok-online
     logging_steps: 1
     num_generations: 4
     max_completion_length: 300
@@ -29,7 +31,7 @@ training:
     loss_type: grpo
     seed: 42
   sft_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/sft-aok
+    output_dir: project://outputs/sft-aok
     logging_steps: 1
     per_device_train_batch_size: 2
     gradient_accumulation_steps: 4
@@ -45,7 +47,7 @@ training:
     seed: 42
     remove_unused_columns: false
   grpo_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/grpo-aok
+    output_dir: project://outputs/grpo-aok
     logging_steps: 1
     num_generations: 4
     max_completion_length: 576
@@ -77,7 +79,7 @@ client:
   init_port: 23333
   num_server: 8
 dataset:
-  train_dataset: /data/junjie/agentic-rl-main/data/aokvqa/train_qwen25_refine.json
+  train_dataset: project://data/aokvqa/train_qwen25_refine.json
   eval_dataset: HuggingFaceM4/A-OKVQA
   max_train_samples: null
 checkpoint_eval:

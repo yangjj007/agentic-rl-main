@@ -1,3 +1,5 @@
+paths:
+  project_root: /data/junjie/agentic-rl-main
 model:
   pretrained_model_path: Qwen/Qwen2.5-VL-7B-Instruct
   use_flash_attention_2: false

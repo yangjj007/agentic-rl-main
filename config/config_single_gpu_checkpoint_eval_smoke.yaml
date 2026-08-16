@@ -1,3 +1,5 @@
+paths:
+  project_root: /data/junjie/agentic-rl-main
 model:
   pretrained_model_path: llava-hf/llava-onevision-qwen2-0.5b-ov-hf
   use_flash_attention_2: true
@@ -10,7 +12,7 @@ training:
   num_gpus: 8
   num_client: 8
   dyme_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/single-gpu-checkpoint-eval-smoke
+    output_dir: project://outputs/single-gpu-checkpoint-eval-smoke
     logging_steps: 1
     num_generations: 2
     max_completion_length: 8
@@ -35,7 +37,7 @@ training:
     generation_batch_size: 2
     remove_unused_columns: false
   sft_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/sft-chart-llava_cot
+    output_dir: project://outputs/sft-chart-llava_cot
     logging_steps: 1
     per_device_train_batch_size: 2
     gradient_accumulation_steps: 4
@@ -51,7 +53,7 @@ training:
     seed: 42
     remove_unused_columns: false
   grpo_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/grpo-chart-llava-beta
+    output_dir: project://outputs/grpo-chart-llava-beta
     logging_steps: 1
     num_generations: 4
     max_completion_length: 576
@@ -379,7 +381,7 @@ deplot:
   model_id: google/deplot
   batch_size: 8
   max_new_tokens: 384
-  cache_path: /data/junjie/agentic-rl-main/data/chartqa/deplot_cache.json
+  cache_path: project://data/chartqa/deplot_cache.json
   prompt: 'Generate underlying data table of the figure below:'
 launch:
   gradient_checkpointing_enable: false

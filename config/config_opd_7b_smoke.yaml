@@ -1,3 +1,5 @@
+paths:
+  project_root: /data/junjie/agentic-rl-main
 model:
   pretrained_model_path: llava-hf/llava-onevision-qwen2-0.5b-ov-hf
   use_flash_attention_2: true
@@ -10,7 +12,7 @@ training:
   num_gpus: 8
   num_client: 8
   dyme_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/opd-7b-chartqa-smoke
+    output_dir: project://outputs/opd-7b-chartqa-smoke
     logging_steps: 1
     num_generations: 8
     max_completion_length: 96
@@ -32,7 +34,7 @@ training:
     seed: 42
     max_steps: 200
   sft_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/chartqa-sft
+    output_dir: project://outputs/chartqa-sft
     logging_steps: 10
     per_device_train_batch_size: 2
     gradient_accumulation_steps: 4
@@ -48,7 +50,7 @@ training:
     seed: 42
     remove_unused_columns: false
   grpo_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/grpo-chart-llava-beta
+    output_dir: project://outputs/grpo-chart-llava-beta
     logging_steps: 1
     num_generations: 4
     max_completion_length: 576
@@ -359,7 +361,7 @@ client:
   init_port: 23333
   num_server: 8
 dataset:
-  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_medium_vf_full.json
+  train_dataset: project://data/chartqa/train_medium_vf_full.json
   eval_dataset: HuggingFaceM4/ChartQA
   max_train_samples: null
 checkpoint_eval:
@@ -382,5 +384,5 @@ deplot:
   model_id: google/deplot
   batch_size: 8
   max_new_tokens: 384
-  cache_path: /data/junjie/agentic-rl-main/data/chartqa/deplot_cache.json
+  cache_path: project://data/chartqa/deplot_cache.json
   prompt: 'Generate underlying data table of the figure below:'

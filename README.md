@@ -46,7 +46,7 @@ Before launching training, please prepare the relevant configuration files. The 
 
 ### YAML 配置
 
-训练配置只从完整 YAML 读取（`model`、`training`、`rl`、`opsd`、`client`、`dataset`、`checkpoint_eval`、`launch`、`deplot`）。不再支持 Python config、配置 import/merge 或训练参数的环境变量覆盖；`config/loader.py` 会拒绝这些输入。`LOCAL_RANK`、`RANK`、`CUDA_VISIBLE_DEVICES` 等分布式运行时变量仍由启动器管理。
+训练配置只从完整 YAML 读取（`paths`、`model`、`training`、`rl`、`opsd`、`client`、`dataset`、`checkpoint_eval`、`launch`、`deplot`）。每份 YAML 的 `paths.project_root` 是唯一的项目根目录；项目内路径使用 `project://outputs/...`、`project://data/...`，由 loader 显式拼接。 不再支持 Python config、配置 import/merge 或训练参数的环境变量覆盖；`config/loader.py` 会拒绝这些输入。`LOCAL_RANK`、`RANK`、`CUDA_VISIBLE_DEVICES` 等分布式运行时变量仍由启动器管理。
 
 ### `client`
 

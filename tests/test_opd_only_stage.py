@@ -92,6 +92,28 @@ def test_all_yaml_recipes_are_complete_and_do_not_contain_legacy_env_syntax():
         ), path
 
 
+def test_project_paths_use_one_explicit_root_and_are_resolved_by_loader():
+    root = Path(__file__).resolve().parents[1]
+    config_dir = root / "config"
+    legacy_root = "/data/junjie/agentic-rl-main"
+    for path in sorted(config_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        raw_cfg = yaml.safe_load(raw)
+        assert raw_cfg["paths"] == {"project_root": "/data/junjie/agentic-rl-main"}, path
+        assert raw.count(legacy_root) == 1, path
+        loaded = load_config(str(path))
+        assert loaded["paths"]["project_root"] == "/data/junjie/agentic-rl-main"
+        assert "project://" not in repr(loaded)
+
+    opd = load_config("opd_only")
+    assert opd["model"]["pretrained_model_path"] == str(
+        root / "outputs/sft-chart-llava_cot/final_checkpoint"
+    )
+    assert opd["dataset"]["train_dataset"] == str(
+        root / "data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json"
+    )
+
+
 def test_chartqa_direct_audit_repairs_are_explicit_and_schema_valid():
     import importlib.util
 

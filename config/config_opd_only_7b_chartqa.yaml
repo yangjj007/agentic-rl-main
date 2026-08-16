@@ -1,5 +1,7 @@
+paths:
+  project_root: /data/junjie/agentic-rl-main
 model:
-  pretrained_model_path: outputs/sft-chart-llava_cot/final_checkpoint
+  pretrained_model_path: project://outputs/sft-chart-llava_cot/final_checkpoint
   use_flash_attention_2: true
   torch_dtype: bfloat16
   teacher_model_path: llava-hf/llava-onevision-qwen2-7b-ov-hf
@@ -11,7 +13,7 @@ training:
   num_gpus: 8
   num_client: 8
   dyme_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/opd-only-7b-chartqa
+    output_dir: project://outputs/opd-only-7b-chartqa
     logging_steps: 1
     num_generations: 8
     max_completion_length: 96
@@ -32,7 +34,7 @@ training:
     loss_type: grpo
     seed: 42
   sft_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/chartqa-sft
+    output_dir: project://outputs/chartqa-sft
     logging_steps: 10
     per_device_train_batch_size: 2
     gradient_accumulation_steps: 4
@@ -48,7 +50,7 @@ training:
     seed: 42
     remove_unused_columns: false
   grpo_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/grpo-chart-llava-beta
+    output_dir: project://outputs/grpo-chart-llava-beta
     logging_steps: 1
     num_generations: 4
     max_completion_length: 576
@@ -366,7 +368,7 @@ dataset:
   # Full ChartQA train split: every row is Qwen2.5-rewritten and has a real
   # DePlot table.  Do not replace this with the legacy *_vf_full.json recipe.
   # The Qwen2.5 rewrite corpus after the consistency audit and direct repairs.
-  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json
+  train_dataset: project://data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json
   eval_dataset: HuggingFaceM4/ChartQA
   max_train_samples: null
 data_validation:
@@ -394,5 +396,5 @@ deplot:
   model_id: google/deplot
   batch_size: 8
   max_new_tokens: 384
-  cache_path: /data/junjie/agentic-rl-main/data/chartqa/deplot_cache.json
+  cache_path: project://data/chartqa/deplot_cache.json
   prompt: 'Generate underlying data table of the figure below:'

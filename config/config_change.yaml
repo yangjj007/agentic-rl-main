@@ -1,3 +1,5 @@
+paths:
+  project_root: /data/junjie/agentic-rl-main
 model:
   pretrained_model_path: llava-hf/llava-onevision-qwen2-0.5b-ov-hf
   use_flash_attention_2: true
@@ -10,7 +12,7 @@ training:
   num_gpus: 8
   num_client: 8
   dyme_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/dyme-llavaov-chart-prerefine
+    output_dir: project://outputs/dyme-llavaov-chart-prerefine
     logging_steps: 1
     num_generations: 4
     max_completion_length: 200
@@ -43,7 +45,7 @@ client:
   init_port: 23333
   num_server: 8
 dataset:
-  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine.json
+  train_dataset: project://data/chartqa/train_new_prerefine.json
   eval_dataset: HuggingFaceM4/ChartQA
   max_train_samples: null
 checkpoint_eval:

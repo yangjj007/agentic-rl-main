@@ -1,3 +1,5 @@
+paths:
+  project_root: /data/junjie/agentic-rl-main
 model:
   pretrained_model_path: /data/junjie/models/opd_eval3d/student-0.5b
   use_flash_attention_2: false
@@ -11,7 +13,7 @@ training:
   num_gpus: 1
   num_client: 1
   dyme_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/opd-only-eval3d-all-components-2
+    output_dir: project://outputs/opd-only-eval3d-all-components-2
     logging_steps: 1
     num_generations: 2
     generation_batch_size: 2
@@ -36,7 +38,7 @@ training:
     max_steps: 2
     seed: 42
   sft_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/unused-sft
+    output_dir: project://outputs/unused-sft
     logging_steps: 1
     per_device_train_batch_size: 1
     gradient_accumulation_steps: 1
@@ -52,7 +54,7 @@ training:
     seed: 42
     remove_unused_columns: false
   grpo_args:
-    output_dir: /data/junjie/agentic-rl-main/outputs/unused-grpo
+    output_dir: project://outputs/unused-grpo
     logging_steps: 1
     num_generations: 2
     max_completion_length: 8
@@ -367,7 +369,7 @@ client:
   init_port: 23333
   num_server: 1
 dataset:
-  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json
+  train_dataset: project://data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json
   eval_dataset: null
   max_train_samples: 4
 data_validation:
