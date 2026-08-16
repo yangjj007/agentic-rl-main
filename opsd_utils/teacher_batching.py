@@ -351,7 +351,7 @@ def resolve_teacher_device_map(
     - explicit ``cuda:N``: honored unless it collides with the student device.
     """
     student_dev = f"cuda:{local_rank}"
-    raw = (device_map or os.environ.get("DYME_TEACHER_DEVICE_MAP", "")).strip()
+    raw = (device_map or "").strip()
 
     if raw.lower() in ("same", "colocate", "local"):
         return student_dev
@@ -386,7 +386,7 @@ def log_teacher_placement(
     requested_map: Optional[str],
 ) -> None:
     student_dev = f"cuda:{local_rank}"
-    req = requested_map or os.environ.get("DYME_TEACHER_DEVICE_MAP", "") or "auto"
+    req = requested_map or "auto"
     print(
         f"[DyME] rank={local_rank}/{num_gpus}: frozen teacher "
         f"{teacher_path} on {resolved_device} "

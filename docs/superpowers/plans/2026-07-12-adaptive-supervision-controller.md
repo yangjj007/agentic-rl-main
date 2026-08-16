@@ -88,7 +88,7 @@ Run the Task 3 pytest command. Expected: all tests pass.
 ### Task 4: Configuration and Reproducible Variant
 
 **Files:**
-- Modify: `config/config_opd_7b_dyme_probe.py`
+- Modify: `config/config_opd_7b_dyme_probe.yaml`
 - Modify: `scripts/test/run_pcd_no_visual.sh`
 - Modify: `tests/test_config_antidegen.py`
 - Modify: `tests/test_pcd_no_visual_runner.py`

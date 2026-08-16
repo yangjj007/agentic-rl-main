@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # COPSD-style cross-model OPD: frozen 7B teacher + 0.5B student on ChartQA (DDP).
-# Training params: config/config_opd_7b_chartqa.py
+# Training params: config/config_opd_7b_chartqa.yaml
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source "$(dirname "$0")/launch_utils.sh"
 
-DYME_CONFIG="${DYME_CONFIG:-opd_7b_chartqa}"
+CONFIG_PATH="config/config_opd_7b_chartqa.yaml"
 export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_accelerate_config)}"
 
-prepare_chartqa_training_data "${DYME_CONFIG}"
+prepare_chartqa_training_data "${CONFIG_PATH}"
 
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
 
 LOG_FILE="$(train_log_path train_opd_7b)"
-echo "Config: ${DYME_CONFIG}"
+echo "Config: ${CONFIG_PATH}"
 echo "Writing log to: ${LOG_FILE}"
 
 accelerate launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PROCESSES}" main.py \
-  --config "${DYME_CONFIG}" \
+  --config "${CONFIG_PATH}" \
   --mode rl \
   --opsd_enabled \
   2>&1 | tee "${LOG_FILE}"

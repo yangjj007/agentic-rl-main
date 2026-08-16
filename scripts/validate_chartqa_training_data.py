@@ -301,13 +301,12 @@ def _load_config_metadata_without_training_deps(
     if config_arg not in {
         "opd_7b_dyme_probe_image_checker",
         "opd_7b_probe_image_checker",
-    } and not config_arg.endswith("config_opd_7b_dyme_probe_image_checker.py"):
+    } and not config_arg.endswith("config_opd_7b_dyme_probe_image_checker.yaml"):
         raise import_error
-    real_path = _PROJECT_ROOT / "data/chartqa/train_new_prerefine_vf_full_real.json"
-    legacy_path = _PROJECT_ROOT / "data/chartqa/train_new_prerefine_vf_full.json"
+    real_path = _PROJECT_ROOT / "data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json"
     return {
         "dataset": {
-            "train_dataset": str(real_path if real_path.is_file() else legacy_path)
+            "train_dataset": str(real_path)
         },
         "data_validation": {
             "strict": True,

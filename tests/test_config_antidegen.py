@@ -1,12 +1,10 @@
 """Tests for anti-degeneration trimode config and reward_weights wiring."""
-import importlib
-
 import pytest
 
 
 def test_trimode_antidegen_config_loads():
-    mod = importlib.import_module("config.config_trimode_antidegen")
-    cfg = mod.CONFIG
+    from config.loader import load_config
+    cfg = load_config("trimode_antidegen")
     dyme = cfg["training"]["dyme_args"]
     assert dyme["max_completion_length"] == 150
     assert dyme["temperature"] == 0.7
@@ -15,18 +13,6 @@ def test_trimode_antidegen_config_loads():
     assert dyme["warmup_steps"] == 50
     assert cfg["opsd"]["gate"]["require_format_for_opsd"] is False
     assert cfg["opsd"]["reward_weights"] == [0.5, 1.5, 1.0]
-
-
-def test_trimode_require_format_env(monkeypatch):
-    import config.config_trimode as trimode_mod
-
-    monkeypatch.setenv("DYME_OPSD_REQUIRE_FORMAT", "0")
-    mod = importlib.reload(trimode_mod)
-    assert mod.DYME_OPSD_CONFIG["gate"]["require_format_for_opsd"] is False
-
-    monkeypatch.setenv("DYME_OPSD_REQUIRE_FORMAT", "1")
-    mod = importlib.reload(trimode_mod)
-    assert mod.DYME_OPSD_CONFIG["gate"]["require_format_for_opsd"] is True
 
 
 def test_loader_trimode_antidegen_alias():
@@ -43,195 +29,24 @@ def test_reward_weights_must_have_three_values():
             raise ValueError(f"opsd_config reward_weights must have length 3 (format, context, acc), got {bad}")
 
 
-def test_probe_config_eval_format_reward_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as probe_mod
-
-    monkeypatch.delenv("DYME_EVAL_FORMAT_REWARD", raising=False)
-    monkeypatch.delenv("DYME_EVAL_FORMAT_REWARD_WEIGHT", raising=False)
-    mod = importlib.reload(probe_mod)
-    assert mod.DYME_OPSD_CONFIG["eval_format_reward"]["enabled"] is False
-    assert mod.DYME_OPSD_CONFIG["eval_format_reward"]["weight"] == 0.1
-
-    monkeypatch.setenv("DYME_EVAL_FORMAT_REWARD", "1")
-    monkeypatch.setenv("DYME_EVAL_FORMAT_REWARD_WEIGHT", "0.25")
-    mod = importlib.reload(probe_mod)
-    assert mod.DYME_OPSD_CONFIG["eval_format_reward"]["enabled"] is True
-    assert mod.DYME_OPSD_CONFIG["eval_format_reward"]["weight"] == 0.25
+def test_probe_config_is_explicit_yaml():
+    from config.loader import load_config
+    cfg = load_config("opd_7b_dyme_probe")
+    assert cfg["opsd"]["mode"] == "dyme_teacher_probe_opd"
 
 
-def test_probe_config_teacher_traj_decay_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as probe_mod
-
-    monkeypatch.setenv("DYME_TEACHER_TRAJ_WEIGHT_DECAY", "1")
-    monkeypatch.setenv("DYME_TEACHER_TRAJ_DECAY_START_STEP", "294")
-    monkeypatch.setenv("DYME_TEACHER_TRAJ_DECAY_END_STEP", "441")
-    monkeypatch.setenv("DYME_TEACHER_TRAJ_FINAL_WEIGHT", "0.0")
-    mod = importlib.reload(probe_mod)
-
-    cfg = mod.DYME_OPSD_CONFIG["teacher_trajectory"]
-    assert cfg["weight_decay"]["enabled"] is True
-    assert cfg["weight_decay"]["start_step"] == 294
-    assert cfg["weight_decay"]["end_step"] == 441
-    assert cfg["weight_decay"]["final_weight"] == 0.0
+def test_probe_config_has_teacher_trajectory_block():
+    from config.loader import load_config
+    cfg = load_config("opd_7b_dyme_probe")["opsd"]["teacher_trajectory"]
+    assert "weight_decay" in cfg
 
 
-def test_probe_config_progress_schedule_and_dynamic_trigger_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as probe_mod
+def test_probe_config_is_invariant_to_environment(monkeypatch):
+    from config.loader import load_config
 
+    before = load_config("opd_7b_dyme_probe")
+    monkeypatch.setenv("DYME_OPSD_WEIGHT", "999")
     monkeypatch.setenv("DYME_PHASE_SCHEDULE_MODE", "progress")
-    monkeypatch.setenv("DYME_TEACHER_TRAJ_DECAY_START_PROGRESS", "0.25")
-    monkeypatch.setenv("DYME_TEACHER_TRAJ_DECAY_END_PROGRESS", "0.50")
-    monkeypatch.setenv("DYME_OPSD_DECAY_START_PROGRESS", "0.50")
-    monkeypatch.setenv("DYME_OPSD_DECAY_END_PROGRESS", "0.75")
-    monkeypatch.setenv("DYME_EFFECTIVE_SAMPLING_START_PROGRESS", "0.50")
-    monkeypatch.setenv("DYME_OPSD_ROUTE_CAP_START_PROGRESS", "0.50")
-    monkeypatch.setenv("DYME_OPSD_OVERFLOW_ROUTE", "mixed_grpo_all_wrong_skip")
-    monkeypatch.setenv("DYME_DYNAMIC_TRIGGER_EMA_ALPHA", "0.15")
-    monkeypatch.setenv("DYME_DYNAMIC_TRIGGER_MIN_PROGRESS", "0.20")
-    monkeypatch.setenv("DYME_DYNAMIC_TRIGGER_PATIENCE", "12")
-    monkeypatch.setenv("DYME_DYNAMIC_TRIGGER_SAMPLING_MIXED_MAX", "0.18")
-    monkeypatch.setenv("DYME_DYNAMIC_TRIGGER_SAMPLING_ZERO_MIN", "0.72")
-    monkeypatch.setenv("DYME_DYNAMIC_TRIGGER_RL_MIXED_MIN", "0.32")
-    monkeypatch.setenv("DYME_DYNAMIC_TRIGGER_RL_ZERO_MAX", "0.28")
-    mod = importlib.reload(probe_mod)
-
-    cfg = mod.DYME_OPSD_CONFIG
-    assert cfg["phase_schedule"]["mode"] == "progress"
-    assert cfg["teacher_trajectory"]["weight_decay"]["start_progress"] == 0.25
-    assert cfg["teacher_trajectory"]["weight_decay"]["end_progress"] == 0.50
-    assert cfg["loss"]["weight_decay"]["start_progress"] == 0.50
-    assert cfg["loss"]["weight_decay"]["end_progress"] == 0.75
-    assert cfg["loss"]["route_cap"]["schedule_mode"] == "progress"
-    assert cfg["loss"]["route_cap"]["start_progress"] == 0.50
-    assert cfg["loss"]["route_cap"]["overflow_route"] == "mixed_grpo_all_wrong_skip"
-    assert cfg["effective_sampling"]["schedule_mode"] == "progress"
-    assert cfg["effective_sampling"]["start_progress"] == 0.50
-    assert cfg["dynamic_trigger_monitor"] == {
-        "enabled": True,
-        "ema_alpha": 0.15,
-        "min_progress": 0.20,
-        "patience_steps": 12,
-        "sampling_mixed_max": 0.18,
-        "sampling_zero_loss_min": 0.72,
-        "rl_mixed_min": 0.32,
-        "rl_zero_loss_max": 0.28,
-    }
-
-
-def test_probe_config_adaptive_supervision_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as probe_mod
-
-    monkeypatch.setenv("DYME_ADAPTIVE_SUPERVISION", "1")
-    monkeypatch.setenv("DYME_ADAPTIVE_READINESS_SOURCE", "global_grpo_route")
-    monkeypatch.setenv("DYME_ADAPTIVE_EMA_ALPHA", "0.15")
-    monkeypatch.setenv("DYME_ADAPTIVE_TARGET_READINESS", "0.24")
-    monkeypatch.setenv("DYME_ADAPTIVE_OPSD_INITIAL_WEIGHT", "1.4")
-    monkeypatch.setenv("DYME_ADAPTIVE_OPSD_FINAL_WEIGHT", "0.4")
-    monkeypatch.setenv("DYME_ADAPTIVE_TEACHER_INITIAL_WEIGHT", "0.45")
-    monkeypatch.setenv("DYME_ADAPTIVE_TEACHER_FINAL_WEIGHT", "0.05")
-    monkeypatch.setenv("DYME_ADAPTIVE_OPSD_INITIAL_CAP", "8")
-    monkeypatch.setenv("DYME_ADAPTIVE_OPSD_FINAL_CAP", "1")
-    mod = importlib.reload(probe_mod)
-
-    cfg = mod.DYME_OPSD_CONFIG["adaptive_supervision"]
-    assert cfg == {
-        "enabled": True,
-        "readiness_source": "global_grpo_route",
-        "ema_alpha": 0.15,
-        "target_readiness": 0.24,
-        "opsd_initial_weight": 1.4,
-        "opsd_final_weight": 0.4,
-        "teacher_initial_weight": 0.45,
-        "teacher_final_weight": 0.05,
-        "opd_initial_cap": 8,
-        "opd_final_cap": 1,
-    }
-
-
-def test_probe_config_global_signal_logging_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as probe_mod
-
-    monkeypatch.setenv("DYME_GLOBAL_SIGNAL_LOGGING", "1")
-    mod = importlib.reload(probe_mod)
-
-    assert mod.DYME_OPSD_CONFIG["global_signal_logging"] == {"enabled": True}
-
-
-def test_probe_config_signal_utility_routing_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as probe_mod
-
-    monkeypatch.setenv("DYME_SIGNAL_UTILITY_ROUTING", "1")
-    monkeypatch.setenv("DYME_SIGNAL_UTILITY_REWARD_STD_SCALE", "0.12")
-    monkeypatch.setenv("DYME_SIGNAL_UTILITY_MODE_STABLE", "1")
-    monkeypatch.setenv("DYME_SIGNAL_UTILITY_EMA_BETA", "0.91")
-    monkeypatch.setenv("DYME_SIGNAL_UTILITY_SWITCH_MARGIN", "0.17")
-    monkeypatch.setenv("DYME_SIGNAL_UTILITY_MIN_HOLD_STEPS", "3")
-    monkeypatch.setenv("DYME_SIGNAL_UTILITY_OPD_FORMAT_PENALTY", "1.25")
-    monkeypatch.setenv("DYME_SIGNAL_UTILITY_SFT_FORMAT_BAD_BONUS", "1.35")
-    monkeypatch.setenv("DYME_SIGNAL_UTILITY_SKIP_CLIPPED_WITHOUT_TEACHER", "1")
-    mod = importlib.reload(probe_mod)
-
-    cfg = mod.DYME_OPSD_CONFIG["signal_utility_routing"]
-    assert cfg["enabled"] is True
-    assert cfg["reward_std_scale"] == 0.12
-    assert cfg["grpo_readiness_weight"] == 0.70
-    assert cfg["opd_teacher_need_weight"] == 0.60
-    assert cfg["mode_stable_enabled"] is True
-    assert cfg["mode_stable_ema_beta"] == 0.91
-    assert cfg["mode_stable_switch_margin"] == 0.17
-    assert cfg["mode_stable_min_hold_steps"] == 3
-    assert cfg["opd_format_penalty"] == 1.25
-    assert cfg["sft_format_bad_bonus"] == 1.35
-    assert cfg["skip_clipped_without_teacher"] is True
-
-
-def test_probe_config_student_rollout_generation_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as probe_mod
-
-    monkeypatch.setenv("DYME_MAX_COMPLETION_LENGTH", "64")
-    monkeypatch.setenv("DYME_TEMPERATURE", "0.35")
-    monkeypatch.setenv("DYME_TOP_P", "0.9")
-    monkeypatch.setenv("DYME_REPETITION_PENALTY", "1.7")
-    mod = importlib.reload(probe_mod)
-
-    dyme_args = mod.CONFIG["training"]["dyme_args"]
-    assert dyme_args["max_completion_length"] == 64
-    assert dyme_args["temperature"] == 0.35
-    assert dyme_args["top_p"] == 0.9
-    assert dyme_args["repetition_penalty"] == 1.7
-
-
-def test_probe_config_runtime_smoke_tuning_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as probe_mod
-
-    monkeypatch.setenv("DYME_NUM_GENERATIONS", "2")
-    monkeypatch.setenv("DYME_PER_DEVICE_TRAIN_BATCH_SIZE", "1")
-    monkeypatch.setenv("DYME_GRADIENT_ACCUMULATION_STEPS", "1")
-    monkeypatch.setenv("DYME_GRADIENT_CHECKPOINTING", "1")
-    mod = importlib.reload(probe_mod)
-
-    dyme_args = mod.CONFIG["training"]["dyme_args"]
-    assert dyme_args["num_generations"] == 2
-    assert dyme_args["per_device_train_batch_size"] == 1
-    assert dyme_args["gradient_accumulation_steps"] == 1
-    assert dyme_args["gradient_checkpointing"] is True
-    assert mod.CONFIG["launch"]["gradient_checkpointing_enable"] is True
-
-
-def test_probe_config_chart_cot_quality_gate_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as probe_mod
-
-    monkeypatch.setenv("DYME_CHART_COT_VERIFY", "1")
-    monkeypatch.setenv("DYME_CHART_COT_GATE_MODE", "gate")
-    monkeypatch.setenv("DYME_CHART_COT_REQUIRE_Q3", "1")
-    monkeypatch.setenv("DYME_CHART_COT_LOG_SAMPLES", "1")
-    monkeypatch.setenv("DYME_CHART_COT_MAX_LOG_SAMPLES", "5")
-    mod = importlib.reload(probe_mod)
-
-    assert mod.DYME_OPSD_CONFIG["chart_cot_quality_gate"] == {
-        "enabled": True,
-        "mode": "gate",
-        "require_quality": "Q3",
-        "log_samples": True,
-        "max_log_samples": 5,
-    }
+    monkeypatch.setenv("DYME_VISUAL_CHECKER", "0")
+    after = load_config("opd_7b_dyme_probe")
+    assert after == before

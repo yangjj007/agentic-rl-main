@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from config.loader import load_config
 from opsd_utils.checkpoint_eval_paths import (
     recover_interrupted_checkpoint_eval_save,
     validate_checkpoint_eval_output_dir,
@@ -144,26 +145,17 @@ def test_checkpoint_eval_config_uses_hf_steps_default_and_disables_generic_eval(
 
 def test_smoke_configs_explicitly_disable_checkpoint_evaluation() -> None:
     for relative in (
-        "config/config_opd_7b_smoke.py",
-        "config/config_opd_7b_dyme_probe_smoke.py",
-        "config/config_rlsd_shortrun.py",
-        "scripts/test/config/config_opd_force_smoke.py",
-        "scripts/test/config/config_positive_replay_sft.py",
+        "config/config_opd_7b_smoke.yaml",
+        "config/config_opd_7b_dyme_probe_smoke.yaml",
+        "config/config_rlsd_shortrun.yaml",
     ):
-        source = (ROOT / relative).read_text(encoding="utf-8")
-        assert '"enabled": False' in source, relative
-
-    # The remaining short baseline wrappers share `fast_profile`; keep their
-    # override centralized so full-validation checkpoint selection is never
-    # accidentally enabled by an inherited production ChartQA config.
-    fast_profile = (ROOT / "scripts/test/config/fast_profile.py").read_text(encoding="utf-8")
-    assert 'cfg["checkpoint_eval"] = {**cfg["checkpoint_eval"], "enabled": False}' in fast_profile
+        assert load_config(str(ROOT / relative))["checkpoint_eval"]["enabled"] is False
 
 
 def test_non_chartqa_configs_hard_disable_checkpoint_evaluation() -> None:
-    for relative in ("config/config_aok.py", "config/config_llm.py"):
+    for relative in ("config/config_aok.yaml", "config/config_llm.yaml"):
         source = (ROOT / relative).read_text(encoding="utf-8")
-        assert '\"checkpoint_eval\": {\"enabled\": False}' in source, relative
+        assert "enabled: false" in source, relative
         assert "DYME_CHECKPOINT_EVAL" not in source, relative
 
     # Import in a fresh interpreter so an inherited production environment
@@ -184,24 +176,6 @@ for name in (\"aok\", \"llm\"):
     assert result.stdout.splitlines() == ["False", "False"]
 
 
-def test_short_runner_commands_explicitly_disable_checkpoint_evaluation() -> None:
-    image_checker = (ROOT / "scripts/test/run_image_checker_timing_smoke.sh").read_text(
-        encoding="utf-8"
-    )
-    assert "export DYME_CHECKPOINT_EVAL=0" in image_checker
-
-    probe_ablation = (ROOT / "scripts/test/run_opd_probe_ablation.sh").read_text(
-        encoding="utf-8"
-    )
-    # Keep both copied dry-run commands and the actual launch environment safe.
-    assert probe_ablation.count("DYME_CHECKPOINT_EVAL=0") == 2
-
-    deplot_ablation = (ROOT / "scripts/test/run_opd_deplot_ablation.sh").read_text(
-        encoding="utf-8"
-    )
-    # The full ablation retains its production behavior; only --smoke gets
-    # the override, once for its displayed command and once at launch.
-    assert deplot_ablation.count("DYME_CHECKPOINT_EVAL=0") == 2
 
 
 def test_enabled_main_path_uses_best_link_instead_of_terminal_save() -> None:

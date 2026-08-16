@@ -1,0 +1,22 @@
+[
+  {
+    "question": "What is shown in this image?",
+    "answer": "a rendered object",
+    "image": "/data/junjie/spac-qwen3-4b-spatial-pe-8ep/lf/data/mllm_demo_data/3.jpg",
+    "human_or_machine": 0,
+    "hint": "Describe the main object visible in the image.",
+    "visual_fact_hint": "The image contains a rendered object.",
+    "visual_fact": "The image contains a rendered object.",
+    "visual_fact_deplot": "not applicable"
+  },
+  {
+    "question": "What is shown in this image?",
+    "answer": "a rendered object",
+    "image": "/data/junjie/spac-qwen3-4b-spatial-pe-8ep/lf/data/mllm_demo_data/3.jpg",
+    "human_or_machine": 0,
+    "hint": "Describe the main object visible in the image.",
+    "visual_fact_hint": "The image contains a rendered object.",
+    "visual_fact": "The image contains a rendered object.",
+    "visual_fact_deplot": "not applicable"
+  }
+]

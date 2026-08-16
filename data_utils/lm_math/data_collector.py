@@ -1,7 +1,9 @@
 import os
 import json
 from typing import List, Dict, Any
-from config import CONFIG
+from config.loader import load_config
+
+CONFIG = load_config("llm")
 from data_utils.rl_prompt import PROMPT_TEMPLATE
 ANSWER_TEMPLATE = CONFIG['rl']['answer_flag'] + " " +  "{answer}"
 
@@ -49,5 +51,4 @@ def prepare_math_lm_rl_data(json_path: str) -> List[Dict[str, Any]]:
             processed_data.append(new_entry)
 
     return processed_data
-
 

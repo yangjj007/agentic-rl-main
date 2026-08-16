@@ -392,7 +392,7 @@ def compute_vlm_opsd_loss(
     else:
         opsd_debug.log(
             "opsd_loss",
-            "reuse GRPO student completion logits (DeepSpeed single-forward)",
+            "reuse precomputed student completion logits (single-forward OPD)",
             student_logits_shape=tuple(student_logits.shape),
         )
 
@@ -437,6 +437,11 @@ def compute_vlm_opsd_loss(
         beta=beta,
         srkl_alpha=srkl_alpha,
     )
+    # Cross-model OPD may run the frozen teacher on another GPU.  Keep the
+    # scalar objective on the student device so Trainer/Accelerate can run
+    # backward and the optimizer without a device mismatch.
+    if loss.device != student_logits.device:
+        loss = loss.to(student_logits.device, non_blocking=True)
 
     if capture_jsd_detail and global_idx is not None:
         opsd_diagnostics.maybe_capture_opsd_jsd_detail(

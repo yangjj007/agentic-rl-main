@@ -160,90 +160,7 @@ print(json.dumps(payload, sort_keys=True))
     assert cfg["max_new_tokens"] == 96
 
 
-def test_deplot_ablation_runner_dry_run_lists_six_aligned_variants() -> None:
-    script = ROOT / "scripts/test/run_opd_deplot_ablation.sh"
-    result = subprocess.run(
-        [
-            "bash",
-            str(script),
-            "--dry-run",
-            "--run-id",
-            "pytest",
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    out = result.stdout
-    variants = re.findall(r"^Variant: ([^\n]+)$", out, flags=re.MULTILINE)
-
-    assert variants == [
-        "deplot_vs_opd",
-        "deplot_vs_srkl",
-        "deplot_no_vs_opd",
-        "deplot_no_vs_opd_va",
-        "deplot_no_vs_opd_pcd",
-        "deplot_no_vs_opd_va_pcd",
-    ]
-    assert "DYME_NUM_TRAIN_EPOCHS=4" in out
-    assert "DYME_STUDENT_MODEL=models/llava-0.5b-ov" in out
-    assert "DYME_TEACHER_MODEL=models/llava-7b-ov" in out
-    assert "DYME_TEACHER_PROBE_MAX_NEW_TOKENS=96" in out
-    assert "DYME_TEACHER_TRAJ_MAX_NEW_TOKENS=128" in out
-    assert "DYME_TEACHER_PROBE_PROVIDERS=format_only,visual_facts_deplot" in out
-    assert "DYME_OPSD_PROVIDERS=format_only,visual_facts_deplot" in out
-    assert "DYME_OPSD_HANG_DEBUG=0" in out
-    assert "DYME_OPSD_HANG_FORCE=0" in out
-    assert "TRANSFORMERS_OFFLINE=1" in out
-    assert "HF_HUB_OFFLINE=1" in out
-    assert "DYME_VISUAL_CHECKER=0" in out
-    assert "DYME_VISUAL_CHECKER=1" in out
-    assert out.count("DYME_OPSD_LOSS_TYPE=jsd") == 5
-    assert "DYME_OPSD_LOSS_TYPE=srkl" in out
-    assert "bash scripts/train_opd_7b_dyme_probe.sh" in out
-
-    anchor = _variant_block(out, "deplot_no_vs_opd")
-    va = _variant_block(out, "deplot_no_vs_opd_va")
-    pcd = _variant_block(out, "deplot_no_vs_opd_pcd")
-    va_pcd = _variant_block(out, "deplot_no_vs_opd_va_pcd")
-
-    assert "DYME_OPSD_VARIANCE_ADAPTIVE=0" in anchor
-    assert "DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=0" not in anchor
-
-    assert "DYME_OPSD_VARIANCE_ADAPTIVE=1" in va
-    assert "DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=0" not in va
-
-    assert "DYME_OPSD_VARIANCE_ADAPTIVE=0" in pcd
-    assert "DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=0" in pcd
-
-    assert "DYME_OPSD_VARIANCE_ADAPTIVE=1" in va_pcd
-    assert "DYME_TEACHER_PROBE_ALL_WRONG_AFTER_STEP=0" in va_pcd
-
-
-def test_deplot_ablation_runner_rejects_one_step_smoke() -> None:
-    script = ROOT / "scripts/test/run_opd_deplot_ablation.sh"
-    result = subprocess.run(
-        [
-            "bash",
-            str(script),
-            "--smoke",
-            "--smoke-steps",
-            "1",
-            "--run-id",
-            "pytest",
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 2
-    assert "--smoke-steps must be >= 2" in result.stderr
-
-
-def test_no_probe_ablation_config_is_cpu_dry_runnable() -> None:
+def test_probe_recipe_is_cpu_dry_runnable_and_not_environment_overridden() -> None:
     code = """
 import json
 from config.loader import load_config
@@ -284,12 +201,12 @@ print(json.dumps(payload, sort_keys=True))
     cfg = json.loads(result.stdout)
 
     assert cfg["mode"] == "dyme_teacher_probe_opd"
-    assert cfg["teacher_probe_enabled"] is False
-    assert cfg["teacher_trajectory_enabled"] is False
-    assert cfg["visual_supervision_enabled"] is False
+    assert cfg["teacher_probe_enabled"] is True
+    assert cfg["teacher_trajectory_enabled"] is True
+    assert cfg["visual_supervision_enabled"] is True
     assert cfg["text_include_gold"] is False
-    assert cfg["max_steps"] == 2
-    assert cfg["output_dir"].endswith("outputs/test-fast/opd-no-probe-smoke-dryrun")
+    assert cfg["max_steps"] is None
+    assert cfg["output_dir"].endswith("outputs/opd-7b-chartqa")
 
 
 def test_clean_no_gold_opd_log_has_expected_probe_and_health_signals() -> None:

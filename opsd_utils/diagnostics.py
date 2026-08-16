@@ -35,13 +35,8 @@ _OPSD_JSD_DETAIL_CAPTURE: dict[str, Any] = {
 
 
 def _detail_min_free_gib() -> float:
-    raw = os.environ.get("DYME_OPSD_DETAIL_MIN_FREE_GB", "").strip()
-    if not raw:
-        return 4.0
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        return 4.0
+    """Default memory guard; callers pass the explicit YAML value when needed."""
+    return 4.0
 
 
 def cuda_free_gib(device: Optional[torch.device | int] = None) -> Optional[float]:
@@ -1020,6 +1015,14 @@ def jsd_token_stats(
 ) -> dict[str, Any]:
     """Token-level JSD breakdown without building the graph."""
     with torch.no_grad():
+        # Cross-model OPD may place the frozen teacher on a different GPU than
+        # the student.  Diagnostics are non-differentiable, so normalize the
+        # teacher logits onto the student device before combining distributions
+        # (the training loss performs its own explicit alignment).
+        if teacher_logits.device != student_logits.device:
+            teacher_logits = teacher_logits.to(student_logits.device)
+        if mask.device != student_logits.device:
+            mask = mask.to(student_logits.device)
         student_log_probs = F.log_softmax(student_logits, dim=-1)
         teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
         student_probs = student_log_probs.exp()

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from opsd_utils.visual_supervision_log import VisualBatchRecorder
-from reward_utils.template_pool import TemplatePool
+from reward_utils.template_pool import TemplatePool, is_valid_reasoning_template
 from reward_utils.visual_checker_teacher import (
     TeacherVisualChecker,
     _postprocess_checker_label,
@@ -17,6 +17,7 @@ from reward_utils.visual_checker_teacher import (
     _split_response_parts,
     build_image_primary_checker_prompt,
 )
+from reward_utils.visual_refiner_teacher import build_no_gold_refiner_prompt
 from reward_utils.visual_ic import (
     _parse_ic_json,
     build_prompt_s1,
@@ -75,6 +76,41 @@ def test_image_primary_checker_prompt_includes_student_final_answer():
     assert "Student final answer:" in prompt
     assert "\n40%\n" in prompt
     assert "supports both the student's final answer and the reference answer" in prompt
+
+
+def test_no_gold_refiner_prompt_cannot_embed_reference_answer():
+    prompt = build_no_gold_refiner_prompt(
+        ic_text="The chart has a blue bar of 10.",
+        question="What is the blue value?",
+        template="Goal: ...\nObservation: ...\nReasoning: ...",
+    )
+    assert "Reference answer" not in prompt
+    assert "Do not infer, state, or format a final answer" in prompt
+    assert "Answer:" not in prompt
+
+
+def test_no_gold_refiner_rejects_answer_only_or_answer_leaking_output():
+    from reward_utils.visual_refiner_teacher import _is_usable_refined_hint
+
+    assert not _is_usable_refined_hint("Yes", include_gold=False)
+    assert not _is_usable_refined_hint(
+        "Goal: inspect\nObservation: value is visible\nAnswer: 10",
+        include_gold=False,
+    )
+    assert _is_usable_refined_hint(
+        "Goal: inspect\nObservation: value is visible\nReasoning: compare values",
+        include_gold=False,
+    )
+
+
+def test_template_pool_rejects_invalid_candidates_and_disk_templates():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "template.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("Yes")
+        pool = TemplatePool(template_path=path)
+        assert is_valid_reasoning_template(pool.get_template())
+        assert pool.maybe_update("Yes", lambda _cur, _new: True) == (False, "none_template")
 
 
 def test_checker_postprocess_caps_fragments_and_missing_answer_marker():
@@ -151,6 +187,28 @@ def test_parse_ic_json_strips_markdown_fence():
     assert obj["description"] == "chart"
 
 
+def test_parse_ic_json_accepts_valid_object_before_trailing_text():
+    obj, err = _parse_ic_json('{"description": "chart", "objects": []}\nExplanation')
+    assert err is None
+    assert obj == {"description": "chart", "objects": []}
+
+
+def test_parse_ic_json_rejects_a_truncated_outer_object_with_nested_json():
+    obj, err = _parse_ic_json(
+        '{"description": "truncated", "objects": [{"name": "bar"}]'
+    )
+    assert obj is None
+    assert err == "json_decode"
+
+
+def test_parse_ic_json_rejects_an_object_fragment_without_ic_schema():
+    obj, err = _parse_ic_json(
+        '{"name": "line graph", "attributes": ["title"], "position": "center"}'
+    )
+    assert obj is None
+    assert err == "invalid_ic_schema"
+
+
 def test_refine_context_sequential_dedupes():
     from reward_utils.compute_rewards import refine_context_sequential
 
@@ -187,11 +245,15 @@ def test_template_pool_cas_write():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "best_template.txt")
         pool = TemplatePool(template_path=path, lock_path=path + ".lock")
-        written, label = pool.maybe_update("Goal: [x]", lambda _c, _n: True)
+        candidate = (
+            "Goal: [x]\nObservation: [evidence]\n"
+            "Reasoning: [compare]\nConclusion: [result]"
+        )
+        written, label = pool.maybe_update(candidate, lambda _c, _n: True)
         assert written is True
         assert label == "YES"
-        assert pool.get_template(force_refresh=True) == "Goal: [x]"
-        written2, label2 = pool.maybe_update("Goal: [x]", lambda _c, _n: True)
+        assert pool.get_template(force_refresh=True) == candidate
+        written2, label2 = pool.maybe_update(candidate, lambda _c, _n: True)
         assert written2 is False
         assert label2 == "identical"
 

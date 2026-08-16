@@ -1,7 +1,9 @@
 import os
 import json
 from typing import List, Dict, Any
-from config import CONFIG
+from config.loader import load_config
+
+CONFIG = load_config("norm")
 from data_utils.paths import resolve_image_path
 from data_utils.rl_prompt import PROMPT_TEMPLATE
 ANSWER_TEMPLATE = CONFIG['rl']['answer_flag'] + " " +  "{answer}"

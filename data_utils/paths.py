@@ -101,7 +101,7 @@ def validate_local_model_dir(path: str, *, role: str = "model") -> str:
     if raw and (raw.startswith("~") or os.path.isabs(expanded)) and not os.path.exists(expanded):
         raise FileNotFoundError(
             f"{role} path '{os.path.abspath(expanded)}' does not exist. "
-            f"Set DYME_{role.upper()}_MODEL to a valid local model directory, "
+            "Set the corresponding YAML model path to a valid local model directory, "
             "or use a HuggingFace repo id."
         )
     resolved = resolve_model_path(path)
@@ -121,12 +121,3 @@ def local_pretrained_kwargs(path: str) -> dict:
     if os.path.isdir(resolved):
         return {"local_files_only": True}
     return {}
-
-
-def discover_local_model(role: str, default: str) -> str:
-    """Resolve role-specific model override env vars, otherwise return default."""
-    key = f"DYME_{role.upper()}_MODEL"
-    override = os.environ.get(key, "").strip()
-    if override:
-        return validate_local_model_dir(override, role=role)
-    return default

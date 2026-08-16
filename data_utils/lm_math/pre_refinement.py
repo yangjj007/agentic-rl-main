@@ -2,6 +2,7 @@
 
 import json
 import multiprocessing
+from config.loader import load_config
 import os
 from copy import deepcopy
 from tqdm import tqdm
@@ -122,7 +123,7 @@ def process_item_worker(item):
 # ---------------- Main logic ----------------
 def main():
     # Configuration that contains information about ports and number of servers
-    from config import CLIENT_CONFIG
+    CLIENT_CONFIG = load_config("llm")["client"]
     input_filename = '/path/to/data/lm_math/json/train.json'
     output_filename = '/path/to/data/lm_math/json/train_refine.json'
 

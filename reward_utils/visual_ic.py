@@ -49,16 +49,36 @@ def _parse_ic_json(text: str) -> tuple[Optional[dict], Optional[str]]:
     if not raw:
         return None, "empty_output"
     try:
-        return json.loads(raw), None
+        parsed = json.loads(raw)
     except json.JSONDecodeError:
-        pass
-    match = re.search(r"\{[\s\S]*\}", raw)
-    if match:
+        # ``raw_decode`` recovers one complete top-level JSON object when the
+        # model adds explanation after it; the former greedy-brace regex
+        # rejected that valid output as malformed. Never scan nested braces
+        # after a malformed top-level object: accepting an item from a
+        # truncated ``objects`` array silently destroys the evidence schema.
+        decoder = json.JSONDecoder()
+        match = re.search(r"\{", raw)
+        if match is None:
+            return None, "json_decode"
         try:
-            return json.loads(match.group(0)), None
+            parsed, _end = decoder.raw_decode(raw[match.start() :])
         except json.JSONDecodeError:
             return None, "json_decode"
-    return None, "json_decode"
+    if not isinstance(parsed, dict):
+        return None, "json_not_object"
+
+    # Prompt S1 asks for one *I_c document*, not an arbitrary JSON fragment.
+    # In particular, accepting an ``objects`` item such as
+    # ``{"name": ..., "attributes": ...}`` turns a truncated model response
+    # into misleading evidence for the refiner.  Require the advertised
+    # top-level schema before it can enter a training target.
+    description = parsed.get("description")
+    objects = parsed.get("objects")
+    if not isinstance(description, str) or not isinstance(objects, list):
+        return None, "invalid_ic_schema"
+    if any(not isinstance(item, dict) for item in objects):
+        return None, "invalid_ic_schema"
+    return parsed, None
 
 
 def ic_text_from_offline_sample(sample: dict[str, Any]) -> tuple[str, str]:

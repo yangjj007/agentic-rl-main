@@ -50,7 +50,7 @@
 ### Task 4: Config and sampler integration
 
 **Files:**
-- Modify: `config/config_opd_7b_dyme_probe.py`
+- Modify: `config/config_opd_7b_dyme_probe.yaml`
 - Modify: `trainer/DyMETrainer.py`
 - Modify: `tests/test_config_antidegen.py`
 - Modify: `tests/test_dynamic_signal_sampler.py`

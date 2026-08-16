@@ -131,3 +131,4 @@ nohup.out
 *.tmp
 *.bak
 *.orig
+best_template.txt.lock

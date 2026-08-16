@@ -170,7 +170,7 @@ Expected: PASS.
 ### Task 7: Configuration and Runner Variants
 
 **Files:**
-- Modify: `config/config.py`
+- Modify: `config/config.yaml`
 - Modify: `scripts/test/run_pcd_no_visual.sh`
 - Modify: `tests/test_config_antidegen.py`
 - Modify: `tests/test_run_pcd_no_visual_script.py`

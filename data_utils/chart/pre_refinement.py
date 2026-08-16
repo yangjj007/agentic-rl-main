@@ -2,6 +2,7 @@
 
 import json
 import multiprocessing
+from config.loader import load_config
 import os
 from copy import deepcopy
 from tqdm import tqdm
@@ -100,7 +101,7 @@ def process_item_worker(item):
 # ---------------- Main logic ----------------
 def main():
     # Configuration that contains port and server count information
-    from config import CLIENT_CONFIG
+    CLIENT_CONFIG = load_config("norm")["client"]
     input_filename = os.path.join(CHARTQA_JSON_DIR, 'train.json')
     output_filename = os.path.join(CHARTQA_JSON_DIR, 'train_new_prerefine.json')
 

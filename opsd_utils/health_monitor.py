@@ -321,7 +321,11 @@ class TrainingHealthMonitor:
 
         adv_abs = _safe_float(fields.get("advantages_abs_mean"))
         zero_grpo = _safe_float(fields.get("grpo_zero_loss_rate"))
-        if adv_abs < 1e-6 and zero_grpo > 0.8:
+        # An explicit OPD-only stage deliberately has no advantages and no
+        # GRPO loss.  Treating that intended isolation as an RL failure makes
+        # its health bundle noisy and can hide actionable alerts.
+        is_opd_only = str(fields.get("training_stage", "")).strip().lower() == "opd_only"
+        if not is_opd_only and adv_abs < 1e-6 and zero_grpo > 0.8:
             self._emit_alert(
                 step,
                 ALERT_RL_ZERO_SIGNAL,

@@ -36,8 +36,8 @@ DyME 对小 VLM 的诊断很重要：
 关键本地文件：
 
 - `scripts/test/train_opd.sh`：4 epoch fast OPD 启动脚本。
-- `scripts/test/config/fast_profile.py`：fast baseline 中 DyME-aligned OPD routing 的定义。
-- `config/config_opd_7b_dyme_probe.py`：更完整的 teacher-probe OPD 配置，包括 SRKL OPD 和 teacher-trajectory FKL。
+- `config/config_opd_7b_deepspeed.yaml`：fast baseline 使用的显式 OPD 配置。
+- `config/config_opd_7b_dyme_probe.yaml`：更完整的 teacher-probe OPD 配置，包括 SRKL OPD 和 teacher-trajectory FKL。
 - `opsd_utils/mode_router.py`：prompt/completion 路由逻辑。
 - `opsd_utils/opsd_loss.py`：token-level OPD/OPSD loss。
 - `opsd_utils/privileged/providers.py`：no-gold teacher context providers。
@@ -61,7 +61,7 @@ fast OPD 的 teacher context 是有意设计成 anti-leakage 的：
 - teacher 不读取 answer、hint、reference reasoning。
 - teacher 只看到格式提示和离线 DePlot visual facts。
 
-更完整的 `config_opd_7b_dyme_probe.py` 还包含：
+更完整的 `config_opd_7b_dyme_probe.yaml` 还包含：
 
 - `loss_type = "srkl"`，即 skew reverse KL 类型的 OPD loss。
 - 可选的 teacher-trajectory FKL：teacher 自己生成的正确 trajectory 也可以被蒸馏。

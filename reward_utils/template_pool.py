@@ -15,6 +15,13 @@ Conclusion: [Draw the conclusion, e.g., The year with the highest sales was 2021
 
 DEFAULT_TEMPLATE_FILE = "best_template.txt"
 DEFAULT_LOCK_FILE = "best_template.txt.lock"
+_REQUIRED_TEMPLATE_HEADINGS = ("goal:", "observation:", "reasoning:", "conclusion:")
+
+
+def is_valid_reasoning_template(text: str) -> bool:
+    """Return whether a template can safely guide an online SFT refiner."""
+    lowered = str(text or "").lower()
+    return all(heading in lowered for heading in _REQUIRED_TEMPLATE_HEADINGS)
 
 
 def _comparison_prompt(current_template: str, new_template: str) -> str:
@@ -73,7 +80,7 @@ class TemplatePool:
         if not force_refresh and (now - self._last_refresh_time) < self.refresh_interval_sec:
             return self._cached_template
         disk = self.read_locked()
-        if disk:
+        if is_valid_reasoning_template(disk):
             self._cached_template = disk
         else:
             self._cached_template = self.default_template
@@ -108,7 +115,7 @@ class TemplatePool:
     ) -> tuple[bool, str]:
         """Compare via callback; CAS-write if accepted. Returns (written, compare_result_label)."""
         clean = (new_template or "").strip()
-        if not clean or "none" in clean.lower():
+        if not clean or "none" in clean.lower() or not is_valid_reasoning_template(clean):
             return False, "none_template"
         original = self.read_locked()
         if original == clean:

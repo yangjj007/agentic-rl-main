@@ -41,11 +41,13 @@ def test_should_zero_on_char_repeat():
 
 
 def test_config_opd_inherits_rlsd_dyme_args():
-    import config.config_opd_7b_chartqa as opd
-    import config.config_rlsd_chartqa as rlsd
+    from config.loader import load_config
 
-    opd_dyme = opd.CONFIG["training"]["dyme_args"]
-    rlsd_dyme = rlsd.CONFIG["training"]["dyme_args"]
+    opd = load_config("opd_7b_chartqa")
+    rlsd = load_config("rlsd_chartqa")
+
+    opd_dyme = opd["training"]["dyme_args"]
+    rlsd_dyme = rlsd["training"]["dyme_args"]
     assert opd_dyme["max_completion_length"] == rlsd_dyme["max_completion_length"]
     assert opd_dyme["temperature"] == rlsd_dyme["temperature"]
     assert opd_dyme["repetition_penalty"] == rlsd_dyme["repetition_penalty"]

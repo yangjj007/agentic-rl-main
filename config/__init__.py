@@ -1,23 +1,5 @@
-from config.config import (
-    CLIENT_CONFIG,
-    CHECKPOINT_EVAL_CONFIG,
-    CONFIG,
-    DATASET_CONFIG,
-    DYME_OPSD_CONFIG,
-    MODEL_CONFIG,
-    RL_CONFIG,
-    TRAINING_CONFIG,
-    save_config,
-)
+"""YAML configuration package."""
 
-__all__ = [
-    "CLIENT_CONFIG",
-    "CHECKPOINT_EVAL_CONFIG",
-    "CONFIG",
-    "DATASET_CONFIG",
-    "DYME_OPSD_CONFIG",
-    "MODEL_CONFIG",
-    "RL_CONFIG",
-    "TRAINING_CONFIG",
-    "save_config",
-]
+from config.loader import load_config, validate_config
+
+__all__ = ["load_config", "validate_config"]

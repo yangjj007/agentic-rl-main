@@ -537,7 +537,11 @@ class DyMETrainer(Trainer):
         teacher_model_config: Optional[dict] = None,
         visual_supervision_meta: Optional[dict] = None,
         checkpoint_eval_config: Optional[dict] = None,
+        training_stage: str = "rl",
     ):
+        self.training_stage = str(training_stage or "rl").strip().lower()
+        if self.training_stage not in {"rl", "opd_only"}:
+            raise ValueError(f"Unknown training_stage: {training_stage!r}")
         self.opsd_config = opsd_config if opsd_config is not None else dict(DEFAULT_OPSD_CONFIG)
         self.teacher_model = teacher_model
         self._teacher_model_config = teacher_model_config
@@ -570,13 +574,7 @@ class DyMETrainer(Trainer):
         )
         self._dynamic_trigger_last_step: int | None = None
         self._last_training_phase: Optional[str] = None
-        self._perf_timing_enabled = os.environ.get("DYME_PERF_TIMING", "0").strip().lower() not in (
-            "",
-            "0",
-            "false",
-            "no",
-            "off",
-        )
+        self._perf_timing_enabled = False
         self._perf_step_start_s: Optional[float] = None
         self.task_name = task_name
         reward_weights = self.opsd_config.get("reward_weights", [1.0, 1.0, 1.0])
@@ -766,6 +764,11 @@ class DyMETrainer(Trainer):
             TrainingHealthMonitor(health_cfg) if health_cfg.get("enabled", True) else None
         )
         opsd_debug.configure(
+            # ``main.py`` may already have enabled detailed OPSD tracing via
+            # --opsd_debug.  Do not clear that state while registering the
+            # per-rank settings below; otherwise the loss/teacher-forward
+            # intermediate diagnostics silently disappear after construction.
+            enabled=opsd_debug.is_enabled() or bool(debug_cfg.get("verbose", False)),
             rank=self.accelerator.process_index,
             world_size=self.accelerator.num_processes,
             detail_every=detail_every,
@@ -773,6 +776,8 @@ class DyMETrainer(Trainer):
             probe_first_token_logits=debug_cfg.get("probe_first_token_logits", True),
             probe_prompt_tail_tokens=debug_cfg.get("probe_prompt_tail_tokens", 16),
             probe_log_model_context=debug_cfg.get("probe_log_model_context", True),
+            hang_debug=debug_cfg.get("hang_debug", False),
+            hang_force=debug_cfg.get("hang_force", True),
             health_monitor_enabled=health_cfg.get("enabled", True),
             health_log_on_generate=health_cfg.get("log_on_generate", True),
             health_log_every_step=health_cfg.get("log_every_step", True),
@@ -798,7 +803,7 @@ class DyMETrainer(Trainer):
         if self.accelerator.is_main_process and detail_every > 0:
             print(
                 f"[OPSD-DETAIL] periodic full diagnostics every {detail_every} global steps "
-                f"(set opsd.debug.detail_every=0 or DYME_OPSD_DETAIL_EVERY=0 to disable)"
+                "(set opsd.debug.detail_every=0 to disable)"
             )
         opsd_debug.log(
             "init",
@@ -2524,6 +2529,73 @@ class DyMETrainer(Trainer):
         )
         return result
 
+    def _build_opd_only_batch(
+        self,
+        *,
+        inputs: list[dict[str, Union[torch.Tensor, Any]]],
+        prompt_ids: torch.Tensor,
+        prompt_mask: torch.Tensor,
+        pixel_values: Any,
+        image_sizes: Any,
+        completion_ids: torch.Tensor,
+        completion_mask: torch.Tensor,
+        completions: list[str],
+        global_step: int,
+        mode: str,
+    ) -> dict[str, Union[torch.Tensor, Any]]:
+        """Build a rollout batch whose only optimization route is OPD."""
+        device = prompt_ids.device
+        batch_size = int(completion_ids.size(0))
+        opsd_indices = list(range(batch_size))
+        # Visual checker/refiner are reward / online-SFT tools.  OPD-only must
+        # not initialize them: doing so can invoke the teacher for a component
+        # whose output is intentionally excluded from the isolated loss, and
+        # used to leave its batch recorder unfinished.
+        teacher_tensors = build_teacher_prompt_batch(
+            self.processing_class,
+            inputs,
+            opsd_indices,
+            self.opsd_config.get("privileged_providers", ["text"]),
+            device,
+            opsd_config=self.opsd_config,
+            global_step=global_step,
+            output_dir=self.args.output_dir,
+            expanded_count=batch_size,
+            num_generations=self.num_generations,
+        )
+        teacher_tensors = expand_teacher_tensors_to_full_batch(
+            teacher_tensors,
+            opsd_indices,
+            batch_size,
+        )
+        result: dict[str, Union[torch.Tensor, Any]] = {
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "pixel_values": pixel_values,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "advantages": torch.zeros_like(completion_mask, dtype=torch.float32, device=device),
+            "old_per_token_logps": None,
+            "img_sizes": image_sizes,
+            "acc_rewards": torch.zeros(batch_size, dtype=torch.float32, device=device),
+            "opsd_mask": torch.ones(batch_size, dtype=torch.bool, device=device),
+            "group_mixed_rate": 0.0,
+        }
+        result.update(teacher_tensors)
+        self._metrics[mode].setdefault("routing/opd_only", []).append(1.0)
+        self._metrics[mode].setdefault("routing/opd_route_count", []).append(float(batch_size))
+        self._metrics[mode].setdefault("routing/grpo_route_count", []).append(0.0)
+        self._metrics[mode].setdefault("routing/sft_route_count", []).append(0.0)
+        opsd_debug.log(
+            "generate",
+            "built isolated OPD-only rollout batch",
+            global_step=global_step,
+            batch_size=batch_size,
+            completion_tokens=int(completion_mask.sum().item()),
+            teacher_prompt_rows=int(teacher_tensors["teacher_prompt_ids"].size(0)),
+        )
+        return result
+
     def _generate_and_score_completions(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
@@ -2562,9 +2634,11 @@ class DyMETrainer(Trainer):
 
         global_step_for_probe = getattr(self.state, "global_step", self._step)
         generate_call_index = self._generate_call_index
-        in_cold_start = self._in_sft_cold_start()
+        in_cold_start = (
+            False if self.training_stage == "opd_only" else self._in_sft_cold_start()
+        )
         self._log_training_phase(
-            "sft_cold_start" if in_cold_start else "rlsd",
+            "sft_cold_start" if in_cold_start else self.training_stage,
             global_step_for_probe,
         )
         if not in_cold_start:
@@ -2667,6 +2741,20 @@ class DyMETrainer(Trainer):
             completion_mask = completion_mask * (~truncated_completions).unsqueeze(1).int()
 
         completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+
+        if self.training_stage == "opd_only":
+            return self._build_opd_only_batch(
+                inputs=inputs,
+                prompt_ids=prompt_ids,
+                prompt_mask=prompt_mask,
+                pixel_values=pixel_values,
+                image_sizes=image_sizes,
+                completion_ids=completion_ids,
+                completion_mask=completion_mask,
+                completions=completions,
+                global_step=global_step_for_probe,
+                mode=mode,
+            )
 
         probe_stats = opsd_diagnostics.log_generate_probe(
             global_step=global_step_for_probe,
@@ -4246,6 +4334,8 @@ class DyMETrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         if return_outputs:
             raise ValueError("The GRPOTrainer does not support returning outputs")
+        if self.training_stage == "opd_only":
+            return self._compute_loss(model, inputs)
         if self.use_liger_loss:
             # Compute the loss using the liger grpo loss
             unwrapped_model = self.accelerator.unwrap_model(model)
@@ -4253,9 +4343,109 @@ class DyMETrainer(Trainer):
         else:
             return self._compute_loss(model, inputs)
 
+    def _compute_opd_only_loss(self, model, inputs):
+        """Compute an isolated OPD objective for the explicit opd_only stage.
+
+        This path intentionally never constructs a GRPO or SFT objective.  The
+        rollout builder marks every completion as an OPD sample and supplies a
+        teacher prompt for every row.  ``acc_gate`` is disabled here so reward
+        correctness cannot silently remove gradients from otherwise valid
+        student states.
+        """
+        prompt_ids = inputs["prompt_ids"]
+        prompt_mask = inputs["prompt_mask"]
+        completion_ids = inputs["completion_ids"]
+        completion_mask = inputs["completion_mask"]
+        pixel_values = inputs.get("pixel_values")
+        image_sizes = inputs.get("img_sizes")
+        opsd_mask = inputs.get("opsd_mask")
+        if opsd_mask is None:
+            opsd_mask = torch.ones(prompt_ids.size(0), dtype=torch.bool, device=prompt_ids.device)
+        opsd_indices = [i for i, flag in enumerate(opsd_mask.detach().bool().cpu().tolist()) if flag]
+        global_step = getattr(self.state, "global_step", self._step)
+        cfg = self.opsd_config.get("loss", {}) or {}
+        opsd_weight = float(cfg.get("opsd_weight", 1.0) or 0.0)
+        beta = float(cfg.get("beta", 0.5) or 0.5)
+        loss_type = str(cfg.get("loss_type", "jsd") or "jsd")
+        srkl_alpha = float(cfg.get("srkl_alpha", 0.1) or 0.1)
+        if self.teacher_model is None:
+            raise RuntimeError("opd_only requires a loaded frozen teacher model")
+
+        if float(cfg.get("grpo_weight", 0.0) or 0.0) != 0.0:
+            raise RuntimeError("opd_only invariant violated: grpo_weight must be zero")
+        if float(cfg.get("sft_weight", 0.0) or 0.0) != 0.0:
+            raise RuntimeError("opd_only invariant violated: sft_weight must be zero")
+        if cfg.get("acc_gate") is not False:
+            raise RuntimeError("opd_only invariant violated: acc_gate must be false")
+
+        # One student forward provides logits with gradient for OPD.  The
+        # selective log-probability result is deliberately ignored.
+        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+        _, student_completion_logits = self._get_per_token_logps(
+            model,
+            input_ids,
+            attention_mask,
+            pixel_values,
+            image_sizes,
+            completion_ids.size(1),
+            return_completion_logits=True,
+        )
+        if not opsd_indices:
+            loss = student_completion_logits.sum() * 0.0
+        else:
+            loss = compute_vlm_opsd_loss_masked_batch(
+                model,
+                opsd_indices,
+                list(range(prompt_ids.size(0))),
+                inputs,
+                beta=beta,
+                processor=self.processing_class,
+                teacher_model=self.teacher_model,
+                acc_gate=False,
+                global_step=global_step,
+                tokenizer=self.processing_class.tokenizer,
+                student_completion_logits=student_completion_logits,
+                loss_type=loss_type,
+                srkl_alpha=srkl_alpha,
+            )
+            loss = loss * opsd_weight
+
+        if opsd_indices and opsd_debug.should_log_detail(global_step):
+            # The cache is also useful for SRKL: it records aligned logits
+            # already produced by the OPD forward and never launches another
+            # student/teacher pass.
+            opsd_diagnostics.log_opsd_jsd_diagnostics(global_step=global_step)
+
+        mode = "train" if self.model.training else "eval"
+        self._metrics[mode].setdefault("loss/opsd", []).append(float(loss.detach().item()))
+        self._metrics[mode].setdefault("loss/grpo", []).append(0.0)
+        self._metrics[mode].setdefault("loss/sft", []).append(0.0)
+        self._metrics[mode].setdefault("loss/teacher_traj_fkl", []).append(0.0)
+        self._metrics[mode].setdefault("loss/teacher_traj_effective_weight", []).append(0.0)
+        self._metrics[mode].setdefault("routing/opd_only", []).append(1.0)
+        self._metrics[mode].setdefault("routing/opd_route_count", []).append(float(len(opsd_indices)))
+        self._metrics[mode].setdefault("routing/grpo_route_count", []).append(0.0)
+        self._metrics[mode].setdefault("routing/sft_route_count", []).append(0.0)
+        if self._health_monitor is not None:
+            self._health_monitor.record_loss(
+                global_step,
+                {
+                    "training_stage": "opd_only",
+                    "combined_loss_scalar": float(loss.detach().item()),
+                    "grpo_loss_scalar": 0.0,
+                    "grpo_zero_loss_rate": 1.0,
+                    "advantages_abs_mean": 0.0,
+                    "opsd_loss_scalar": float(loss.detach().item()),
+                },
+            )
+        return loss
+
     def _compute_loss(self, model, inputs):
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
+        if self.training_stage == "opd_only":
+            return self._compute_opd_only_loss(model, inputs)
         pixel_values = inputs["pixel_values"]
         image_sizes = inputs["img_sizes"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)

@@ -37,7 +37,7 @@
 ### Task 3: Config and Variant
 
 **Files:**
-- Modify: `config/config_opd_7b_dyme_probe.py`
+- Modify: `config/config_opd_7b_dyme_probe.yaml`
 - Modify: `scripts/test/run_pcd_no_visual.sh`
 - Modify: `tests/test_config_antidegen.py`
 - Modify: `tests/test_pcd_no_visual_runner.py`

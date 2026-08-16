@@ -21,7 +21,9 @@ from datasets import Dataset, load_dataset
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers import AutoProcessor, AutoModelForCausalLM
 from trl import GRPOConfig
-from config.config_llm import CONFIG  
+from config.loader import load_config
+
+CONFIG = load_config("llm")
 from data_utils.commom_util import collate_fn, define_task_data_func, collate_fn_woI
 from trainer.DyMETrainer_llm import DyMETrainer
 from reward_utils.checker import RewardCalculator, RewardCalculatorLocal
@@ -118,14 +120,11 @@ def main():
     parser = argparse.ArgumentParser(description="Train a model using GRPO with LoRA.")
 
     parser.add_argument(
-        '--config', type=str, default='norm',
-        help="config file to use: 'norm' or 'llavacot'..."
+        '--config', type=str, default='llm',
+        help="YAML config path or alias (default: llm)."
     )
     args = parser.parse_args()
-    config_select = args.config
-
-    if config_select == 'norm':
-        from config_llm import CONFIG
+    CONFIG = load_config(args.config)
 
     # 1. Load Configurations
     model_config = CONFIG['model']

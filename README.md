@@ -42,17 +42,21 @@ DyME/
 
 ## Configuration
 
-Before launching training, please prepare the relevant configuration files. The main settings are managed through configuration files such as `config/config.py` and `default_config.yaml`.
+Before launching training, please prepare the relevant configuration files. The main settings are managed through configuration files such as `config/config.yaml` and `default_config.yaml`.
 
-### `CLIENT_CONFIG`
+### YAML 配置
+
+训练配置只从完整 YAML 读取（`model`、`training`、`rl`、`opsd`、`client`、`dataset`、`checkpoint_eval`、`launch`、`deplot`）。不再支持 Python config、配置 import/merge 或训练参数的环境变量覆盖；`config/loader.py` 会拒绝这些输入。`LOCAL_RANK`、`RANK`、`CUDA_VISIBLE_DEVICES` 等分布式运行时变量仍由启动器管理。
+
+### `client`
 
 This configuration is required when **Visual Supervision** is enabled. It specifies the online large-model API used by the visual checker and visual refiner.
 
-### `TRAINING_CONFIG`
+### `training`
 
 This section contains standard training hyperparameters for both the memorization phase and the exploration phase, including optimizer settings, batch size, learning rate, and related options.
 
-### `RL_CONFIG`
+### `rl`
 
 This section defines critical variables for reward computation and response parsing during RLVR training. In particular, the following delimiters must be properly specified:
 
@@ -61,15 +65,15 @@ This section defines critical variables for reward computation and response pars
 
 These delimiters are essential for stable parsing, reward assignment, and evaluation consistency.
 
-### `DYME_OPSD_CONFIG` (OPSD / TriMode)
+### `opsd` (OPSD / TriMode)
 
-`config/config.py` defines `DYME_OPSD_CONFIG`, merged into `CONFIG["opsd"]`. When `enabled=False` (default), training follows the original DyME behavior. Set `enabled=True` or pass CLI flags to activate privileged-context **Self-OPSD** inside `DyMETrainer`.
+`config/config.yaml` explicitly defines `opsd`. When `enabled=false` (default), training follows original DyME behavior. Enable it in the selected YAML (or use a documented CLI switch) to activate privileged-context **Self-OPSD** inside `DyMETrainer`.
 
 | Field | Description |
 | --- | --- |
 | `enabled` | Master switch. `False` → original DyME only. |
 | `mode` | Routing mode (see table below). |
-| `privileged_profile` | Teacher preset: `text` \| `visual` \| `hybrid` (default **`hybrid`** in `config_trimode.py`). |
+| `privileged_profile` | Teacher preset: `text` \| `visual` \| `hybrid` (explicitly set in every YAML). |
 | `privileged_providers` | Override provider list; default derived from profile. |
 | `privileged_image` | Teacher image layout: `mode` `single` (ChartQA default) or `dual` (full + crop); plus `crop_strategy`, `bbox_coord`, `margin_ratio`. |
 | `privileged_debug` | Periodic artifact logging: `save_images`, `image_subdir` (`logs/images`), `max_samples_per_detail`. |
@@ -84,7 +88,7 @@ These delimiters are essential for stable parsing, reward assignment, and evalua
 | --- | --- |
 | `dyme` | Original DyME: any correct rollout → GRPO; all wrong → SFT. |
 | `trimode` | Any correct → OPSD (replaces GRPO); all wrong → SFT (DyME cold-start via `sft_check`, ignores recoverable). |
-| `opsd_only` | All prompts use OPSD. |
+| `opd_only` | Isolated post-SFT OPD stage: all rollout completions use OPD; no reward routing, GRPO, SFT, teacher trajectory, checker, or refiner loss. |
 | `replace_sft` | Any correct → GRPO; all wrong → OPSD (no SFT). |
 | `opsd_on_wrong` | Any correct → GRPO; all wrong + recoverable → OPSD; all wrong + not recoverable → SFT (legacy three-way routing). |
 | `grpo_opsd_joint` | Any correct → GRPO (+ optional joint OPSD loss); all wrong + recoverable → OPSD; else SFT. |
@@ -110,8 +114,10 @@ Student `collate_fn` never reads privileged fields. With `privileged_image.mode=
 
 **Debug / artifact logging**
 
-* Verbose OPSD logs: `--opsd_debug` or `DYME_OPSD_DEBUG=1`.
-* Full diagnostic bundle every N steps: `--opsd_detail_every N` or `DYME_OPSD_DETAIL_EVERY`.
+* Verbose OPSD logs: set `opsd.debug.verbose: true` in the YAML or pass
+  `--opsd_debug`.
+* Full diagnostic bundle every N steps: set `opsd.debug.detail_every` in the
+  YAML or pass `--opsd_detail_every N`.
 * On detail steps, teacher privileged images are saved under `{output_dir}/logs/images/` as `step_XXXXXX_idx_Y_full.png`, `_crop.png`, and `_meta.json` (controlled by `privileged_debug.max_samples_per_detail`).
 
 **ChartQA visual-facts preprocessing (run on server before TriMode training)**
@@ -136,8 +142,9 @@ python scripts/build_visual_facts_chartqa_deplot.py \
   --batch-size 8 \
   --cache data/chartqa/deplot_cache.json
 
-# Fast placeholder-only mode (no GPU / CI): add --no-enabled
-# DYME_DEPLOT_ENABLED=0 bash scripts/train_local_gpus.sh
+# Fast placeholder-only mode (no GPU / CI): pass --no-enabled to the
+# preprocessing command above.  Training recipes select their DePlot setting
+# through their explicit `deplot.enabled` field.
 
 # quick sanity check (expect non-zero lengths)
 python -c "
@@ -150,7 +157,7 @@ print('ok', len(d), 'records; sample visual_fact_hint len', len(s['visual_fact_h
 "
 ```
 
-`config/config.py` points `train_dataset` at `data/chartqa/train_medium_vf_full.json`. Generated `*_vf_*.json` files are gitignored — **generate them on each server** (or copy from shared storage); do not rely on cloning them from GitHub.
+`config/config.yaml` points `train_dataset` at `data/chartqa/train_medium_vf_full.json`. Generated `*_vf_*.json` files are gitignored — **generate them on each server** (or copy from shared storage); do not rely on cloning them from GitHub.
 
 `scripts/train_local_gpus.sh` will auto-run the two Python steps above if `train_medium_vf_full.json` is missing.
 
@@ -168,8 +175,8 @@ python main.py --config trimode --opsd_privilege_profile hybrid --opsd_detail_ev
 ```
 
 The strict OPD image-checker recipe validates its configured precomputed
-dataset before launching Accelerate.  Run it directly; no
-`DYME_DEPLOT_ENABLED`, `DYME_CHARTQA_VF_FULL`, or expected-sample exports are
+dataset before launching Accelerate. Its YAML already contains the complete
+DePlot path and expected-sample contract; no launch-time recipe overrides are
 required:
 
 ```bash
@@ -391,7 +398,9 @@ A small subset of demo images for verifying the data loading pipeline may be pro
 
 ## Training
 
-All training scripts are launched using `accelerate`. Pass `--config` as a **Python config file path** (recommended) or a shorthand alias (`norm`, `trimode`, `llavacot`, `low`, `aok`).
+All training scripts are launched using `accelerate`. Pass `--config` as a complete
+**YAML configuration** path (recommended) or a shorthand alias (`norm`, `trimode`,
+`llavacot`, `low`, `aok`). Python configuration files are rejected.
 
 **Important:** `num_processes` must match the number of visible GPUs on your node. Helper scripts auto-detect GPU count and use **native PyTorch DDP** (`default_config.yaml`, `distributed_type: MULTI_GPU`) — **DeepSpeed is not required** for 0.5B multi-GPU training.
 
@@ -417,7 +426,7 @@ Refs: [Transformers DeepSpeed](https://huggingface.co/docs/transformers/deepspee
 bash scripts/train_rlsd_chartqa.sh
 
 # Explicit DDP config
-accelerate launch --config_file default_config.yaml --num_processes 4 main.py --config config/config.py --mode rl
+accelerate launch --config_file default_config.yaml --num_processes 4 main.py --config config/config.yaml --mode rl
 
 # Optional ZeRO-0 (requires deepspeed, no sharding)
 ACCELERATE_CONFIG=default_config_deepspeed.yaml bash scripts/train_rlsd_chartqa.sh
@@ -432,35 +441,28 @@ For TriMode on **all visible local GPUs** (auto-detect via `CUDA_VISIBLE_DEVICES
 #    "ChartQA visual-facts preprocessing" above. train_local_gpus.sh also auto-runs
 #    this if train_medium_vf_full.json is absent.
 
-# 2) Start training (default: OPSD verbose off, detail every 50 steps, probe on)
+# 2) Start training (all recipe values are in YAML)
 bash scripts/train_local_gpus.sh
 
-# Optional: full verbose debug (large logs)
-# DYME_OPSD_DEBUG=1 DYME_OPSD_DETAIL_EVERY=10 bash scripts/train_local_gpus.sh
-
-# Roll back to original trimode config (pre-antidegen hyperparameters)
-# DYME_CONFIG=config/config_trimode.py bash scripts/train_local_gpus.sh
+# To use the pre-antidegeneration recipe, invoke it explicitly:
+# accelerate launch --config_file default_config.yaml --num_processes 4 main.py \
+#   --config config/config_trimode.yaml --mode rl
 ```
 
 ### Anti-degeneration config (`config_trimode_antidegen`)
 
-`scripts/train_local_gpus.sh` defaults to **`config/config_trimode_antidegen.py`** (alias `trimode_antidegen`). Overrides are based on offline analysis of `train_trimode_4gpu_20260610_173637.log` (1225 steps):
+`scripts/train_local_gpus.sh` defaults to **`config/config_trimode_antidegen.yaml`** (alias `trimode_antidegen`). Overrides are based on offline analysis of `train_trimode_4gpu_20260610_173637.log` (1225 steps):
 
 | Issue | Baseline log evidence | Antidegen change |
 |-------|----------------------|------------------|
 | Logit collapse | `LOGIT_MODE_COLLAPSE` 212×; step 1 clip 0→1.0; step 1175 clip≈0.92 | `max_completion_length=150`, `temperature=0.7`, `repetition_penalty=1.25` |
 | Step-1 gradient shock | `GEN_CLIP_COLLAPSE` from step 1; `OPT_GRAD_SPIKE` 44× | `learning_rate=5e-5`, `warmup_steps=50` |
-| OPSD coverage low | `opsd_mask` mean 5.6%; 492/1226 zero-mask steps | `require_format_for_opsd=False` (env default `DYME_OPSD_REQUIRE_FORMAT=0`) |
+| OPSD coverage low | `opsd_mask` mean 5.6%; 492/1226 zero-mask steps | `opsd.gate.require_format_for_opsd: false` |
 | RL signal sparse | `RL_ZERO_SIGNAL` expected in trimode | `reward_weights=[0.5, 1.5, 1.0]` (format, context F1, acc) |
 | visual_fact empty | `visual_fact_empty_rate=0` throughout | no data change |
 
-Environment overrides:
-
-```bash
-export DYME_CONFIG=config/config_trimode_antidegen.py   # default in train_local_gpus.sh
-export DYME_OPSD_REQUIRE_FORMAT=0                       # antidegen default; set 1 to restore strict gate
-export DYME_REWARD_WEIGHTS=0.5,1.5,1.0                  # format, context, accuracy
-```
+To change this recipe, copy `config/config_trimode_antidegen.yaml`, edit the
+explicit YAML values, and pass the new path with `--config`.
 
 After a new run (~200+ steps), compare against the baseline log:
 
@@ -475,10 +477,10 @@ Success criteria (candidate vs baseline): step 1 `clip` &lt; 1.0; `LOGIT_MODE_CO
 
 ### 1. Training DyME (original)
 
-Default config keeps OPSD disabled (`DYME_OPSD_CONFIG.enabled=False`):
+Default config keeps OPSD disabled (`opsd.enabled: false`):
 
 ```bash
-accelerate launch main.py --config config/config.py --mode rl
+accelerate launch main.py --config config/config.yaml --mode rl
 ```
 
 ### OPSD debug logging + tee
@@ -486,12 +488,11 @@ accelerate launch main.py --config config/config.py --mode rl
 When debugging OPSD / TriMode (e.g. NCCL timeout), enable verbose logs and save stdout/stderr:
 
 ```bash
-export DYME_OPSD_DEBUG=1
 mkdir -p ./outputs/logs
 LOG_FILE=./outputs/logs/train_$(date +%Y%m%d_%H%M%S).log
 
 accelerate launch --config_file default_config.yaml --num_processes "$(nvidia-smi -L | wc -l)" main.py \
-  --config config/config_trimode.py \
+  --config config/config_trimode.yaml \
   --mode rl \
   --opsd_enabled \
   --opsd_debug \
@@ -508,7 +509,7 @@ You can also use the helper script (debug + tee enabled by default):
 bash scripts/train_trimode.sh
 ```
 
-Disable debug when not needed: `DYME_OPSD_DEBUG=0 bash scripts/train_trimode.sh`
+Set `opsd.debug.verbose: false` in the selected YAML when detailed debug logging is not needed.
 
 ### Periodic weak-signal diagnostics (`[OPSD-DETAIL]`)
 
@@ -520,27 +521,25 @@ Separate from per-step `[OPSD-DEBUG]` spam: every **N global steps** (default **
 - Loss: GRPO per-token logps, coef\_1, clip counts, weak-signal hints
 - OPSD JSD: per-token JSD, student/teacher top-1 agreement, max-JSD token
 
-Configure via config, CLI, or env:
+Configure via YAML or CLI:
 
 ```bash
-# default: every 10 steps (config_trimode.py)
-export DYME_OPSD_DETAIL_EVERY=10
-
-python main.py --config config/config_trimode.py --mode rl \
+# default: every 10 steps (config/config_trimode.yaml)
+python main.py --config config/config_trimode.yaml --mode rl \
   --opsd_enabled --opsd_detail_every 10
 
 # disable periodic detail
-export DYME_OPSD_DETAIL_EVERY=0
+python main.py --config config/config_trimode.yaml --mode rl --opsd_detail_every 0
 ```
 
 Search logs for `[OPSD-DETAIL]` (not `[OPSD-DEBUG]`).
 
-**Per-generate probe (`[OPSD-PROBE]`)** — enabled by default in `config_trimode.py`; fires on every `(re)generate` on rank 0 (no need to wait for step 10). Logs raw `completion_ids`, decode with/without special tokens, `eos_idx`, flags `ONE_TOKEN` / `EMPTY_DECODE` / `FIRST_IS_EOS`, and patterns `PAREN_THEN_EOS` / `REPEAT_LOOP`. Disable with `DYME_OPSD_PROBE_ON_GENERATE=0` or `--no_opsd_probe_on_generate`.
+**Per-generate probe (`[OPSD-PROBE]`)** — enabled by default in `config/config_trimode.yaml`; fires on every `(re)generate` on rank 0 (no need to wait for step 10). Logs raw `completion_ids`, decode with/without special tokens, `eos_idx`, flags `ONE_TOKEN` / `EMPTY_DECODE` / `FIRST_IS_EOS`, and patterns `PAREN_THEN_EOS` / `REPEAT_LOOP`. Disable in YAML or with `--no_opsd_probe_on_generate`.
 
 **Deep generate debug (`[OPSD-GENDBG]`)** — runs alongside `[OPSD-PROBE]` when probe is enabled. Before each `model.generate`, logs model training context, prompt tail tokens/decode, and first-token logits (`p_eos`, `p_token_340`, `entropy`, `top5`) via **per-sample** forward (up to `probe_sample_count`, default 4) to avoid OOM on large VLM batches. After generate, logs greedy-vs-actual first token, delta vs previous regenerate, and cross-rank summary.
 
 ```bash
-export DYME_OPSD_PROBE_ON_GENERATE=1   # default in config_trimode
+python main.py --config config/config_trimode.yaml --opsd_probe_on_generate
 grep -E '\[OPSD-(PROBE|GENDBG)\]' train.log
 ```
 
@@ -552,21 +551,17 @@ grep -E '\[OPSD-(PROBE|GENDBG)\]' train.log
 | Large `one_token_count` gap across ranks in `cross_rank` | Data sharding / batch composition |
 | `delta_one_token_count` spikes at `generate_call_index>=2` | Weight drift after optimizer step |
 
-Optional env overrides:
-
-```bash
-export DYME_OPSD_PROBE_FIRST_TOKEN_LOGITS=0   # skip extra forward before generate
-export DYME_OPSD_PROBE_PROMPT_TAIL_TOKENS=24
-export DYME_OPSD_PROBE_LOG_MODEL_CONTEXT=0
-```
+For a persistent probe change, copy the selected YAML and edit
+`opsd.debug.probe_first_token_logits`, `probe_prompt_tail_tokens`, or
+`probe_log_model_context` explicitly.
 
 ### 2. Training TriMode (DyME + OPSD)
 
-Use `config/config_trimode.py` (OPSD pre-enabled) or override on the base config via CLI:
+Use `config/config_trimode.yaml` (OPSD pre-enabled) or override on the base config via CLI:
 
 ```bash
 accelerate launch main.py \
-  --config config/config_trimode.py \
+  --config config/config_trimode.yaml \
   --mode rl \
   --opsd_enabled \
   --opsd_mode trimode \
@@ -576,7 +571,7 @@ accelerate launch main.py \
 Equivalent one-liner with base config + CLI only:
 
 ```bash
-accelerate launch main.py --config config/config.py --mode rl \
+accelerate launch main.py --config config/config.yaml --mode rl \
   --opsd_enabled --opsd_mode trimode --opsd_providers text,visual_facts
 ```
 
@@ -585,7 +580,7 @@ accelerate launch main.py --config config/config.py --mode rl \
 | Flag | Description |
 | --- | --- |
 | `--opsd_enabled` | Enable OPSD / TriMode extensions. |
-| `--opsd_debug` | Verbose OPSD chain logs (`[OPSD-DEBUG]`, or env `DYME_OPSD_DEBUG=1`). |
+| `--opsd_debug` | Verbose OPSD chain logs (`[OPSD-DEBUG]`). |
 | `--opsd_detail_every N` | Full weak-signal bundle every N steps (`[OPSD-DETAIL]`, default 10; `0` = off). |
 | `--opsd_probe_on_generate` / `--no_opsd_probe_on_generate` | Per-generate `[OPSD-PROBE]` on rank 0 (trimode default on). |
 | `--opsd_mode MODE` | Routing mode: `trimode` (legacy), `rlsd` (anti-leakage), `copsd_opd`, `dyme`, `opsd_only`, `replace_sft`, … |
@@ -603,41 +598,40 @@ accelerate launch main.py --config config/config.py --mode rl \
 
 **Anti-collapse knobs (ChartQA RLSD / OPD):**
 
-| Env / config | Purpose |
+| YAML field | Purpose |
 | --- | --- |
-| `DYME_MAX_COMPLETION_LENGTH`, `DYME_TEMPERATURE`, `DYME_REPETITION_PENALTY` | Antidegen decoding (RLSD defaults: 128 / 0.6 / 1.35) |
-| `DYME_FORMAT_MIN_THINKING` | Minimum chars before `Answer:` for format reward (default 8) |
-| `DYME_OPSD_SKIP_DEGENERATE=0` | Never skip OPSD on degenerate completions |
-| `DYME_OPSD_DEGEN_WARMUP_STEPS` | Before this step, degenerate samples still run OPSD (default 200) |
-| `DYME_SFT_WARMUP_SLOTS` | During warmup, inject GT into first N gens per all-wrong group (default 2) |
+| `training.dyme_args.max_completion_length`, `temperature`, `repetition_penalty` | Antidegen decoding (RLSD defaults: 128 / 0.6 / 1.35) |
+| `opsd.gate.require_format_for_opsd` | Whether formatting gates OPD selection |
+| `opsd.gate.skip_degenerate_for_opsd` | Whether degenerate completions skip OPD |
+| `opsd.gate.degen_skip_warmup_steps` | Degenerate samples still run OPD before this step |
+| `opsd.gate.sft_warmup_slots_per_group` | GT injection slots per all-wrong group during warmup |
 
-**OPD config trap:** `config/config_opd_7b_chartqa.py` must inherit `CONFIG["training"]["dyme_args"]` from `config_rlsd_chartqa` (not stale `TRAINING_CONFIG["dyme_args"]` from antidegen). If logs show `max_new_tokens=150, temperature=0.7`, you are on the wrong decode path — stop and `git pull`.
+**OPD recipe check:** `config/config_opd_7b_chartqa.yaml` is fully expanded. If logs show `max_new_tokens=150, temperature=0.7`, you selected the anti-degeneration recipe instead of the intended OPD YAML.
 
 **Stop-training heuristics:** If after ~200 steps you see `degenerate_rate≈1`, `opsd_mask_true=0`, `grad_norm=0`, and `format_mean≈1` with `accuracy=0`, the run is collapsed — restart from base 0.5B or an early checkpoint.
 
 ```bash
 bash scripts/train_rlsd_chartqa.sh
-# or: --config config/config_rlsd_chartqa.py --opsd_mode rlsd --opsd_providers format_only
+# or: --config config/config_rlsd_chartqa.yaml --opsd_mode rlsd --opsd_providers format_only
 ```
 
 **Two-stage cold start (optional offline SFT → RLSD/OPD):**
 
-```bash
-export DYME_STUDENT_MODEL=models/llava-0.5b-ov
-export DYME_TEACHER_MODEL=models/llava-7b-ov
-bash scripts/train_opd_7b_chartqa_deepspeed.sh
-```
+Run offline SFT, then copy `config/config_opd_only_7b_chartqa.yaml`, set
+`model.pretrained_model_path` to the SFT `final_checkpoint`, select a fresh
+`training.dyme_args.output_dir`, and launch that YAML.  The OPD-only recipe
+does not read a student or teacher path from the environment.
 
 **Cross-model OPD (7B frozen teacher + 0.5B student):**
 
 ```bash
 # Default: teacher on each rank's GPU (cuda:LOCAL_RANK). 2-GPU: student+teacher share the same card per rank.
-# Optional dedicated teacher GPU: export DYME_TEACHER_DEVICE_MAP=cuda:1
-# Vocab alignment debug at startup: DYME_VOCAB_ALIGN_FULL=1 (exhaustive) or DYME_VOCAB_ALIGN_STRIDE=500
+# Choose `model.teacher_device_map` directly in the selected YAML.
+# Vocab-alignment diagnostics are controlled by `opsd.debug` in the YAML.
 bash scripts/train_opd_7b_chartqa.sh
 ```
 
-Note: `main.py --mode rl --config config/config.py` uses **`dyme_args`** (not the unused `grpo_args` block in the same file). Pure GRPO baselines use `main_rebuttal.py`.
+Note: `main.py --mode rl --config config/config.yaml` uses **`dyme_args`** (not the unused `grpo_args` block in the same file). Pure GRPO baselines use `main_rebuttal.py`.
 
 **Helper scripts** (under `scripts/`):
 
@@ -648,8 +642,9 @@ bash scripts/train_trimode.sh
 # Anti-leakage RLSD (recommended)
 bash scripts/train_rlsd_chartqa.sh
 
-# Ablation matrix: MODE=dyme|trimode|replace_sft|opsd_only|...
-MODE=trimode DYME_OPSD_PROVIDERS=text,visual_facts bash scripts/train_baselines.sh
+# Choose an ablation by copying a complete YAML and explicitly setting
+# its `opsd` fields. `scripts/train_baselines.sh` is retired because it used
+# environment variables to mutate recipes.
 
 # Post-training eval (set CHECKPOINT_DIR)
 CHECKPOINT_DIR=./outputs/trimode-chartqa/final_checkpoint bash scripts/run_eval_ablation.sh
@@ -663,15 +658,16 @@ To reproduce baseline settings such as standard SFT or RL training, use **`main_
 
 ```bash
 bash scripts/train_chartqa_sft.sh
-# or: accelerate launch main_sft.py --config config/config_rlsd_chartqa.py
+# or: accelerate launch main_sft.py --config config/config_rlsd_chartqa.yaml
 ```
 
-Then point RLSD/OPD at the SFT checkpoint via `DYME_STUDENT_MODEL` or `MODEL_CONFIG.pretrained_model_path`.
+Then point the OPD-only YAML's `model.pretrained_model_path` at the SFT
+checkpoint and select a new OPD `training.dyme_args.output_dir`.
 
 #### Reinforcement Learning (GRPO / RL)
 
 ```bash
-accelerate launch main.py --config config/config.py --mode rl
+accelerate launch main.py --config config/config.yaml --mode rl
 ```
 
 (`main_rebuttal.py` is referenced in the original DyME paper repo but is not shipped here; use `main_sft.py` + `main.py` instead.)
@@ -684,26 +680,14 @@ For specific experimental settings such as different model scales or architectur
 * `main_llm.py`: LLM-specific variants
 * `main_change.py`: additional ablation settings
 
-### 5. Ablation
+### 5. Historical campaign runners
 
 ```bash
-bash scripts/test/run_opd_deplot_ablation.sh --run --run-id deplot_4epoch_main
-bash scripts/test/run_opd_deplot_ablation.sh --run --run-id deplot_4epoch_va_pcd --variants deplot_no_vs_opd_va,deplot_no_vs_opd_pcd,deplot_no_vs_opd_va_pcd
+The prior PCD/DePlot campaign shells used `DYME_*` environment-variable
+overrides and are retained only as historical records. They are not valid
+training entry points under the YAML-only system. Create a complete YAML for
+each experiment and invoke `main.py --config <recipe.yaml>` instead.
 ```
-
-No-visual PCD staged run:
-
-```bash
-# First run 4 epochs.
-bash scripts/test/run_pcd_no_visual_4epoch.sh
-
-# If the 4-epoch result looks good, continue the same run to a 10-epoch target.
-# This resumes from the latest checkpoint-* in the same output dir and keeps
-# epoch checkpoints from the full run.
-bash scripts/test/run_pcd_no_visual_10epoch.sh
-```
-
-Use `DYME_PCD_RUN_ID=<id>` to isolate a new staged run.
 
 ### 6. PCD-OPD Paper Artifacts
 

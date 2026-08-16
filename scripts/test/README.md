@@ -8,11 +8,11 @@
 
 | Baseline | 脚本 | 配置 | 入口 | 说明 |
 |----------|------|------|------|------|
-| **纯 SFT** | `train_sft.sh` | `config/config_rlsd_chartqa.py` | `main_sft.py` | 离线监督微调，全量数据，4 epoch |
-| **DyME** | `train_dyme.sh` | `config/config_dyme_deepspeed.py` | `main.py --mode rl` | 纯 GRPO，无 OPSD，4 epoch，**DeepSpeed ZeRO-2** |
-| **OPD** | `train_opd.sh` | `config/config_opd_7b_chartqa_deepspeed.py` | `main.py --mode rl --opsd_enabled` | 7B teacher + 0.5B student，DeepSpeed，4 epoch，**teacher-probe OPD**（无冷启动、无 Visual Supervision） |
+| **纯 SFT** | `train_sft.sh` | `config/config_rlsd_chartqa.yaml` | `main_sft.py` | 离线监督微调，全量数据，4 epoch |
+| **DyME** | `train_dyme.sh` | `config/config.yaml` | `main.py --mode rl` | 纯 GRPO，无 OPSD，10 epoch，使用显式 YAML |
+| **OPD** | `train_opd.sh` | `config/config_opd_7b_deepspeed.yaml` | `main.py --mode rl --opsd_enabled` | 7B teacher + 0.5B student，DeepSpeed，4 epoch，**teacher-probe OPD**（无冷启动、无 Visual Supervision） |
 
-三条 baseline 默认从同一 base 0.5B 出发。OPD **不依赖**先跑离线 SFT。
+三条 baseline 默认从同一 base 0.5B 出发。OPD **不依赖**先跑离线 SFT。训练配置均为 `config/` 下的完整 YAML；本目录不再维护 Python wrapper 或环境变量覆盖。
 
 ### OPD 路由（快速 baseline）
 
@@ -55,46 +55,25 @@ bash scripts/test/run_all_baselines.sh
 
 日志：`outputs/test-fast/logs/`
 
-快速 OPD 默认关闭 Visual Supervision。开启时在 `scripts/test/config/config_opd_7b_chartqa_deepspeed.py` 设 `enable_visual_supervision=True`，产物见 `outputs/test-fast/opd-7b-ds/visual_supervision/step_*/`。
+快速 OPD 默认关闭 Visual Supervision；需使用 `config/config_opd_7b_dyme_probe_image_checker.yaml` 的完整视觉监督变体。产物位于对应 output_dir 的 `visual_supervision/step_*/`。
 
 ### 可选：SFT 后再跑 OPD
 
-```bash
-export DYME_STUDENT_MODEL=outputs/test-fast/sft/final_checkpoint
-bash scripts/test/train_opd.sh
-```
+将 SFT 的 `final_checkpoint` 明确写入 `config/config_opd_only_7b_chartqa.yaml` 的 `model.pretrained_model_path`，再启动 OPD-only YAML。不要使用环境变量覆盖模型路径。
 
 ### 调参示例
 
-```bash
-# 更短：1 epoch
-DYME_FAST_NUM_TRAIN_EPOCHS=1 DYME_FAST_SFT_EPOCHS=1 bash scripts/test/train_dyme.sh
-
-# 更长：6 epoch
-DYME_FAST_NUM_TRAIN_EPOCHS=6 bash scripts/test/run_all_baselines.sh
-
-# DyME / OPD 仍 OOM 时进一步缩 batch 或生成长度
-DYME_PER_DEVICE_BATCH=1 DYME_NUM_GENERATIONS=4 DYME_MAX_COMPLETION_LENGTH=96 bash scripts/test/train_dyme.sh
-
-# OPD 内存紧张时换 ZeRO-2（DyME 默认已是 ZeRO-2）
-ACCELERATE_CONFIG=default_config_zero2_8gpu.yaml bash scripts/test/train_opd.sh
-
-# 使用 DDP 版 OPD 配置
-DYME_CONFIG=scripts/test/config/config_opd_7b_chartqa.py \
-  ACCELERATE_CONFIG=default_config.yaml \
-  bash scripts/test/train_opd.sh
-```
+复制一份完整 YAML 后再调整 epoch、batch 或生成长度；使用 `--config` 显式传入。`ACCELERATE_CONFIG` 仅属于分布式启动器基础设施，不覆盖训练配方。
 
 ## 目录结构
 
 ```
+config/
+  config.yaml                    # DyME
+  config_rlsd_chartqa.yaml       # SFT
+  config_opd_7b_chartqa.yaml     # OPD (DDP)
+  config_opd_7b_deepspeed.yaml   # OPD (DeepSpeed)
 scripts/test/
-  config/
-    fast_profile.py              # 统一常量与 override 逻辑
-    config.py                    # DyME
-    config_rlsd_chartqa.py       # SFT
-    config_opd_7b_chartqa.py     # OPD (DDP)
-    config_opd_7b_chartqa_deepspeed.py  # OPD (DeepSpeed, 默认)
   launch_utils.sh
   train_sft.sh
   train_dyme.sh
@@ -107,9 +86,9 @@ scripts/test/
 
 | 全量 | scripts/test/ 快速版 |
 |------|---------------------|
-| `config/config.py` (10 epoch) | `scripts/test/config/config.py` (4 epoch) |
-| `config/config_rlsd_chartqa.py` (SFT 2 epoch) | `scripts/test/config/config_rlsd_chartqa.py` (4 epoch) |
-| `config/config_opd_7b_chartqa_deepspeed.py` (10 epoch) | `scripts/test/config/config_opd_7b_chartqa_deepspeed.py` (4 epoch) |
+| `config/config.yaml` | `config/config.yaml` |
+| `config/config_rlsd_chartqa.yaml` | `config/config_rlsd_chartqa.yaml` |
+| `config/config_opd_7b_deepspeed.yaml` | `config/config_opd_7b_deepspeed.yaml` |
 | `scripts/train_chartqa_sft.sh` | `scripts/test/train_sft.sh` |
 | `scripts/train_baselines.sh MODE=dyme` | `scripts/test/train_dyme.sh` |
 | `scripts/train_opd_7b_chartqa_deepspeed.sh` | `scripts/test/train_opd.sh` |

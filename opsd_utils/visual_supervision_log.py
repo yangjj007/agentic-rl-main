@@ -11,36 +11,31 @@ from opsd_utils import debug_log as opsd_debug
 
 
 def _enabled(cfg: Optional[dict]) -> bool:
-    if cfg is not None and cfg.get("enabled") is False:
-        return False
-    import os as _os
-    raw = _os.environ.get("DYME_VISUAL_LOG", "").strip().lower()
-    if raw in ("0", "false", "no", "off"):
-        return False
-    return True
+    """Return the explicit YAML logging setting.
+
+    Visual-supervision logging is part of the training recipe.  It must not be
+    changed by a process environment variable, otherwise the resolved YAML
+    snapshot no longer describes the run that produced its artifacts.
+    """
+    return bool((cfg or {}).get("enabled", True))
 
 
 def _sample_count(cfg: Optional[dict]) -> int:
     if cfg and cfg.get("sample_count") is not None:
         return int(cfg["sample_count"])
-    import os as _os
-    raw = _os.environ.get("DYME_VISUAL_LOG_SAMPLES", "").strip()
-    return int(raw) if raw.isdigit() else 3
+    return 3
 
 
 def _preview_chars(cfg: Optional[dict]) -> int:
     if cfg and cfg.get("preview_chars") is not None:
         return int(cfg["preview_chars"])
-    import os as _os
-    raw = _os.environ.get("DYME_VISUAL_LOG_PREVIEW_CHARS", "").strip()
-    return int(raw) if raw.isdigit() else 400
+    return 400
 
 
 def _save_artifacts(cfg: Optional[dict]) -> bool:
     if cfg is not None and "save_artifacts" in cfg:
         return bool(cfg["save_artifacts"])
-    import os as _os
-    return _os.environ.get("DYME_VISUAL_SAVE_ARTIFACTS", "1").strip().lower() not in ("0", "false", "no")
+    return True
 
 
 def _prefix(tag: str) -> str:

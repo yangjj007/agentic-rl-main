@@ -146,16 +146,41 @@ run_train_with_log() {
   return 0
 }
 
-# Build data/chartqa/train_medium_vf_full.json when missing (gitignored on GitHub).
-# F1: hint → visual_fact_hint; F2: DePlot or placeholder (--no-enabled when DYME_DEPLOT_ENABLED=0).
+# Build the ChartQA visual-fact dataset selected by a YAML recipe when missing.
+# F1: hint → visual_fact_hint; F2: DePlot, controlled solely by the recipe's
+# explicit ``deplot`` section.  This helper deliberately has no DYME_* input:
+# launch-time environment variables must not change a training recipe.
 ensure_chartqa_vf_full() {
-  local chartqa_raw="${DYME_CHARTQA_RAW:-data/chartqa/train_medium.json}"
-  local chartqa_vf_full="${DYME_CHARTQA_VF_FULL:-data/chartqa/train_medium_vf_full.json}"
-  local chartqa_vf_hint="${DYME_CHARTQA_VF_HINT:-data/chartqa/train_medium_vf_hint.json}"
-  local deplot_enabled="${DYME_DEPLOT_ENABLED:-1}"
-  local deplot_batch="${DYME_DEPLOT_BATCH_SIZE:-8}"
-  local deplot_tokens="${DYME_DEPLOT_MAX_NEW_TOKENS:-384}"
-  local deplot_cache="${DYME_DEPLOT_CACHE:-data/chartqa/deplot_cache.json}"
+  local cfg="$1"
+  local -a yaml_fields=()
+  mapfile -t yaml_fields < <("${PYTHON_BIN}" - "${cfg}" <<'PY'
+import sys
+from config.loader import load_config
+
+cfg = load_config(sys.argv[1])
+dataset = cfg["dataset"]
+deplot = cfg["deplot"]
+print(dataset["train_dataset"])
+print(1 if deplot["enabled"] else 0)
+print(deplot["batch_size"])
+print(deplot["max_new_tokens"])
+print(deplot["cache_path"] or "")
+PY
+  )
+  if [[ "${#yaml_fields[@]}" -ne 5 ]]; then
+    echo "Could not read ChartQA preprocessing settings from YAML: ${cfg}" >&2
+    return 2
+  fi
+
+  local chartqa_vf_full="${yaml_fields[0]}"
+  local deplot_enabled="${yaml_fields[1]}"
+  local deplot_batch="${yaml_fields[2]}"
+  local deplot_tokens="${yaml_fields[3]}"
+  local deplot_cache="${yaml_fields[4]}"
+  local chartqa_dir
+  chartqa_dir="$(dirname "${chartqa_vf_full}")"
+  local chartqa_raw="${chartqa_dir}/train_medium.json"
+  local chartqa_vf_hint="${chartqa_dir}/train_medium_vf_hint.json"
 
   if [[ -f "${chartqa_vf_full}" ]]; then
     echo "ChartQA dataset ready: ${chartqa_vf_full}"
@@ -178,7 +203,7 @@ ensure_chartqa_vf_full() {
   case "${deplot_enabled}" in
     0|false|no|off|FALSE|NO|OFF)
       deplot_extra+=(--no-enabled)
-      echo "DePlot disabled (DYME_DEPLOT_ENABLED=0); writing placeholder visual_fact_deplot."
+      echo "DePlot disabled by ${cfg}; writing placeholder visual_fact_deplot."
       ;;
   esac
 
@@ -221,29 +246,11 @@ print(f"[DyME] tokenizers ready: {tokenizers.__version__}")
 PY
 }
 
-# Read deplot.enabled from the Python training config (fallback: enabled).
-config_deplot_enabled() {
-  local cfg="${1:-}"
-  if [[ -n "${DYME_DEPLOT_ENABLED:-}" ]]; then
-    echo "${DYME_DEPLOT_ENABLED}"
-    return
-  fi
-  if [[ -z "${cfg}" ]]; then
-    echo "1"
-    return
-  fi
-  "${PYTHON_BIN}" -c "
-from config.loader import load_config
-cfg = load_config('${cfg}')
-print(1 if cfg.get('deplot', {}).get('enabled', True) else 0)
-"
-}
-
 prepare_chartqa_training_data() {
   local cfg="${1:-}"
   export WANDB_MODE="${WANDB_MODE:-disabled}"
 
-  # Strict recipes validate the exact dataset selected by the Python config.
+  # Strict recipes validate the exact dataset selected by the YAML recipe.
   # Do this before ensure_chartqa_vf_full: that helper historically returns
   # early for an existing stale file and can otherwise write placeholders.
   local strict_validation
@@ -266,20 +273,14 @@ PY
     return 0
   fi
 
-  export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-$(config_deplot_enabled "${cfg}")}"
-  ensure_chartqa_vf_full
-  if [[ "${DYME_REQUIRE_QWEN_REWRITE:-0}" == "1" ]]; then
-    "${PYTHON_BIN}" scripts/validate_chartqa_training_data.py \
-      --input "${DYME_CHARTQA_VF_FULL:-data/chartqa/train_medium_vf_full.json}" \
-      ${DYME_EXPECTED_CHARTQA_SAMPLES:+--expected-samples "${DYME_EXPECTED_CHARTQA_SAMPLES}"}
-  fi
+  ensure_chartqa_vf_full "${cfg}"
   ensure_tokenizers
   ensure_spacy_model
 }
 
 train_log_path() {
   local prefix="${1:-train}"
-  local log_dir="${DYME_LOG_DIR:-./outputs/logs}"
+  local log_dir="./outputs/logs"
   mkdir -p "${log_dir}"
   echo "${log_dir}/${prefix}_$(date +%Y%m%d_%H%M%S).log"
 }

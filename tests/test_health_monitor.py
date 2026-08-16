@@ -103,6 +103,21 @@ def test_rl_zero_signal_alert():
     assert ALERT_RL_ZERO_SIGNAL in hm._step_alerts
 
 
+def test_opd_only_does_not_report_expected_absence_of_grpo_signal():
+    hm = TrainingHealthMonitor({"enabled": True, "log_alerts_immediately": False})
+    hm.reset_step(3)
+    hm.record_loss(
+        3,
+        {
+            "training_stage": "opd_only",
+            "advantages_abs_mean": 0.0,
+            "grpo_zero_loss_rate": 1.0,
+            "combined_loss_scalar": 0.75,
+        },
+    )
+    assert ALERT_RL_ZERO_SIGNAL not in hm._step_alerts
+
+
 def test_correlate_hints_after_history():
     hm = TrainingHealthMonitor({"enabled": True, "window": 5, "log_every_step": False})
     hm.reset_step(0)

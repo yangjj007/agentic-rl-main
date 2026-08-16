@@ -12,6 +12,7 @@ pycocotools
 trl==0.23.1
 flash-attn==2.7.4.post1
 scikit-image
+PyYAML>=5.4
 openai
 spacy
 autoawq==0.2.9

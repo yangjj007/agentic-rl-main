@@ -21,6 +21,7 @@ from typing import Dict, Any
 
 import torch
 import wandb
+import yaml
 from accelerate import Accelerator
 from accelerate.utils import broadcast_object_list
 from datasets import Dataset, load_dataset
@@ -30,6 +31,7 @@ from trl import GRPOConfig
 from config.loader import load_config
 from data_utils.commom_util import collate_fn, define_task_data_func
 from data_utils.paths import (
+    find_model_weight_files,
     local_pretrained_kwargs,
     resolve_model_path,
     validate_local_model_dir,
@@ -147,7 +149,7 @@ def resolve_checkpoint_eval_config(
     config["tie_policy"] = tie_policy
 
     # ``TrainingArguments`` defaults to steps, and older project profiles
-    # (notably config_7B.py) rely on that default while only setting
+    # (notably config_7b.yaml) rely on that default while only setting
     # save_steps.  Normalize it here rather than rejecting a valid HF setup.
     save_strategy = str(dyme_args.get("save_strategy", "steps")).strip().lower()
     if save_strategy not in {"steps", "epoch"}:
@@ -322,25 +324,18 @@ def _coordinate_checkpoint_eval_recovery(
 
 
 def apply_launch_config(launch_config: dict[str, Any]) -> None:
-    """Apply optional runtime launch knobs from CONFIG['launch'] when env is unset."""
+    """Apply explicit launch knobs from YAML to the process runtime."""
     if not launch_config:
         return
-    env_mappings = {
-        "opsd_detail_min_free_gb": "DYME_OPSD_DETAIL_MIN_FREE_GB",
-        "opsd_detail_every": "DYME_OPSD_DETAIL_EVERY",
-        "pytorch_cuda_alloc_conf": "PYTORCH_CUDA_ALLOC_CONF",
-    }
-    for key, env_name in env_mappings.items():
-        if key in launch_config and env_name not in os.environ:
-            os.environ[env_name] = str(launch_config[key])
+    # Only process/runtime infrastructure is set here. Training recipe values
+    # are read directly from the resolved YAML and never passed through env.
+    if launch_config.get("pytorch_cuda_alloc_conf") is not None:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = str(launch_config["pytorch_cuda_alloc_conf"])
 
 
 def resolve_gradient_checkpointing_enabled(
     launch_config: dict[str, Any],
 ) -> bool:
-    env_raw = os.environ.get("DYME_GRADIENT_CHECKPOINTING", "").strip().lower()
-    if env_raw:
-        return env_raw in ("1", "true", "yes", "on")
     return bool(launch_config.get("gradient_checkpointing_enable", False))
 
 
@@ -364,8 +359,8 @@ def _run_cross_model_vocab_checks(model, processor, teacher_model, model_config:
 
     teacher_path = model_config.get("teacher_model_path")
     teacher_processor = AutoProcessor.from_pretrained(teacher_path)
-    full_scan = os.environ.get("DYME_VOCAB_ALIGN_FULL", "0").strip().lower() in ("1", "true", "yes")
-    stride = int(os.environ.get("DYME_VOCAB_ALIGN_STRIDE", "500"))
+    full_scan = False
+    stride = 500
     report = verify_shared_tokenizer_alignment(
         processor.tokenizer,
         teacher_processor.tokenizer,
@@ -464,13 +459,17 @@ def write_run_config_snapshot(
     dataset_config: Dict[str, Any],
     opsd_config: Dict[str, Any],
     checkpoint_eval_config: Dict[str, Any] | None,
+    launch_config: Dict[str, Any] | None,
+    deplot_config: Dict[str, Any] | None,
     training_args: GRPOConfig,
     generation_config,
+    training_stage: str = "rl",
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
     resolved = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "config_arg": config_path,
+        "training_stage": training_stage,
         "model": model_config,
         "training": training_config,
         "rl": rl_config,
@@ -478,6 +477,8 @@ def write_run_config_snapshot(
         "dataset": dataset_config,
         "opsd": opsd_config,
         "checkpoint_eval": checkpoint_eval_config or {},
+        "launch": launch_config or {},
+        "deplot": deplot_config or {},
         "training_args": training_args.to_dict() if hasattr(training_args, "to_dict") else vars(training_args),
     }
     files = {
@@ -488,8 +489,7 @@ def write_run_config_snapshot(
             "env": {
                 k: v
                 for k, v in sorted(os.environ.items())
-                if k.startswith("DYME_")
-                or k.startswith("CUDA")
+                if k.startswith("CUDA")
                 or k.startswith("ACCELERATE")
                 or k in {"WANDB_MODE", "WANDB_DISABLED"}
             },
@@ -503,6 +503,11 @@ def write_run_config_snapshot(
     for name, payload in files.items():
         with open(os.path.join(output_dir, name), "w", encoding="utf-8") as f:
             json.dump(_json_safe(payload), f, ensure_ascii=False, indent=2, sort_keys=True)
+    # Preserve an inspectable YAML snapshot alongside JSON.  Unlike the old
+    # module-based recipes, either snapshot is a complete, resolved record of
+    # the recipe used for this run.
+    with open(os.path.join(output_dir, "resolved_config.yaml"), "w", encoding="utf-8") as f:
+        yaml.safe_dump(_json_safe(resolved), f, allow_unicode=True, sort_keys=False)
     with open(os.path.join(output_dir, "git_status.txt"), "w", encoding="utf-8") as f:
         f.write(_run_text_command(["git", "status", "--short"]))
         f.write("\n\n")
@@ -577,6 +582,25 @@ def load_model_and_processor(model_config: Dict[str, Any]):
     return model, processor
 
 
+def validate_opd_only_checkpoint(model_config: Dict[str, Any]) -> None:
+    """Require the OPD-only student source to be a complete local SFT checkpoint."""
+    configured = str(model_config.get("pretrained_model_path", "") or "").strip()
+    resolved = resolve_model_path(configured)
+    if not configured or not os.path.isdir(resolved):
+        raise ValueError(
+            "training.stage=opd_only requires model.pretrained_model_path to be a local SFT checkpoint directory"
+        )
+    missing = []
+    if not os.path.isfile(os.path.join(resolved, "config.json")):
+        missing.append("config.json")
+    if not find_model_weight_files(resolved):
+        missing.append("model weights")
+    if missing:
+        raise FileNotFoundError(
+            f"OPD-only checkpoint '{resolved}' is incomplete; missing {', '.join(missing)}"
+        )
+
+
 def load_teacher_model(model_config: Dict[str, Any], *, local_rank: int = 0, num_gpus: int = 1):
     """Load optional frozen teacher for cross-model OPD (e.g. LLaVA-OneVision 7B)."""
     teacher_path = model_config.get("teacher_model_path")
@@ -594,11 +618,6 @@ def load_teacher_model(model_config: Dict[str, Any], *, local_rank: int = 0, num
     dtype_name = model_config.get("teacher_dtype", model_config.get("torch_dtype", "bfloat16"))
     torch_dtype = getattr(torch, dtype_name)
     requested_map = model_config.get("teacher_device_map")
-    if not requested_map:
-        env_map = os.environ.get("DYME_TEACHER_DEVICE_MAP", "").strip()
-        if env_map:
-            requested_map = env_map
-
     device_map = resolve_teacher_device_map(
         requested_map,
         local_rank=local_rank,
@@ -775,7 +794,7 @@ def _log_run_config_summary(
         "output_dir": dyme_args.get("output_dir"),
         "num_train_epochs": dyme_args.get("num_train_epochs"),
         "max_steps": dyme_args.get("max_steps"),
-        "resume_from_checkpoint": os.environ.get("DYME_RESUME_FROM_CHECKPOINT", "").strip() or None,
+        "resume_from_checkpoint": dyme_args.get("resume_from_checkpoint") or None,
         "opsd_enabled": bool(opsd_config.get("enabled", False)),
         "checkpoint_eval": checkpoint_eval_config or {},
         "opsd_mode": opsd_config.get("mode"),
@@ -818,10 +837,6 @@ def _log_run_config_summary(
             "mode_stable_ema_beta": utility_cfg.get("mode_stable_ema_beta"),
             "mode_stable_switch_margin": utility_cfg.get("mode_stable_switch_margin"),
             "mode_stable_min_hold_steps": utility_cfg.get("mode_stable_min_hold_steps"),
-        },
-        "hang_debug_env": {
-            "DYME_OPSD_HANG_DEBUG": os.environ.get("DYME_OPSD_HANG_DEBUG", "<unset>"),
-            "DYME_OPSD_HANG_FORCE": os.environ.get("DYME_OPSD_HANG_FORCE", "<unset>"),
         },
     }
     print(f"[DyME-RUN-CONFIG] {json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True)}", flush=True)
@@ -940,8 +955,8 @@ def main():
     parser = argparse.ArgumentParser(description="Train a Llava model using either SFT or GRPO.")
 
     parser.add_argument(
-        '--config', type=str, default='config/config.py',
-        help="Python config path (e.g. config/config.py, config/config_trimode.py) "
+        '--config', type=str, default='config/config.yaml',
+        help="YAML config path (e.g. config/config.yaml, config/config_trimode.yaml) "
              "or shorthand alias: norm | trimode | llavacot | low | aok",
     )
     parser.add_argument(
@@ -962,7 +977,7 @@ def main():
     parser.add_argument(
         '--reward_weights', type=str, default=None,
         help="Comma-separated reward weights: format,context,acc (e.g. 0.5,1.5,1.0). "
-             "Overrides config; env DYME_REWARD_WEIGHTS also supported in antidegen config.",
+             "Overrides the selected YAML for this invocation.",
     )
     parser.add_argument(
         '--opsd_enabled', action='store_true',
@@ -970,12 +985,12 @@ def main():
     )
     parser.add_argument(
         '--opsd_debug', action='store_true',
-        help="Enable verbose OPSD debug logs (or set env DYME_OPSD_DEBUG=1)",
+        help="Enable verbose OPSD debug logs for this invocation.",
     )
     parser.add_argument(
         '--opsd_detail_every', type=int, default=None,
         help="Emit full weak-signal diagnostic bundle every N global steps on rank 0 "
-             "(default 10; config opsd.debug.detail_every or env DYME_OPSD_DETAIL_EVERY)",
+             "(default: opsd.debug.detail_every in YAML)",
     )
     parser.add_argument(
         '--opsd_probe_on_generate', dest='opsd_probe_on_generate', action='store_true',
@@ -1004,7 +1019,7 @@ def main():
         '--resume_from_checkpoint',
         type=str,
         default=None,
-        help="Resume Trainer state from a checkpoint directory. Env DYME_RESUME_FROM_CHECKPOINT is also supported.",
+        help="Resume Trainer state from a checkpoint directory.",
     )
 
     args = parser.parse_args()
@@ -1030,6 +1045,13 @@ def main():
     task = training_config['task']
     checkpoint_eval_config = dict(CONFIG.get("checkpoint_eval", {}))
     opsd_config = dict(CONFIG.get('opsd', {"enabled": False, "mode": "dyme"}))
+    training_stage = str(training_config.get("stage", "rl")).strip().lower()
+    if training_stage == "opd_only":
+        if args.opsd_mode is not None and args.opsd_mode != "opd_only":
+            raise ValueError("training.stage=opd_only cannot be overridden with another --opsd_mode")
+        if not opsd_config.get("enabled") or opsd_config.get("mode") != "opd_only":
+            raise ValueError("training.stage=opd_only requires opsd.enabled=true and opsd.mode=opd_only")
+        validate_opd_only_checkpoint(model_config)
     if args.opsd_enabled:
         opsd_config["enabled"] = True
     if args.opsd_mode is not None:
@@ -1039,7 +1061,7 @@ def main():
         opsd_config["privileged_providers"] = [p.strip() for p in args.opsd_providers.split(",") if p.strip()]
     if args.opsd_privilege_profile is not None:
         opsd_config["privileged_profile"] = args.opsd_privilege_profile.strip()
-    reward_weights_raw = args.reward_weights or os.environ.get("DYME_REWARD_WEIGHTS")
+    reward_weights_raw = args.reward_weights
     if reward_weights_raw:
         parts = [p.strip() for p in reward_weights_raw.split(",") if p.strip()]
         if len(parts) != 3:
@@ -1068,6 +1090,8 @@ def main():
         probe_first_token_logits=probe_first_token_logits,
         probe_prompt_tail_tokens=debug_cfg.get("probe_prompt_tail_tokens", 16),
         probe_log_model_context=debug_cfg.get("probe_log_model_context", True),
+        hang_debug=debug_cfg.get("hang_debug", False),
+        hang_force=debug_cfg.get("hang_force", True),
     )
     if debug_enabled:
         opsd_debug.log_config("main", "resolved OPSD config", opsd_config)
@@ -1112,6 +1136,8 @@ def main():
         probe_first_token_logits=probe_first_token_logits,
         probe_prompt_tail_tokens=debug_cfg.get("probe_prompt_tail_tokens", 16),
         probe_log_model_context=debug_cfg.get("probe_log_model_context", True),
+        hang_debug=debug_cfg.get("hang_debug", False),
+        hang_force=debug_cfg.get("hang_force", True),
         rank=accelerator.process_index,
         world_size=accelerator.num_processes,
     )
@@ -1165,7 +1191,7 @@ def main():
                 print(
                     "[DyME] gradient checkpointing skipped: incompatible with DeepSpeed ZeRO-1/2 "
                     "(multiple student forwards / checkpoint backward). "
-                    "Use ZeRO-3, DDP, or DYME_GRADIENT_CHECKPOINTING=0.",
+                    "Use ZeRO-3, DDP, or set launch.gradient_checkpointing_enable=false.",
                     flush=True,
                 )
         else:
@@ -1230,20 +1256,25 @@ def main():
     # checker = RewardCalculator(rl_config, client_config.copy(), gpu_id=device_id)
     # refiner = ContextRefiner(rl_config, client_config.copy(), gpu_id=device_id)
 
-    checker, refiner, visual_meta = build_visual_supervision(
-        rl_config,
-        client_config,
-        opsd_config,
-        gpu_id=device_id,
-        teacher_model=teacher_model,
-        processor=processor,
-    )
+    if training_stage == "opd_only":
+        # This stage has no reward, online-SFT, or visual-supervision route.
+        # Do not even create fallback checker/refiner objects: an OPD rollout
+        # must only involve the frozen OPD teacher and the trainable student.
+        checker, refiner, visual_meta = None, None, {"enabled": False, "needs_teacher": False}
+    else:
+        checker, refiner, visual_meta = build_visual_supervision(
+            rl_config,
+            client_config,
+            opsd_config,
+            gpu_id=device_id,
+            teacher_model=teacher_model,
+            processor=processor,
+        )
     # 6. Define Training Arguments
     dyme_args = dict(training_config['dyme_args'])
     resume_from_checkpoint = (
         args.resume_from_checkpoint
         or dyme_args.pop("resume_from_checkpoint", None)
-        or os.environ.get("DYME_RESUME_FROM_CHECKPOINT", "").strip()
         or None
     )
     checkpoint_eval_config = resolve_checkpoint_eval_config(
@@ -1303,6 +1334,7 @@ def main():
         teacher_model_config=teacher_model_config,
         visual_supervision_meta=visual_meta,
         checkpoint_eval_config=checkpoint_eval_config,
+        training_stage=training_stage,
         callbacks=(
             [
                 CheckpointEvaluationTriggerCallback(
@@ -1327,9 +1359,12 @@ def main():
             dataset_config=dataset_config,
             opsd_config=opsd_config,
             checkpoint_eval_config=checkpoint_eval_config,
+            launch_config=launch_config,
+            deplot_config=CONFIG.get("deplot", {}),
             training_args=training_args,
             generation_config=dyme_trainer.generation_config,
-    )
+            training_stage=training_stage,
+        )
 
     # 8. Start Training
     if accelerator.is_main_process and resume_from_checkpoint:

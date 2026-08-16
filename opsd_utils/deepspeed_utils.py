@@ -79,10 +79,8 @@ def deepspeed_zero_stage(config_name: Optional[str] = None) -> Optional[int]:
 
 def should_colocate_teacher_with_student(device_map: Optional[str] = None) -> bool:
     """True when frozen teacher should sit on the same GPU as the trainable student."""
-    raw = (device_map or os.environ.get("DYME_TEACHER_DEVICE_MAP", "")).strip().lower()
+    raw = (device_map or "").strip().lower()
     if raw in ("same", "colocate", "local"):
-        return True
-    if os.environ.get("DYME_DEEPSPEED_COLOCATE", "").strip().lower() in ("1", "true", "yes", "on"):
         return True
     if is_deepspeed_accelerate_config() and raw in ("", "auto"):
         return True
@@ -98,11 +96,6 @@ def gradient_checkpointing_enable_kwargs(config_name: Optional[str] = None) -> O
     """
     if not is_deepspeed_accelerate_config(config_name):
         return None
-    override = os.environ.get("DYME_GRADIENT_CHECKPOINTING_USE_REENTRANT", "").strip().lower()
-    if override in ("1", "true", "yes", "on"):
-        return {"use_reentrant": True}
-    if override in ("0", "false", "no", "off"):
-        return {"use_reentrant": False}
     return {"use_reentrant": False}
 
 
@@ -158,14 +151,10 @@ def student_forward_chunk_size(
     """
     Micro-batch size for student forwards in ``_get_per_token_logps``.
 
-    Under ZeRO-1/2 we must use one forward per backward (full local batch by default).
-    Override with ``DYME_STUDENT_FORWARD_CHUNK`` only if you accept ZeRO-3+ or OOM risk.
+    Under ZeRO-1/2 we must use one forward per backward (full local batch).
     """
     if not has_vision:
         return batch_size
     if not deepspeed_requires_single_student_forward(config_name):
         return 1
-    override = os.environ.get("DYME_STUDENT_FORWARD_CHUNK", "").strip()
-    if override.isdigit():
-        return max(1, min(batch_size, int(override)))
     return batch_size

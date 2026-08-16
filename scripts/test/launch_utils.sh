@@ -8,12 +8,10 @@ cd "${ROOT}"
 
 source "${ROOT}/scripts/launch_utils.sh"
 
-export DYME_DEPLOT_ENABLED="${DYME_DEPLOT_ENABLED:-0}"
-export DYME_LOG_DIR="${DYME_LOG_DIR:-${ROOT}/outputs/test-fast/logs}"
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 
 prepare_fast_test_data() {
-  local cfg="${1:-scripts/test/config/config_rlsd_chartqa.py}"
+  local cfg="${1:-config/config_rlsd_chartqa.yaml}"
   prepare_chartqa_training_data "${cfg}"
 }
 
@@ -50,7 +48,7 @@ run_test_baseline() {
   fi
   local ec=$?
   echo "!!! [BASELINE] ${name} FAILED (exit ${ec})" >&2
-  local log_dir="${DYME_LOG_DIR:-${ROOT}/outputs/test-fast/logs}"
+  local log_dir="${ROOT}/outputs/test-fast/logs"
   if [[ -d "${log_dir}" ]]; then
     echo "!!! Recent log tails from ${log_dir}:" >&2
     local f
@@ -68,31 +66,14 @@ run_test_baseline() {
 print_fast_plan() {
   local baseline="${1:-}"
   local config_path="${2:-}"
-  local rl_epochs="${DYME_FAST_NUM_TRAIN_EPOCHS:-4}"
-  local sft_epochs="${DYME_FAST_SFT_EPOCHS:-4}"
-  local est_steps_per_epoch="${DYME_FAST_EST_STEPS_PER_EPOCH:-600}"
-  local cold_frac="${DYME_FAST_COLD_START_FRAC:-0.08}"
-  local est_rl_steps=$((rl_epochs * est_steps_per_epoch))
-  local cold_steps
-  cold_steps="$("${PYTHON_BIN}" - <<PY
-frac = float("${cold_frac}")
-steps = int("${est_rl_steps}")
-print(max(1, int(steps * frac)) if frac > 0 and steps > 0 else 0)
-PY
-)"
   echo "============================================================"
   echo "scripts/test/ fast baseline: ${baseline}"
   echo "config: ${config_path}"
   echo "dataset: full train_medium_vf_full.json"
   if [[ "${baseline}" == "sft" ]]; then
-    echo "epochs: ${sft_epochs} (offline SFT)"
+    echo "epochs and output path: explicit in ${config_path} (offline SFT)"
   else
-    echo "epochs: ${rl_epochs} (RL / OPD)"
-    echo "estimated RL steps: ~${est_rl_steps} (${rl_epochs} x ${est_steps_per_epoch})"
-  fi
-  if [[ "${baseline}" == "opd" ]]; then
-    echo "OPD cold-start (embedded SFT): ~${cold_steps}/${est_rl_steps} steps (${cold_frac} of total)"
-    echo "OPD RL phase after cold start: ~$((est_rl_steps - cold_steps)) steps"
+    echo "epochs and output path: explicit in ${config_path} (RL / OPD)"
   fi
   echo "output root: outputs/test-fast/"
   print_launch_plan

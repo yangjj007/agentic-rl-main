@@ -1,5 +1,7 @@
 """Shared RL prompt template for VQA / chart / math tasks."""
-from config import CONFIG
+from config.loader import load_config
+
+CONFIG = load_config("norm")
 
 
 def build_rl_prompt_template(answer_flag: str | None = None) -> str:

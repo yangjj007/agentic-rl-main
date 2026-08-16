@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 import traceback
 from contextlib import contextmanager
@@ -19,6 +18,8 @@ _HEALTH_LOG_ON_GENERATE = True
 _HEALTH_LOG_EVERY_STEP = True
 _HEALTH_LOG_DETAIL_BUNDLE = True
 _HEALTH_LOG_ALERTS_IMMEDIATELY = True
+_HANG_DEBUG_ENABLED = False
+_HANG_FORCE_ENABLED = True
 _RANK = 0
 _WORLD_SIZE = 1
 _STEP_LABEL = "init"
@@ -26,58 +27,6 @@ _DETAIL_STEP: Optional[int] = None
 _CALL_COUNTER = 0
 
 MODE_NAMES = {0: "GRPO", 1: "OPSD", 2: "SFT"}
-
-
-def _env_debug_enabled() -> bool:
-    return os.environ.get("DYME_OPSD_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _env_detail_every() -> int:
-    raw = os.environ.get("DYME_OPSD_DETAIL_EVERY", "").strip()
-    if not raw:
-        return 10
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return 10
-
-
-def _env_probe_on_generate() -> Optional[bool]:
-    raw = os.environ.get("DYME_OPSD_PROBE_ON_GENERATE", "").strip().lower()
-    if not raw:
-        return None
-    return raw in ("1", "true", "yes", "on")
-
-
-def _env_probe_first_token_logits() -> Optional[bool]:
-    raw = os.environ.get("DYME_OPSD_PROBE_FIRST_TOKEN_LOGITS", "").strip().lower()
-    if not raw:
-        return None
-    return raw in ("1", "true", "yes", "on")
-
-
-def _env_probe_prompt_tail_tokens() -> Optional[int]:
-    raw = os.environ.get("DYME_OPSD_PROBE_PROMPT_TAIL_TOKENS", "").strip()
-    if not raw:
-        return None
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return 16
-
-
-def _env_probe_log_model_context() -> Optional[bool]:
-    raw = os.environ.get("DYME_OPSD_PROBE_LOG_MODEL_CONTEXT", "").strip().lower()
-    if not raw:
-        return None
-    return raw in ("1", "true", "yes", "on")
-
-
-def _env_health_monitor_enabled() -> Optional[bool]:
-    raw = os.environ.get("DYME_OPSD_HEALTH_MONITOR", "").strip().lower()
-    if not raw:
-        return None
-    return raw in ("1", "true", "yes", "on")
 
 
 def configure(
@@ -93,6 +42,8 @@ def configure(
     health_log_every_step: Optional[bool] = None,
     health_log_detail_bundle: Optional[bool] = None,
     health_log_alerts_immediately: Optional[bool] = None,
+    hang_debug: Optional[bool] = None,
+    hang_force: Optional[bool] = None,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
 ) -> bool:
@@ -101,39 +52,24 @@ def configure(
     global _PROBE_FIRST_TOKEN_LOGITS, _PROBE_PROMPT_TAIL_TOKENS, _PROBE_LOG_MODEL_CONTEXT
     global _HEALTH_MONITOR_ENABLED, _HEALTH_LOG_ON_GENERATE, _HEALTH_LOG_EVERY_STEP
     global _HEALTH_LOG_DETAIL_BUNDLE, _HEALTH_LOG_ALERTS_IMMEDIATELY
+    global _HANG_DEBUG_ENABLED, _HANG_FORCE_ENABLED
     global _RANK, _WORLD_SIZE
     if enabled is None:
-        enabled = _env_debug_enabled()
+        enabled = False
     _DEBUG_ENABLED = bool(enabled)
     if detail_every is not None:
         _DETAIL_EVERY = max(0, int(detail_every))
-    elif _env_detail_every() != 10 or os.environ.get("DYME_OPSD_DETAIL_EVERY"):
-        _DETAIL_EVERY = _env_detail_every()
-    env_probe = _env_probe_on_generate()
+
     if probe_on_generate is not None:
         _PROBE_ON_GENERATE = bool(probe_on_generate)
-    elif env_probe is not None:
-        _PROBE_ON_GENERATE = env_probe
-    env_first_logits = _env_probe_first_token_logits()
     if probe_first_token_logits is not None:
         _PROBE_FIRST_TOKEN_LOGITS = bool(probe_first_token_logits)
-    elif env_first_logits is not None:
-        _PROBE_FIRST_TOKEN_LOGITS = env_first_logits
-    env_tail = _env_probe_prompt_tail_tokens()
     if probe_prompt_tail_tokens is not None:
         _PROBE_PROMPT_TAIL_TOKENS = max(1, int(probe_prompt_tail_tokens))
-    elif env_tail is not None:
-        _PROBE_PROMPT_TAIL_TOKENS = env_tail
-    env_model_ctx = _env_probe_log_model_context()
     if probe_log_model_context is not None:
         _PROBE_LOG_MODEL_CONTEXT = bool(probe_log_model_context)
-    elif env_model_ctx is not None:
-        _PROBE_LOG_MODEL_CONTEXT = env_model_ctx
-    env_health = _env_health_monitor_enabled()
     if health_monitor_enabled is not None:
         _HEALTH_MONITOR_ENABLED = bool(health_monitor_enabled)
-    elif env_health is not None:
-        _HEALTH_MONITOR_ENABLED = env_health
     if health_log_on_generate is not None:
         _HEALTH_LOG_ON_GENERATE = bool(health_log_on_generate)
     if health_log_every_step is not None:
@@ -142,6 +78,10 @@ def configure(
         _HEALTH_LOG_DETAIL_BUNDLE = bool(health_log_detail_bundle)
     if health_log_alerts_immediately is not None:
         _HEALTH_LOG_ALERTS_IMMEDIATELY = bool(health_log_alerts_immediately)
+    if hang_debug is not None:
+        _HANG_DEBUG_ENABLED = bool(hang_debug)
+    if hang_force is not None:
+        _HANG_FORCE_ENABLED = bool(hang_force)
     if rank is not None:
         _RANK = rank
     if world_size is not None:
@@ -298,13 +238,11 @@ def log_probe(section: str, msg: str, **fields: Any) -> None:
 
 
 def hang_debug_enabled() -> bool:
-    raw = os.environ.get("DYME_OPSD_HANG_DEBUG", "0").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    return _HANG_DEBUG_ENABLED
 
 
 def hang_force_enabled() -> bool:
-    raw = os.environ.get("DYME_OPSD_HANG_FORCE", "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    return _HANG_FORCE_ENABLED
 
 
 def hang_probe(tag: str, **fields: Any) -> None:
@@ -323,7 +261,7 @@ def hang_probe(tag: str, **fields: Any) -> None:
 
 
 def hang_probe_force(tag: str, **fields: Any) -> None:
-    """Forced flush probe, unless DYME_OPSD_HANG_FORCE explicitly disables it."""
+    """Forced flush probe for rare NCCL / teacher-forward hang diagnosis."""
     if not hang_force_enabled():
         return
     ts = time.strftime("%Y-%m-%d %H:%M:%S")

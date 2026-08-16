@@ -32,6 +32,36 @@ class _RefinerJob:
     reference_answer: str
 
 
+def build_no_gold_refiner_prompt(*, ic_text: str, question: str, template: str) -> str:
+    """Ask for an evidence-only hint when the reference answer is unavailable.
+
+    The old implementation only removed the literal ``Answer:`` prefix before
+    inserting the answer in ``prompt_refine``.  That is still gold-answer
+    exposure.  This prompt deliberately has no answer slot and tells the
+    teacher not to emit a final answer; the normal online-SFT formatter appends
+    the supervised answer later, outside the refiner.
+    """
+    return f"""Given an attached chart image and the extracted visual evidence below, write an evidence-grounded reasoning hint for the question.
+
+Do not infer, state, or format a final answer. Do not use a final-answer heading.
+Use the requested structure and only describe observations that are supported by the image or visual evidence.
+
+<IC>:\n{ic_text}
+<Q>:\n{question}
+<T>:\n{template}
+<Output>:\n"""
+
+
+def _is_usable_refined_hint(text: str, *, include_gold: bool) -> bool:
+    """Reject malformed/no-gold refiner output instead of training on it."""
+    lowered = (text or "").lower()
+    if not text or "goal:" not in lowered or "observation:" not in lowered:
+        return False
+    if not include_gold and "answer:" in lowered:
+        return False
+    return True
+
+
 class TeacherVisualRefiner(ContextRefinerLocal):
     """Teacher-backed hint refinement; passthrough on failure."""
 
@@ -201,10 +231,6 @@ class TeacherVisualRefiner(ContextRefinerLocal):
 
             sample = self._batch_samples[job.sample_idx] if job.sample_idx < len(self._batch_samples) else {}
             image = self._batch_images[job.sample_idx] if job.sample_idx < len(self._batch_images) else None
-            ref_answer = job.reference_answer
-            if not include_gold:
-                ref_answer = job.reference_answer.lower().replace("answer:", "").strip()
-
             ic_text, _ = extract_visual_facts_teacher(
                 teacher_model=self._teacher_model,
                 processor=self._processor,
@@ -217,7 +243,19 @@ class TeacherVisualRefiner(ContextRefinerLocal):
                 recorder=self._recorder,
                 sample_idx=job.sample_idx,
             )
-            eval_prompt = prompt_refine % (ic_text, job.question, ref_answer, template)
+            if include_gold:
+                eval_prompt = prompt_refine % (
+                    ic_text,
+                    job.question,
+                    job.reference_answer,
+                    template,
+                )
+            else:
+                eval_prompt = build_no_gold_refiner_prompt(
+                    ic_text=ic_text,
+                    question=job.question,
+                    template=template,
+                )
             requests.append(
                 TeacherGenerateRequest(
                     prompt_text=eval_prompt,
@@ -244,7 +282,12 @@ class TeacherVisualRefiner(ContextRefinerLocal):
         for job, raw_out, ic_text in zip(job_meta, raw_outputs, ic_texts):
             in_len = len(job.hint or "")
             try:
-                refined = (raw_out or "").strip() or job.hint
+                candidate = (raw_out or "").strip()
+                valid_output = _is_usable_refined_hint(
+                    candidate,
+                    include_gold=bool(include_gold),
+                )
+                refined = candidate if valid_output else job.hint
                 out_len = len(refined)
                 changed = refined.strip() != job.hint.strip()
                 if self._recorder is not None:
@@ -260,8 +303,12 @@ class TeacherVisualRefiner(ContextRefinerLocal):
                         hint_after_preview=refined[:400],
                         has_goal="goal:" in refined.lower(),
                         has_observation="observation:" in refined.lower(),
-                        has_answer=include_gold and "answer" in refined.lower(),
-                        passthrough=not changed,
+                        has_answer="answer:" in refined.lower(),
+                        no_gold_mode=not include_gold,
+                        valid_output=valid_output,
+                        passthrough=not valid_output,
+                        reason="" if valid_output else "invalid_refiner_output",
+                        raw_teacher_output=candidate[:400],
                     )
                 results[job.sample_idx] = refined
             except Exception as exc:

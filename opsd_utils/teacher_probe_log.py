@@ -5,10 +5,6 @@ import os
 from typing import Any, Optional
 
 
-def _truthy_env(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _truncate_text(value: Any, max_chars: int) -> str:
     text = "" if value is None else str(value)
     text = text.replace("\n", "\\n")
@@ -24,16 +20,11 @@ def _candidate_log_config(opsd_config: dict[str, Any]) -> dict[str, Any]:
         cfg = {"enabled": cfg}
     elif not isinstance(cfg, dict):
         cfg = {}
-    enabled = bool(cfg.get("enabled", False)) or _truthy_env("DYME_TEACHER_PROBE_CANDIDATE_LOG")
+    enabled = bool(cfg.get("enabled", False))
     return {
         **cfg,
         "enabled": enabled,
-        "max_text_chars": int(
-            os.environ.get(
-                "DYME_TEACHER_PROBE_CANDIDATE_LOG_MAX_CHARS",
-                cfg.get("max_text_chars", 512),
-            )
-        ),
+        "max_text_chars": int(cfg.get("max_text_chars", 512)),
     }
 
 
@@ -126,7 +117,7 @@ def append_teacher_probe_record(
     if not cfg["enabled"] or not output_dir:
         return None
 
-    log_dir = cfg.get("dir") or os.environ.get("DYME_TEACHER_PROBE_CANDIDATE_LOG_DIR")
+    log_dir = cfg.get("dir")
     if not log_dir:
         log_dir = os.path.join(output_dir, "teacher_probe_candidates")
     os.makedirs(log_dir, exist_ok=True)

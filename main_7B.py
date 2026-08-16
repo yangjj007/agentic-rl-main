@@ -22,7 +22,9 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from trl import GRPOConfig
 from peft import LoraConfig, get_peft_model, TaskType  # NEW: Import PEFT modules
 
-from config.config_7B import CONFIG
+from config.loader import load_config
+
+CONFIG = load_config("7b")
 from data_utils.commom_util import collate_fn, define_task_data_func
 from trainer.DyMETrainer_7B import DyMETrainer
 from reward_utils.checker import RewardCalculator, RewardCalculatorLocal

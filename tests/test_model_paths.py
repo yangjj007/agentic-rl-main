@@ -5,7 +5,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_utils.paths import (
-    discover_local_model,
     local_pretrained_kwargs,
     resolve_model_path,
     validate_local_model_dir,
@@ -36,14 +35,6 @@ def test_validate_missing_absolute_path_fails_early(tmp_path):
     except FileNotFoundError as exc:
         assert "student" in str(exc)
         assert "does not exist" in str(exc)
-
-
-def test_discover_local_model_from_env(tmp_path, monkeypatch):
-    model = tmp_path / "llava-0.5b-ov"
-    model.mkdir()
-    (model / "model.safetensors").write_bytes(b"x")
-    monkeypatch.setenv("DYME_STUDENT_MODEL", str(model))
-    assert discover_local_model("student", "llava-hf/fake") == str(model.resolve())
 
 
 def test_local_pretrained_kwargs_for_directory(tmp_path):

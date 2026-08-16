@@ -3,27 +3,17 @@
 #
 # Usage:
 #   bash scripts/train_opd_7b_dyme_probe_image_checker.sh
-#   DYME_TRAIN_MAX_STEPS=5 bash scripts/train_opd_7b_dyme_probe_image_checker.sh
+#   Copy config/config_opd_7b_dyme_probe_image_checker.yaml, edit its explicit
+#   limits, then pass that new YAML directly to main.py.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source "$(dirname "$0")/launch_utils.sh"
 
-DYME_CONFIG="opd_7b_dyme_probe_image_checker"
-export DYME_VISUAL_CHECKER="${DYME_VISUAL_CHECKER:-1}"
-export DYME_VISUAL_CHECKER_GROUNDING="${DYME_VISUAL_CHECKER_GROUNDING:-image_primary}"
-export DYME_VISUAL_CHECKER_AUX="${DYME_VISUAL_CHECKER_AUX:-none}"
-# Full training profile — do not inherit smoke profile env from the shell.
-unset DYME_MAX_STEPS
-if [[ -n "${DYME_TRAIN_MAX_STEPS:-}" ]]; then
-  export DYME_MAX_STEPS="${DYME_TRAIN_MAX_STEPS}"
-fi
+CONFIG_PATH="config/config_opd_7b_dyme_probe_image_checker.yaml"
 
 export ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-$(resolve_deepspeed_zero1_config)}"
-export DYME_OPSD_HANG_DEBUG="${DYME_OPSD_HANG_DEBUG:-0}"
-export DYME_OPSD_HANG_FORCE="${DYME_OPSD_HANG_FORCE:-0}"
-
-prepare_chartqa_training_data "${DYME_CONFIG}"
+prepare_chartqa_training_data "${CONFIG_PATH}"
 
 NUM_PROCESSES="$(detect_num_gpus)"
 print_launch_plan
@@ -31,7 +21,7 @@ print_launch_plan
 _TRAIN_PLAN="$("${PYTHON_BIN}" - <<'PY'
 from config.loader import load_config
 
-c = load_config("opd_7b_dyme_probe_image_checker")
+c = load_config("config/config_opd_7b_dyme_probe_image_checker.yaml")
 args = c["training"]["dyme_args"]
 visual = c["opsd"]["visual_supervision"]
 max_steps = args.get("max_steps")
@@ -49,13 +39,13 @@ print(
 )
 PY
 )"
-echo "Config: ${DYME_CONFIG} (${_TRAIN_PLAN})"
+echo "Config: ${CONFIG_PATH} (${_TRAIN_PLAN})"
 echo "Snapshot: see output_dir/run_config_snapshot.json after launch"
 
 LOG_FILE="$(train_log_path train_opd_7b_dyme_probe_image_checker)"
 run_train_with_log "${LOG_FILE}" \
   "${PYTHON_BIN}" -m accelerate.commands.launch --config_file "${ACCELERATE_CONFIG}" --num_processes "${NUM_PROCESSES}" main.py \
-    --config "${DYME_CONFIG}" \
+    --config "${CONFIG_PATH}" \
     --mode rl \
     --opsd_enabled \
     "$@"

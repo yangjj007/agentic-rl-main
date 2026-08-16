@@ -1,0 +1,369 @@
+model:
+  pretrained_model_path: outputs/sft-chart-llava_cot/final_checkpoint
+  use_flash_attention_2: true
+  torch_dtype: bfloat16
+  teacher_model_path: llava-hf/llava-onevision-qwen2-7b-ov-hf
+  teacher_dtype: bfloat16
+  teacher_device_map: null
+training:
+  stage: opd_only
+  task: chart
+  num_gpus: 8
+  num_client: 8
+  dyme_args:
+    output_dir: /data/junjie/agentic-rl-main/outputs/opd-only-7b-chartqa-smoke
+    logging_steps: 1
+    num_generations: 8
+    max_completion_length: 32
+    temperature: 0.5
+    repetition_penalty: 1.5
+    per_device_train_batch_size: 2
+    gradient_accumulation_steps: 1
+    num_train_epochs: 1
+    learning_rate: 5.0e-05
+    bf16: true
+    gradient_checkpointing: false
+    ddp_find_unused_parameters: false
+    max_grad_norm: 1.0
+    save_strategy: epoch
+    weight_decay: 0.01
+    warmup_steps: 50
+    beta: 0.0
+    loss_type: grpo
+    max_steps: 1
+    seed: 42
+  sft_args:
+    output_dir: /data/junjie/agentic-rl-main/outputs/chartqa-sft
+    logging_steps: 10
+    per_device_train_batch_size: 2
+    gradient_accumulation_steps: 4
+    num_train_epochs: 2
+    learning_rate: 1.0e-05
+    bf16: true
+    gradient_checkpointing: true
+    ddp_find_unused_parameters: false
+    max_grad_norm: 1.0
+    save_strategy: epoch
+    weight_decay: 0.01
+    warmup_steps: 0
+    seed: 42
+    remove_unused_columns: false
+  grpo_args:
+    output_dir: /data/junjie/agentic-rl-main/outputs/grpo-chart-llava-beta
+    logging_steps: 1
+    num_generations: 4
+    max_completion_length: 576
+    max_prompt_length: null
+    per_device_train_batch_size: 2
+    gradient_accumulation_steps: 4
+    num_train_epochs: 1
+    learning_rate: 1.0e-05
+    bf16: true
+    gradient_checkpointing: false
+    ddp_find_unused_parameters: false
+    max_grad_norm: 1.0
+    save_strategy: epoch
+    weight_decay: 0.01
+    warmup_steps: 0
+    beta: 0.04
+    loss_type: grpo
+    seed: 42
+rl:
+  answer_flag: 'Answer:'
+  end_flag: <|im_end|>
+opsd:
+  enabled: true
+  mode: opd_only
+  privileged_profile: text
+  privileged_providers:
+  - format_only
+  privileged_image:
+    mode: single
+    crop_strategy: bbox_then_center
+    bbox_coord: normalized
+    margin_ratio: 0.25
+  privileged_debug:
+    save_images: true
+    image_subdir: logs/images
+    max_samples_per_detail: 2
+  gate:
+    correct_threshold: 0.5
+    teacher_recoverable: privileged_available
+    recoverable_tau: 0.5
+    use_edge_mask: false
+    per_completion_opsd: true
+    require_format_for_opsd: false
+    skip_degenerate_for_opsd: false
+    recoverable_without_privilege: true
+    online_sft_on_all_wrong: false
+    opsd_degenerate_require_answer_flag: false
+    degen_skip_warmup_steps: 200
+    sft_warmup_steps: 500
+    sft_warmup_slots_per_group: 4
+    sft_cold_start_frac: 0.08
+    sft_cold_start_steps: null
+    online_sft_target_style: null
+    disable_force_sft_replace: false
+    disable_online_sft_slots: false
+    signal_aware_routing: false
+    signal_reward_std_min: 0.05
+    degenerate_hard_override: false
+    clipped_hard_override: false
+  loss:
+    beta: 0.5
+    opsd_weight: 1.5
+    grpo_weight: 0.0
+    sft_weight: 0.0
+    acc_gate: false
+    loss_type: jsd
+    srkl_alpha: 0.1
+    teacher_traj_fkl_weight: 0.5
+    variance_adaptive: false
+    adaptive_std_target: 0.25
+    adaptive_max_mult: 2.0
+    weight_decay:
+      enabled: false
+      start_step: 294
+      end_step: 441
+      start_progress: 0.5
+      end_progress: 0.75
+      final_weight: 0.0
+      schedule_mode: step
+    route_cap:
+      enabled: false
+      max_per_prompt: 0
+      after_step: 0
+      overflow_route: sft
+      schedule_mode: step
+      start_progress: 0.5
+  teacher_probe:
+    enabled: false
+    context_providers: []
+    batch_size: 1
+    max_per_batch: 0
+    max_new_tokens: 96
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    repetition_penalty: 1.2
+    max_relative_change: 0.05
+    prompt_profile: chartqa_short_answer
+    answer_parser: chartqa_final_answer
+    skip_no_evidence: true
+    probe_all_wrong_after_step: null
+    candidate_log:
+      enabled: false
+      max_chars: 1024
+  teacher_trajectory:
+    enabled: false
+    loss_type: fkl
+    weight: 0.5
+    max_new_tokens: 128
+    weight_decay:
+      enabled: false
+      start_step: 294
+      end_step: 441
+      start_progress: 0.25
+      end_progress: 0.5
+      final_weight: 0.0
+      schedule_mode: step
+  teacher_correct_repair:
+    mode: none
+    scope: all_wrong
+    slots_per_prompt: 1
+    target_max_tokens: 256
+    sanitize_privileged: true
+    target_constraint: chartqa_hint
+    target_style: chartqa_hint
+  effective_sampling:
+    enabled: false
+    after_step: 294
+    schedule_mode: step
+    start_progress: 0.5
+    mixed_weight: 4.0
+    all_wrong_weight: 1.0
+    all_correct_weight: 0.7
+    unknown_weight: 1.0
+    reward_std_bonus: 2.0
+  positive_replay:
+    enabled: false
+    dataset_path: null
+    batch_size: 1
+    weight: 0.1
+    after_step: 0
+    until_step: 0
+    seed: 13
+    max_rows: 0
+  rollout_replay:
+    enabled: false
+    weight: 0.05
+    capacity: 256
+    batch_size: 2
+    after_step: 50
+    until_step: 0
+    max_age_steps: 64
+    min_abs_advantage: 0.05
+    correct_threshold: 0.5
+    priority_alpha: 1.0
+    seed: 17
+    positive_only: true
+  signal_utility_routing:
+    enabled: false
+    reward_std_scale: 0.1
+    allow_grpo_on_format_bad: false
+    grpo_base: 0.05
+    grpo_correct_bonus: 1.0
+    grpo_mixed_bonus: 0.25
+    grpo_signal_weight: 0.4
+    grpo_readiness_weight: 0.7
+    opd_base: 0.1
+    opd_teacher_bonus: 0.45
+    opd_wrong_bonus: 0.2
+    opd_gap_weight: 0.55
+    opd_all_wrong_bonus: 0.2
+    opd_teacher_need_weight: 0.6
+    opd_format_penalty: 1.0
+    sft_base: 0.02
+    sft_format_bad_bonus: 1.1
+    sft_clipped_bonus: 0.8
+    sft_all_wrong_bonus: 0.2
+    sft_low_signal_bonus: 0.25
+    sft_correct_penalty: 1.0
+    skip_clipped_without_teacher: false
+    mode_stable_enabled: false
+    mode_stable_ema_beta: 0.8
+    mode_stable_switch_margin: 0.2
+    mode_stable_min_hold_steps: 2
+  reward_weights:
+  - 0.5
+  - 1.5
+  - 1.0
+  debug:
+    detail_every: 10
+    probe_on_generate: true
+    probe_sample_count: 4
+    probe_first_token_logits: true
+    probe_prompt_tail_tokens: 16
+    probe_log_model_context: true
+    health_monitor:
+      enabled: true
+      window: 20
+      log_on_generate: true
+      log_every_step: true
+      log_detail_bundle: true
+      log_alerts_immediately: true
+      metrics_every_step: true
+    verbose: false
+  text_include_gold: false
+  global_step: 0
+  effective_group_filter:
+    enabled: false
+    after_step: 0
+    all_wrong_keep_per_prompt: 1
+    filter_all_correct: true
+  adaptive_supervision:
+    enabled: false
+    readiness_source: mixed_zero
+    ema_alpha: 0.1
+    target_readiness: 0.2
+    opsd_initial_weight: 1.5
+    opsd_final_weight: 0.5
+    teacher_initial_weight: 0.5
+    teacher_final_weight: 0.0
+    opd_initial_cap: 8
+    opd_final_cap: 2
+  dynamic_trigger_monitor:
+    enabled: false
+    ema_alpha: 0.1
+    min_progress: 0.2
+    patience_steps: 20
+    sampling_mixed_max: 0.2
+    sampling_zero_loss_min: 0.7
+    rl_mixed_min: 0.3
+    rl_zero_loss_max: 0.3
+  global_signal_logging:
+    enabled: false
+  phase_schedule:
+    mode: step
+  chart_cot_quality_gate:
+    enabled: false
+    mode: 'off'
+    require_quality: Q3
+    log_samples: true
+    max_log_samples: 8
+  perception_reward:
+    enabled: false
+    weight: 0.2
+    source: image_teacher
+    batch_size: 4
+    max_new_tokens: 8
+  eval_format_reward:
+    enabled: false
+    weight: 0.1
+  visual_supervision:
+    enabled: false
+    ic_source: auto
+    prefetch_ic: false
+    dedupe_per_batch: true
+    teacher_batch_size: 4
+    checker:
+      enabled: false
+      model_source: loaded_teacher
+      grounding: image_primary
+      aux_evidence: none
+      max_per_batch: 0
+      max_ic_tokens: 512
+      max_score_tokens: 16
+      fallback: local
+    refiner:
+      enabled: false
+      model_source: loaded_teacher
+      scope: batch_all
+      fallback: passthrough
+      include_gold: false
+      skip_cold_start: true
+      max_ic_tokens: 512
+      max_refine_tokens: 512
+    template_pool:
+      path: best_template.txt
+      refresh_interval_sec: 60.0
+    logging:
+      enabled: false
+      sample_count: 3
+      preview_chars: 400
+      save_artifacts: false
+      log_route_binding: true
+client:
+  client_type: openai
+  api_key: none
+  api_base: http://127.0.0.1:%s/v1
+  timeout: 60
+  model_id: Qwen/Qwen2.5-14B-Instruct-AWQ
+  init_port: 23333
+  num_server: 8
+dataset:
+  train_dataset: /data/junjie/agentic-rl-main/data/chartqa/train_medium_vf_full.json
+  eval_dataset: null
+  max_train_samples: null
+checkpoint_eval:
+  enabled: false
+  split: validation
+  batch_size: 1
+  max_new_tokens: 1024
+  patience: 3
+  tie_policy: reset
+  max_samples: null
+launch:
+  gradient_checkpointing_enable: false
+  opsd_detail_every: 10
+  opsd_detail_min_free_gb: 4.0
+  teacher_device_map: auto
+  pytorch_cuda_alloc_conf: null
+  wandb_enabled: false
+deplot:
+  enabled: false
+  model_id: google/deplot
+  batch_size: 8
+  max_new_tokens: 384
+  cache_path: /data/junjie/agentic-rl-main/data/chartqa/deplot_cache.json
+  prompt: 'Generate underlying data table of the figure below:'

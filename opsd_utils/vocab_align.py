@@ -173,7 +173,7 @@ def print_vocab_align_report(report: dict[str, Any]) -> None:
     if report["aligned"]:
         print(
             "[OPSD-VOCAB][detail2-tokenizer] sampled ids decode identically; "
-            "set DYME_VOCAB_ALIGN_FULL=1 for exhaustive scan",
+            "set model.vocab_alignment.full_scan=true for exhaustive scan",
             flush=True,
         )
     else:

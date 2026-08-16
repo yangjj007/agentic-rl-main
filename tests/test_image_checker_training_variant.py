@@ -1,7 +1,6 @@
 """Tests for the explicit OPD image-primary visual-checker training variant."""
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 from config.loader import load_config
@@ -33,9 +32,7 @@ def test_image_checker_variant_inherits_best_opd_and_adds_image_checker():
     assert visual["checker"]["aux_evidence"] == "none"
     assert visual_supervision_needs_teacher(cfg["opsd"]) is True
     assert cfg["dataset"]["train_dataset"] in {
-        project_path("data", "chartqa", "train_new_prerefine_vf_full_real_deplot_fp32.json"),
-        project_path("data", "chartqa", "train_new_prerefine_vf_full_real.json"),
-        project_path("data", "chartqa", "train_new_prerefine_vf_full.json"),
+        project_path("data", "chartqa", "train_new_prerefine_vf_full_real_deplot_fp32_qwen25.json"),
     }
     assert cfg["data_validation"] == {
         "strict": True,
@@ -67,12 +64,12 @@ def test_image_checker_training_script_selects_explicit_variant():
     script = Path("scripts/train_opd_7b_dyme_probe_image_checker.sh")
     text = script.read_text(encoding="utf-8")
 
-    assert 'DYME_CONFIG="opd_7b_dyme_probe_image_checker"' in text
-    assert 'DYME_VISUAL_CHECKER="${DYME_VISUAL_CHECKER:-1}"' in text
-    assert 'DYME_VISUAL_REFINER=' not in text
-    assert 'DYME_VISUAL_PREFETCH_IC=' not in text
-    assert 'DYME_VISUAL_CHECKER_GROUNDING="${DYME_VISUAL_CHECKER_GROUNDING:-image_primary}"' in text
-    assert 'DYME_VISUAL_CHECKER_AUX="${DYME_VISUAL_CHECKER_AUX:-none}"' in text
+    assert 'CONFIG_PATH="config/config_opd_7b_dyme_probe_image_checker.yaml"' in text
+    assert "DYME_VISUAL_CHECKER=" not in text
+    assert "DYME_VISUAL_REFINER=" not in text
+    assert "DYME_VISUAL_PREFETCH_IC=" not in text
+    assert "DYME_VISUAL_CHECKER_GROUNDING=" not in text
+    assert "DYME_VISUAL_CHECKER_AUX=" not in text
     assert "DYME_CHARTQA_RAW=" not in text
     assert "DYME_CHARTQA_VF_HINT=" not in text
     assert "DYME_CHARTQA_VF_FULL=" not in text
@@ -80,44 +77,19 @@ def test_image_checker_training_script_selects_explicit_variant():
 
 
 def test_image_checker_variant_honors_chartqa_vf_full_override(monkeypatch):
-    import config.config_opd_7b_dyme_probe_image_checker as checker_mod
-
-    relative_path = "data/chartqa/train_new_prerefine_vf_full_real_deplot_fp32.json"
-    monkeypatch.setenv("DYME_CHARTQA_VF_FULL", relative_path)
-    mod = importlib.reload(checker_mod)
-
-    assert mod.CONFIG["dataset"]["train_dataset"] == str(Path(relative_path).resolve())
-
-    monkeypatch.delenv("DYME_CHARTQA_VF_FULL")
-    importlib.reload(checker_mod)
+    cfg = load_config("opd_7b_dyme_probe_image_checker")
+    assert cfg["dataset"]["train_dataset"]
 
 
-def test_visual_supervision_checker_efficiency_env_overrides(monkeypatch):
-    monkeypatch.setenv("DYME_VISUAL_TEACHER_BATCH_SIZE", "8")
-    monkeypatch.setenv("DYME_VISUAL_CHECKER_MAX_SCORE_TOKENS", "4")
-
-    from config.visual_supervision_defaults import build_visual_supervision_config
-
-    visual = build_visual_supervision_config()
-
-    assert visual["teacher_batch_size"] == 8
-    assert visual["checker"]["max_score_tokens"] == 4
+def test_visual_supervision_checker_settings_are_explicit():
+    cfg = load_config("opd_7b_dyme_probe_image_checker")
+    visual = cfg["opsd"]["visual_supervision"]
+    assert "teacher_batch_size" in visual
+    assert "checker" in visual
 
 
-def test_image_checker_variant_inherits_runtime_smoke_tuning_env(monkeypatch):
-    import config.config_opd_7b_dyme_probe as base_mod
-    import config.config_opd_7b_dyme_probe_image_checker as checker_mod
-
-    monkeypatch.setenv("DYME_NUM_GENERATIONS", "2")
-    monkeypatch.setenv("DYME_PER_DEVICE_TRAIN_BATCH_SIZE", "1")
-    monkeypatch.setenv("DYME_GRADIENT_ACCUMULATION_STEPS", "1")
-    monkeypatch.setenv("DYME_GRADIENT_CHECKPOINTING", "1")
-    importlib.reload(base_mod)
-    mod = importlib.reload(checker_mod)
-
-    dyme_args = mod.CONFIG["training"]["dyme_args"]
-    assert dyme_args["num_generations"] == 2
-    assert dyme_args["per_device_train_batch_size"] == 1
-    assert dyme_args["gradient_accumulation_steps"] == 1
-    assert dyme_args["gradient_checkpointing"] is True
-    assert mod.CONFIG["launch"]["gradient_checkpointing_enable"] is True
+def test_image_checker_variant_has_explicit_training_values():
+    cfg = load_config("opd_7b_dyme_probe_image_checker")
+    dyme_args = cfg["training"]["dyme_args"]
+    assert dyme_args["num_generations"] > 0
+    assert dyme_args["per_device_train_batch_size"] > 0

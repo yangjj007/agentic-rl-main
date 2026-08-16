@@ -2,7 +2,7 @@
 Offline supervised fine-tuning for ChartQA (two-stage cold start before RLSD/OPD).
 
 Usage:
-  accelerate launch main_sft.py --config config/config_rlsd_chartqa.py
+  accelerate launch main_sft.py --config config/config_rlsd_chartqa.yaml
   bash scripts/train_chartqa_sft.sh
 """
 from __future__ import annotations
@@ -25,8 +25,8 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="config/config_rlsd_chartqa.py",
-        help="Config module (uses training.sft_args and dataset.train_dataset).",
+        default="config/config_rlsd_chartqa.yaml",
+        help="YAML config path or alias (uses training.sft_args and dataset.train_dataset).",
     )
     parser.add_argument(
         "--pretrained_model_path",
@@ -47,7 +47,7 @@ def main() -> None:
     if not sft_args:
         raise ValueError("Config must define training.sft_args for offline SFT.")
 
-    output_dir = os.environ.get("DYME_SFT_OUTPUT_DIR", sft_args.get("output_dir", "./outputs/chartqa-sft"))
+    output_dir = sft_args.get("output_dir", "./outputs/chartqa-sft")
     sft_args["output_dir"] = output_dir
     sft_args.setdefault("remove_unused_columns", False)
 

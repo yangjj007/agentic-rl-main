@@ -8,7 +8,7 @@ from typing import Any, Optional
 from data_utils.chart.prompts import prompt_template, prompt_thinking_reward
 from opsd_utils.visual_supervision_log import VisualBatchRecorder
 from reward_utils.checker import RewardCalculatorLocal
-from reward_utils.template_pool import TemplatePool, _comparison_prompt
+from reward_utils.template_pool import TemplatePool, _comparison_prompt, is_valid_reasoning_template
 from reward_utils.teacher_generate import (
     TeacherGenerateRequest,
     teacher_generate_batched_chunks,
@@ -455,7 +455,7 @@ class TeacherVisualChecker(RewardCalculatorLocal):
                         recorder=self._recorder,
                         timing_kind="checker",
                     )
-                    if ext_template and "none" not in ext_template.strip().lower():
+                    if is_valid_reasoning_template(ext_template):
                         written, cmp_label = self.template_pool.maybe_update(
                             ext_template,
                             lambda cur, new: self._compare_templates(cur, new, _chart_system_prompt()),
@@ -469,6 +469,15 @@ class TeacherVisualChecker(RewardCalculatorLocal):
                                 written=written,
                                 pool_path=self.template_pool.template_path,
                             )
+                    elif self._recorder is not None:
+                        self._recorder.record_pool(
+                            msg="invalid_template_candidate",
+                            sample_idx=job.sample_idx,
+                            template_preview=(ext_template or "")[:400],
+                            compare_result="invalid",
+                            written=False,
+                            pool_path=self.template_pool.template_path,
+                        )
                 if self._recorder is not None:
                     self._recorder.record_checker(
                         sample_idx=job.sample_idx,

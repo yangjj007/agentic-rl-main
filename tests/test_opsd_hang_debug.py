@@ -18,20 +18,18 @@ def _load_debug_log_module():
     return module
 
 
-def test_force_hang_probe_can_be_disabled(monkeypatch, capsys):
+def test_force_hang_probe_can_be_disabled(capsys):
     opsd_debug = _load_debug_log_module()
-    monkeypatch.setenv("DYME_OPSD_HANG_FORCE", "0")
-    opsd_debug.configure(rank=0, world_size=1)
+    opsd_debug.configure(rank=0, world_size=1, hang_force=False)
 
     opsd_debug.hang_probe_force("forced_probe")
 
     assert "OPSD-HANGDBG" not in capsys.readouterr().out
 
 
-def test_force_hang_probe_logs_by_default(monkeypatch, capsys):
+def test_force_hang_probe_logs_by_default(capsys):
     opsd_debug = _load_debug_log_module()
-    monkeypatch.delenv("DYME_OPSD_HANG_FORCE", raising=False)
-    opsd_debug.configure(rank=0, world_size=1)
+    opsd_debug.configure(rank=0, world_size=1, hang_force=True)
 
     opsd_debug.hang_probe_force("forced_probe")
 

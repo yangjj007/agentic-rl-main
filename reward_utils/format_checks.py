@@ -1,14 +1,13 @@
 """ChartQA format reward guards against digit-spam and degenerate completions."""
 from __future__ import annotations
 
-import os
 import re
 
 from opsd_utils.diagnostics import _detect_char_repeat, is_degenerate_completion
 
 
 def chart_min_thinking_length() -> int:
-    return int(os.environ.get("DYME_FORMAT_MIN_THINKING", "8"))
+    return 8
 
 
 def _answer_tail(response: str, answer_flag: str) -> str:

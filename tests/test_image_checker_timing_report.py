@@ -66,17 +66,3 @@ def test_image_checker_timing_report_summarizes_log_and_route_artifacts(tmp_path
     assert "checker_ms_per_call=25.0" in text
     assert "trainer_completion_modes=GRPO=3,SFT=29" in text
     assert "route_x_checker=grpo:high=1,opsd:medium=1,sft_replaced:low=1" in text
-
-
-def test_image_checker_timing_smoke_wrapper_uses_training_variant_without_disabling_inherited_features():
-    script = Path("scripts/test/run_image_checker_timing_smoke.sh")
-    text = script.read_text(encoding="utf-8")
-
-    assert "scripts/train_opd_7b_dyme_probe_image_checker.sh" in text
-    assert "DYME_TRAIN_MAX_STEPS" in text
-    assert "DYME_VISUAL_LOG=1" in text
-    assert "DYME_VISUAL_SAVE_ARTIFACTS=1" in text
-    assert "SMOKE_VISUAL_TEACHER_BATCH_SIZE" in text
-    assert "SMOKE_CHECKER_MAX_SCORE_TOKENS" in text
-    assert "DYME_VISUAL_REFINER=" not in text
-    assert "DYME_VISUAL_PREFETCH_IC=" not in text

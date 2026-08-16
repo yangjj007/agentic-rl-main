@@ -34,8 +34,6 @@ for raw in "$@"; do
   fi
 done
 
-echo "Done. Launch with:"
-echo "  export DYME_STUDENT_MODEL=<0.5b-dir>"
-echo "  export DYME_TEACHER_MODEL=<7b-dir>"
-echo "  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1"
-echo "  bash scripts/train_opd_7b_chartqa_deepspeed.sh"
+echo "Done. Put the local student and teacher paths directly in a complete YAML"
+echo "recipe under model.pretrained_model_path and model.teacher_model_path, then"
+echo "launch main.py with --config <recipe.yaml>."
